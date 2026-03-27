@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lightning</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0a0a12; }
+    canvas { display: block; cursor: crosshair; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    let width = canvas.width = window.innerWidth;
+    let height = canvas.height = window.innerHeight;
+    
+    const mouse = { x: width / 2, y: height / 2, down: false };
+    const bolts = [];
+    
+    class LightningBolt {
+      constructor(x1, y1, x2, y2) {
+        this.points = this.generate(x1, y1, x2, y2);
+        this.life = 1;
+        this.decay = 0.05;
+        this.hue = 200 + Math.random() * 40;
+      }
+      
+      generate(x1, y1, x2, y2, depth = 0) {
+        if (depth > 5) return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+        
+        const midX = (x1 + x2) / 2 + (Math.random() - 0.5) * (y2 - y1) * 0.3;
+        const midY = (y1 + y2) / 2 + (Math.random() - 0.5) * (x2 - x1) * 0.3;
+        
+        const left = this.generate(x1, y1, midX, midY, depth + 1);
+        const right = this.generate(midX, midY, x2, y2, depth + 1);
+        
+        return [...left, ...right.slice(1)];
+      }
+      
+      update() {
+        this.life -= this.decay;
+      }
+      
+      draw() {
+        if (this.points.length < 2) return;
+        
+        // Glow
+        ctx.beginPath();
+        ctx.moveTo(this.points[0].x, this.points[0].y);
+        for (let i = 1; i < this.points.length; i++) {
+          ctx.lineTo(this.points[i].x, this.points[i].y);
+        }
+        ctx.strokeStyle = `hsla(${this.hue}, 100%, 70%, ${this.life * 0.3})`;
+        ctx.lineWidth = 8;
+        ctx.stroke();
+        
+        // Core
+        ctx.beginPath();
+        ctx.moveTo(this.points[0].x, this.points[0].y);
+        for (let i = 1; i < this.points.length; i++) {
+          ctx.lineTo(this.points[i].x, this.points[i].y);
+        }
+        ctx.strokeStyle = `hsla(${this.hue}, 100%, 90%, ${this.life})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+    
+    function spawnBolt() {
+      const startX = Math.random() * width;
+      const startY = Math.random() * height * 0.3;
+      bolts.push(new LightningBolt(startX, startY, mouse.x, mouse.y));
+      
+      // Branch
+      if (Math.random() > 0.5) {
+        const branchX = mouse.x + (Math.random() - 0.5) * 200;
+        const branchY = mouse.y + (Math.random() - 0.5) * 200;
+        bolts.push(new LightningBolt(mouse.x, mouse.y, branchX, branchY));
+      }
+    }
+    
+    function animate() {
+      ctx.fillStyle = 'rgba(10, 10, 18, 0.2)';
+      ctx.fillRect(0, 0, width, height);
+      
+      if (mouse.down && Math.random() > 0.7) {
+        spawnBolt();
+      }
+      
+      for (let i = bolts.length - 1; i >= 0; i--) {
+        bolts[i].update();
+        bolts[i].draw();
+        if (bolts[i].life <= 0) bolts.splice(i, 1);
+      }
+      
+      // Draw target glow at mouse
+      if (mouse.down) {
+        const gradient = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 50);
+        gradient.addColorStop(0, 'rgba(150, 200, 255, 0.5)');
+        gradient.addColorStop(1, 'rgba(150, 200, 255, 0)');
+        ctx.beginPath();
+        ctx.arc(mouse.x, mouse.y, 50, 0, Math.PI * 2);
+        ctx.fillStyle = gradient;
+        ctx.fill();
+      }
+      
+      requestAnimationFrame(animate);
+    }
+    
+    canvas.addEventListener('mousemove', (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+    });
+    
+    canvas.addEventListener('mousedown', () => {
+      mouse.down = true;
+      spawnBolt();
+    });
+    canvas.addEventListener('mouseup', () => mouse.down = false);
+    canvas.addEventListener('mouseleave', () => mouse.down = false);
+    
+    window.addEventListener('resize', () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    });
+    
+    animate();
+  </script>
+</body>
+</html>

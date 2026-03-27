@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gravity Balls</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0f0f1a; }
+    canvas { display: block; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    let width = canvas.width = window.innerWidth;
+    let height = canvas.height = window.innerHeight;
+    
+    const balls = [];
+    const gravity = 0.4;
+    const friction = 0.99;
+    const bounce = 0.8;
+    
+    class Ball {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.vx = (Math.random() - 0.5) * 10;
+        this.vy = (Math.random() - 0.5) * 5;
+        this.radius = Math.random() * 25 + 10;
+        this.hue = Math.random() * 360;
+        this.mass = this.radius;
+      }
+      
+      update() {
+        this.vy += gravity;
+        this.vx *= friction;
+        this.vy *= friction;
+        this.x += this.vx;
+        this.y += this.vy;
+        
+        // Bounce off walls
+        if (this.x - this.radius < 0) {
+          this.x = this.radius;
+          this.vx *= -bounce;
+        }
+        if (this.x + this.radius > width) {
+          this.x = width - this.radius;
+          this.vx *= -bounce;
+        }
+        if (this.y + this.radius > height) {
+          this.y = height - this.radius;
+          this.vy *= -bounce;
+        }
+        if (this.y - this.radius < 0) {
+          this.y = this.radius;
+          this.vy *= -bounce;
+        }
+      }
+      
+      draw() {
+        const gradient = ctx.createRadialGradient(
+          this.x - this.radius * 0.3, this.y - this.radius * 0.3, 0,
+          this.x, this.y, this.radius
+        );
+        gradient.addColorStop(0, `hsl(${this.hue}, 100%, 70%)`);
+        gradient.addColorStop(1, `hsl(${this.hue}, 80%, 40%)`);
+        
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fillStyle = gradient;
+        ctx.fill();
+        
+        // Shadow
+        ctx.beginPath();
+        ctx.ellipse(this.x, height - 5, this.radius * 0.8, this.radius * 0.2, 0, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.3 * (1 - this.y / height)})`;
+        ctx.fill();
+      }
+    }
+    
+    function checkCollisions() {
+      for (let i = 0; i < balls.length; i++) {
+        for (let j = i + 1; j < balls.length; j++) {
+          const dx = balls[j].x - balls[i].x;
+          const dy = balls[j].y - balls[i].y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const minDist = balls[i].radius + balls[j].radius;
+          
+          if (dist < minDist) {
+            const angle = Math.atan2(dy, dx);
+            const overlap = minDist - dist;
+            
+            balls[i].x -= Math.cos(angle) * overlap * 0.5;
+            balls[i].y -= Math.sin(angle) * overlap * 0.5;
+            balls[j].x += Math.cos(angle) * overlap * 0.5;
+            balls[j].y += Math.sin(angle) * overlap * 0.5;
+            
+            const v1 = { x: balls[i].vx, y: balls[i].vy };
+            const v2 = { x: balls[j].vx, y: balls[j].vy };
+            
+            balls[i].vx = v2.x * bounce;
+            balls[i].vy = v2.y * bounce;
+            balls[j].vx = v1.x * bounce;
+            balls[j].vy = v1.y * bounce;
+          }
+        }
+      }
+    }
+    
+    function animate() {
+      ctx.fillStyle = 'rgba(15, 15, 26, 0.3)';
+      ctx.fillRect(0, 0, width, height);
+      
+      checkCollisions();
+      
+      for (const ball of balls) {
+        ball.update();
+        ball.draw();
+      }
+      
+      requestAnimationFrame(animate);
+    }
+    
+    canvas.addEventListener('click', (e) => {
+      balls.push(new Ball(e.clientX, e.clientY));
+      while (balls.length > 30) balls.shift();
+    });
+    
+    window.addEventListener('resize', () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    });
+    
+    animate();
+  </script>
+</body>
+</html>

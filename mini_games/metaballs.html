@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Metaballs</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0f0f1a; }
+    canvas { display: block; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    let width = canvas.width = window.innerWidth;
+    let height = canvas.height = window.innerHeight;
+    
+    const scale = 4;
+    const cols = Math.ceil(width / scale);
+    const rows = Math.ceil(height / scale);
+    
+    const blobs = [];
+    const mouse = { x: width / 2, y: height / 2 };
+    
+    class Blob {
+      constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.vx = (Math.random() - 0.5) * 3;
+        this.vy = (Math.random() - 0.5) * 3;
+        this.radius = 40 + Math.random() * 60;
+      }
+      
+      update() {
+        // Attract to mouse
+        const dx = mouse.x - this.x;
+        const dy = mouse.y - this.y;
+        this.vx += dx * 0.0003;
+        this.vy += dy * 0.0003;
+        
+        this.vx *= 0.99;
+        this.vy *= 0.99;
+        
+        this.x += this.vx;
+        this.y += this.vy;
+        
+        // Bounce
+        if (this.x < 0 || this.x > width) this.vx *= -1;
+        if (this.y < 0 || this.y > height) this.vy *= -1;
+      }
+    }
+    
+    // Initialize blobs
+    for (let i = 0; i < 8; i++) {
+      blobs.push(new Blob(Math.random() * width, Math.random() * height));
+    }
+    
+    function getField(x, y) {
+      let sum = 0;
+      for (const blob of blobs) {
+        const dx = x - blob.x;
+        const dy = y - blob.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        sum += (blob.radius * blob.radius) / (d * d + 1);
+      }
+      return sum;
+    }
+    
+    function animate() {
+      const imageData = ctx.createImageData(width, height);
+      const data = imageData.data;
+      
+      for (const blob of blobs) {
+        blob.update();
+      }
+      
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const field = getField(x * scale, y * scale);
+          
+          const hue = 280 + field * 2;
+          const lightness = Math.min(60, field * 3);
+          const alpha = field > 10 ? 255 : field * 25;
+          
+          // Convert HSL to RGB (simplified)
+          const h = hue / 60;
+          const c = (1 - Math.abs(2 * lightness / 100 - 1)) * 1;
+          const xc = c * (1 - Math.abs(h % 2 - 1));
+          
+          let r = 0, g = 0, b = 0;
+          if (h < 1) { r = c; g = xc; }
+          else if (h < 2) { r = xc; g = c; }
+          else if (h < 3) { g = c; b = xc; }
+          else if (h < 4) { g = xc; b = c; }
+          else if (h < 5) { r = xc; b = c; }
+          else { r = c; b = xc; }
+          
+          const m = lightness / 100 - c / 2;
+          r = Math.floor((r + m) * 255);
+          g = Math.floor((g + m) * 255);
+          b = Math.floor((b + m) * 255);
+          
+          // Fill scaled pixels
+          for (let py = 0; py < scale && y * scale + py < height; py++) {
+            for (let px = 0; px < scale && x * scale + px < width; px++) {
+              const idx = ((y * scale + py) * width + (x * scale + px)) * 4;
+              data[idx] = r;
+              data[idx + 1] = g;
+              data[idx + 2] = b;
+              data[idx + 3] = alpha;
+            }
+          }
+        }
+      }
+      
+      ctx.putImageData(imageData, 0, 0);
+      requestAnimationFrame(animate);
+    }
+    
+    canvas.addEventListener('mousemove', (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
+    });
+    
+    canvas.addEventListener('click', (e) => {
+      blobs.push(new Blob(e.clientX, e.clientY));
+      while (blobs.length > 15) blobs.shift();
+    });
+    
+    window.addEventListener('resize', () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    });
+    
+    animate();
+  </script>
+</body>
+</html>
