@@ -28,6 +28,22 @@ def child_dashboard(request: Request, user=Depends(require_child)):
         ).fetchall()
         child = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
 
+        badge_count = db.execute(
+            "SELECT COUNT(*) AS cnt FROM test_badges WHERE user_id=?", (user_id,)
+        ).fetchone()["cnt"]
+        medals = db.execute(
+            """SELECT ub.list_id, wl.name AS list_name FROM user_badges ub
+               JOIN word_lists wl ON wl.id=ub.list_id
+               WHERE ub.user_id=? AND ub.badge_type='medal' ORDER BY wl.year_group, wl.name""",
+            (user_id,),
+        ).fetchall()
+        trophies = db.execute(
+            """SELECT ub.list_id, wl.name AS list_name FROM user_badges ub
+               JOIN word_lists wl ON wl.id=ub.list_id
+               WHERE ub.user_id=? AND ub.badge_type='trophy' ORDER BY wl.year_group, wl.name""",
+            (user_id,),
+        ).fetchall()
+
         # Per-list mastery progress
         progress = {}
         for lst in unlocked:
@@ -59,15 +75,18 @@ def child_dashboard(request: Request, user=Depends(require_child)):
                 "second_pct": round(second_try / total * 100) if total else 0,
             }
 
-    badge_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "badge"}
+    medal_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "medal"}
     trophy_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "trophy"}
     return templates.TemplateResponse(request, "child/dashboard.html", {
         "child": child,
         "unlocked": unlocked,
-        "badge_list_ids": badge_list_ids,
+        "medal_list_ids": medal_list_ids,
         "trophy_list_ids": trophy_list_ids,
         "recent_sessions": recent_sessions,
         "progress": progress,
+        "badge_count": badge_count,
+        "medals": medals,
+        "trophies": trophies,
     })
 
 

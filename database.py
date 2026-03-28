@@ -64,6 +64,13 @@ CREATE TABLE IF NOT EXISTS user_badges (
     PRIMARY KEY (user_id, list_id, badge_type)
 );
 
+CREATE TABLE IF NOT EXISTS test_badges (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id INTEGER NOT NULL REFERENCES test_sessions(id) ON DELETE CASCADE,
+    earned_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audio_cache (
     word_text  TEXT PRIMARY KEY,
     file_path  TEXT NOT NULL,

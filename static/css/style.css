@@ -244,16 +244,41 @@ input:focus, select:focus {
 .score-denom { color: #aaa; }
 .list-name { text-align: center; color: #888; margin-bottom: 1.5rem; }
 .award-banner {
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
   padding: 0.75rem 1rem;
   border-radius: var(--radius);
   font-weight: 700;
   font-size: 1.1rem;
   margin-bottom: 0.75rem;
 }
-.award-banner.trophy { background: #fff3cd; color: #856404; }
-.award-banner.badge  { background: #d1f2eb; color: #1a5c45; }
-.award-banner.unlock { background: #cce5ff; color: #004085; }
+.banner-icon { width: 32px; height: 32px; flex-shrink: 0; }
+.award-badge  { background: #fff8dc; color: #7a6000; }
+.award-medal  { background: #fdebd0; color: #7a3c00; }
+.award-trophy { background: #d5f5e3; color: #1a5c45; }
+.award-unlock { background: #cce5ff; color: #004085; }
+
+/* ── Awards section (dashboard) ── */
+.awards-section { margin-top: 2.5rem; }
+.awards-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  margin-top: 0.75rem;
+}
+.award-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  width: 80px;
+}
+.award-icon { width: 56px; height: 56px; }
+.list-award-icon { width: 22px; height: 22px; }
+.award-count { font-size: 1rem; font-weight: 800; color: var(--color-1); }
+.award-label { font-size: 0.72rem; text-align: center; color: #666; line-height: 1.3; }
 .results-actions { display: flex; gap: 1rem; justify-content: center; margin-top: 2rem; }
 .game-reward {
   text-align: center;

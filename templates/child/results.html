@@ -9,14 +9,17 @@
   </div>
   <p class="list-name">{{ list.name }}</p>
 
-  {% if gamification.trophy_awarded %}
-  <div class="award-banner trophy">&#127881; Trophy Unlocked! You spelled every word perfectly first try!</div>
-  {% endif %}
   {% if gamification.badge_awarded %}
-  <div class="award-banner badge">&#127942; Badge Earned! You're doing brilliantly!</div>
+  <div class="award-banner award-badge"><img src="/static/img/badge.svg" class="banner-icon" alt=""> Badge earned! Great score!</div>
+  {% endif %}
+  {% if gamification.medal_awarded %}
+  <div class="award-banner award-medal"><img src="/static/img/medal.svg" class="banner-icon" alt=""> Medal earned! You've mastered half this list!</div>
+  {% endif %}
+  {% if gamification.trophy_awarded %}
+  <div class="award-banner award-trophy"><img src="/static/img/trophy.svg" class="banner-icon" alt=""> Trophy earned! You've mastered this list!</div>
   {% endif %}
   {% if gamification.lists_unlocked %}
-  <div class="award-banner unlock">&#127275; New word list{{ 's' if gamification.lists_unlocked|length > 1 else '' }} unlocked!</div>
+  <div class="award-banner award-unlock">🌟 New word list{{ 's' if gamification.lists_unlocked|length > 1 else '' }} unlocked!</div>
   {% endif %}
 
   <table class="attempts-table">

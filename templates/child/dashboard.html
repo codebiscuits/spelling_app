@@ -17,11 +17,11 @@
       <div class="badge-card-top">
         <div class="badge-name">{{ lst.name }}</div>
         <div class="badge-icons">
-          {% if lst.id in badge_list_ids %}
-            <span class="badge-icon" title="Badge earned!">🏅</span>
+          {% if lst.id in medal_list_ids %}
+            <img src="/static/img/medal.svg" class="list-award-icon" title="Medal earned!">
           {% endif %}
           {% if lst.id in trophy_list_ids %}
-            <span class="badge-icon" title="Trophy earned!">🎉</span>
+            <img src="/static/img/trophy.svg" class="list-award-icon" title="Trophy earned!">
           {% endif %}
         </div>
       </div>
@@ -60,4 +60,34 @@
 </section>
 {% endif %}
 
+{% if badge_count > 0 or medals or trophies %}
+<section class="awards-section">
+  <h2>Your Awards</h2>
+  <div class="awards-grid">
+
+    {% if badge_count > 0 %}
+    <div class="award-item">
+      <img src="/static/img/badge.svg" class="award-icon" alt="Badge">
+      <div class="award-count">×{{ badge_count }}</div>
+      <div class="award-label">{{ 'Badge' if badge_count == 1 else 'Badges' }}</div>
+    </div>
+    {% endif %}
+
+    {% for m in medals %}
+    <div class="award-item">
+      <img src="/static/img/medal.svg" class="award-icon" alt="Medal">
+      <div class="award-label">{{ m.list_name }}</div>
+    </div>
+    {% endfor %}
+
+    {% for t in trophies %}
+    <div class="award-item">
+      <img src="/static/img/trophy.svg" class="award-icon" alt="Trophy">
+      <div class="award-label">{{ t.list_name }}</div>
+    </div>
+    {% endfor %}
+
+  </div>
+</section>
+{% endif %}
 {% endblock %}

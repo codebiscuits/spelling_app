@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 110">
+  <!-- Shadow -->
+  <path d="M25,14 L75,14 L64,58 Q50,72 36,58 Z" fill="#9A7000" opacity="0.3" transform="translate(3,4)"/>
+  <!-- Left handle -->
+  <path d="M26,14 Q8,14 8,34 Q8,54 26,50" fill="none" stroke="#E8B800" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M26,14 Q8,14 8,34 Q8,54 26,50" fill="none" stroke="#FFD700" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Right handle -->
+  <path d="M74,14 Q92,14 92,34 Q92,54 74,50" fill="none" stroke="#E8B800" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M74,14 Q92,14 92,34 Q92,54 74,50" fill="none" stroke="#FFD700" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Cup body -->
+  <path d="M25,14 L75,14 L64,58 Q50,72 36,58 Z" fill="#FFD700" stroke="#CC9900" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Cup highlight -->
+  <path d="M32,17 L60,17 L54,44 L40,44 Z" fill="#FFE55C" opacity="0.45"/>
+  <!-- Stem -->
+  <rect x="43" y="58" width="14" height="22" fill="#FFD700" stroke="#CC9900" stroke-width="2"/>
+  <!-- Base shadow -->
+  <rect x="26" y="80" width="48" height="14" fill="#9A7000" opacity="0.25" rx="4" transform="translate(2,3)"/>
+  <!-- Base -->
+  <rect x="24" y="80" width="52" height="14" fill="#FFD700" stroke="#CC9900" stroke-width="3" rx="4"/>
+  <!-- Base highlight -->
+  <rect x="30" y="83" width="40" height="5" fill="#FFE55C" opacity="0.4" rx="2"/>
+</svg>

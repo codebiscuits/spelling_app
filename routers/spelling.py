@@ -152,7 +152,7 @@ def results(request: Request, user=Depends(require_child)):
             (session_id,),
         ).fetchall()
         list_row = db.execute("SELECT * FROM word_lists WHERE id=?", (list_id,)).fetchone()
-        gamification = check_and_award(user_id, list_id, db)
+        gamification = check_and_award(user_id, list_id, session_id, session["score"], db)
 
     # Clear test session state
     request.session.pop("test", None)
