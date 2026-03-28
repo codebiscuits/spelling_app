@@ -60,15 +60,4 @@
 </section>
 {% endif %}
 
-<section>
-  <h2>&#127918; Mini Games</h2>
-  <div class="games-grid">
-    {% for game in mini_games %}
-    <a class="game-card" href="/child/games/{{ game.file }}">
-      <div class="game-name">{{ game.name }}</div>
-      <div class="game-desc">{{ game.description }}</div>
-    </a>
-    {% endfor %}
-  </div>
-</section>
 {% endblock %}

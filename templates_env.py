@@ -28,4 +28,3 @@ def current_palette():
 
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["current_palette"] = current_palette
-templates.env.globals["mini_games"] = MINI_GAMES
