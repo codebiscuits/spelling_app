@@ -95,7 +95,6 @@ def login(
                 "user_id": child["id"],
                 "is_admin": False,
                 "name": child["name"],
-                "mode": child["mode"],
             }
             return RedirectResponse("/child/dashboard", status_code=303)
 

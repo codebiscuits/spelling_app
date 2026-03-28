@@ -12,16 +12,28 @@
   <h2>Your Word Lists</h2>
   <div class="badge-wall">
     {% for lst in unlocked %}
+    {% set p = progress[lst.id] %}
     <div class="badge-card">
-      <div class="badge-name">{{ lst.name }}</div>
-      <div class="badge-icons">
-        {% if lst.id in badge_list_ids %}
-          <span class="badge-icon trophy" title="Badge earned!">&#127942;</span>
-        {% endif %}
-        {% if lst.id in trophy_list_ids %}
-          <span class="badge-icon trophy" title="Trophy earned!">&#127881;</span>
-        {% endif %}
+      <div class="badge-card-top">
+        <div class="badge-name">{{ lst.name }}</div>
+        <div class="badge-icons">
+          {% if lst.id in badge_list_ids %}
+            <span class="badge-icon" title="Badge earned!">🏅</span>
+          {% endif %}
+          {% if lst.id in trophy_list_ids %}
+            <span class="badge-icon" title="Trophy earned!">🎉</span>
+          {% endif %}
+        </div>
       </div>
+      {% if p.total > 0 %}
+      <div class="progress-bar-wrap" title="{{ p.first_try }} first-try, {{ p.second_try }} second-try, {{ p.total - p.first_try - p.second_try }} to go">
+        <div class="progress-bar">
+          <div class="progress-first" style="width:{{ p.first_pct }}%"></div>
+          <div class="progress-second" style="width:{{ p.second_pct }}%"></div>
+        </div>
+        <div class="progress-label">{{ p.first_try + p.second_try }} / {{ p.total }} words</div>
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
@@ -52,7 +64,7 @@
   <h2>&#127918; Mini Games</h2>
   <div class="games-grid">
     {% for game in mini_games %}
-    <a class="game-card" href="/mini-games/{{ game.file }}" target="_blank">
+    <a class="game-card" href="/child/games/{{ game.file }}">
       <div class="game-name">{{ game.name }}</div>
       <div class="game-desc">{{ game.description }}</div>
     </a>

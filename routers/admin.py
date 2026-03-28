@@ -145,7 +145,6 @@ def create_child(
     name: str = Form(...),
     dob: str = Form(...),
     password: str = Form(...),
-    mode: str = Form("audio"),
     unlock_lists: list[int] = Form(default=[]),
     csrf_token: str = Form(...),
     admin=Depends(require_admin),
@@ -155,8 +154,8 @@ def create_child(
     ph = hash_password(password)
     with get_db() as db:
         cur = db.execute(
-            "INSERT INTO users (name, dob, password_hash, date_created, is_admin, mode) VALUES (?,?,?,?,0,?)",
-            (name.strip(), dob, ph, now, mode),
+            "INSERT INTO users (name, dob, password_hash, date_created, is_admin) VALUES (?,?,?,?,0)",
+            (name.strip(), dob, ph, now),
         )
         user_id = cur.lastrowid
         for lid in unlock_lists:
@@ -229,7 +228,6 @@ def edit_child(
     request: Request,
     name: str = Form(...),
     dob: str = Form(...),
-    mode: str = Form("audio"),
     new_password: str = Form(""),
     unlock_lists: list[int] = Form(default=[]),
     csrf_token: str = Form(...),
@@ -241,13 +239,13 @@ def edit_child(
         if new_password:
             ph = hash_password(new_password)
             db.execute(
-                "UPDATE users SET name=?, dob=?, mode=?, password_hash=? WHERE id=?",
-                (name.strip(), dob, mode, ph, child_id),
+                "UPDATE users SET name=?, dob=?, password_hash=? WHERE id=?",
+                (name.strip(), dob, ph, child_id),
             )
         else:
             db.execute(
-                "UPDATE users SET name=?, dob=?, mode=? WHERE id=?",
-                (name.strip(), dob, mode, child_id),
+                "UPDATE users SET name=?, dob=? WHERE id=?",
+                (name.strip(), dob, child_id),
             )
         db.execute("DELETE FROM user_list_unlocks WHERE user_id=?", (child_id,))
         for lid in unlock_lists:

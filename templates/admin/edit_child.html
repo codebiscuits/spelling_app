@@ -17,14 +17,6 @@
   </div>
 
   <div class="field">
-    <label for="mode">Test Mode</label>
-    <select id="mode" name="mode">
-      <option value="audio" {{ 'selected' if (child and child.mode == 'audio') or not child else '' }}>Audio</option>
-      <option value="visual" {{ 'selected' if child and child.mode == 'visual' else '' }}>Visual</option>
-    </select>
-  </div>
-
-  <div class="field">
     <label for="password">{{ 'New Password (leave blank to keep current)' if child else 'Password' }}</label>
     <input type="password" id="password" name="{{ 'new_password' if child else 'password' }}"
            {{ '' if child else 'required' }}>

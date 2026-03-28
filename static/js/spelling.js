@@ -4,32 +4,15 @@
   var root = document.getElementById('test-root');
   if (!root) return;
 
-  var mode        = root.dataset.mode;
   var attempt     = parseInt(root.dataset.attempt, 10);
-  var audioUrl    = root.dataset.audioUrl;
-
-  var playBtn     = document.getElementById('play-btn');
-  var audioEl     = document.getElementById('word-audio');
   var answerSec   = document.getElementById('answer-section');
   var answerInput = document.getElementById('answer');
-  var readyBtn    = document.getElementById('ready-btn');
-  var wordDisplay = document.getElementById('word-display');
 
-  // ── Attempt 2: "I'm Ready" flow ──────────────────────────────────────────
-  if (attempt === 2 && readyBtn) {
-    readyBtn.addEventListener('click', function () {
-      if (wordDisplay) wordDisplay.style.display = 'none';
-      readyBtn.style.display = 'none';
-      var audioSec = document.getElementById('audio-section');
-      if (audioSec) audioSec.style.display = '';
-      answerSec.style.display = '';
-      answerInput.focus();
-    });
-    return; // don't also run audio/visual logic
-  }
+  // ── Attempt 1: play button reveals input ─────────────────────────────────
+  if (attempt === 1) {
+    var playBtn = document.getElementById('play-btn');
+    var audioEl = document.getElementById('word-audio');
 
-  // ── Audio mode, attempt 1 ─────────────────────────────────────────────────
-  if (mode === 'audio' && attempt === 1) {
     if (playBtn && audioEl) {
       playBtn.addEventListener('click', function () {
         audioEl.play();
@@ -37,46 +20,34 @@
         answerInput.focus();
       });
     } else {
-      // No audio available — show answer box immediately
+      // No audio — reveal input immediately
       answerSec.style.display = '';
       answerInput.focus();
     }
-    return;
   }
 
-  // ── Visual mode, attempt 1 ────────────────────────────────────────────────
-  if (mode === 'visual' && attempt === 1) {
-    var visualWord  = document.getElementById('visual-word');
-    var hideWordBtn = document.getElementById('hide-word-btn');
+  // ── Attempt 2: "I'm Ready" hides the word and reveals input ──────────────
+  if (attempt === 2) {
+    var readyBtn    = document.getElementById('ready-btn');
+    var wordDisplay = document.getElementById('word-display');
 
-    if (!visualWord) return;
-
-    var word = root.dataset.word || '';
-    if (!word) {
-      answerSec.style.display = '';
-      answerInput.focus();
-      return;
+    if (readyBtn) {
+      readyBtn.addEventListener('click', function () {
+        if (wordDisplay) wordDisplay.style.display = 'none';
+        readyBtn.style.display = 'none';
+        answerSec.style.display = '';
+        answerInput.focus();
+      });
     }
-
-    visualWord.textContent = word;
-    hideWordBtn.style.display = '';
-
-    hideWordBtn.addEventListener('click', function () {
-      visualWord.textContent = '';
-      hideWordBtn.style.display = 'none';
-      answerSec.style.display = '';
-      answerInput.focus();
-    });
   }
 
   // ── Submit guard: prevent empty submission ────────────────────────────────
   var form = document.getElementById('spell-form');
   if (form) {
     form.addEventListener('submit', function (e) {
-      var val = answerInput ? answerInput.value.trim() : '';
-      if (!val) {
+      if (!answerInput || !answerInput.value.trim()) {
         e.preventDefault();
-        answerInput && answerInput.focus();
+        if (answerInput) answerInput.focus();
       }
     });
   }

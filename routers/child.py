@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request, Depends, HTTPException
 
 from database import get_db
 from auth import require_child
-from templates_env import templates
+from templates_env import templates, MINI_GAMES
 
 router = APIRouter(prefix="/child")
 
@@ -27,6 +27,38 @@ def child_dashboard(request: Request, user=Depends(require_child)):
             (user_id,),
         ).fetchall()
         child = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+
+        # Per-list mastery progress
+        progress = {}
+        for lst in unlocked:
+            lid = lst["id"]
+            total = db.execute(
+                "SELECT COUNT(*) AS cnt FROM words WHERE list_id=?", (lid,)
+            ).fetchone()["cnt"]
+            first_try = db.execute(
+                """SELECT COUNT(DISTINCT sa.word_id) AS cnt
+                   FROM spelling_attempts sa JOIN words w ON w.id=sa.word_id
+                   WHERE sa.user_id=? AND w.list_id=? AND sa.attempt_number=1 AND sa.correct=1""",
+                (user_id, lid),
+            ).fetchone()["cnt"]
+            second_try = db.execute(
+                """SELECT COUNT(DISTINCT sa.word_id) AS cnt
+                   FROM spelling_attempts sa JOIN words w ON w.id=sa.word_id
+                   WHERE sa.user_id=? AND w.list_id=? AND sa.attempt_number=2 AND sa.correct=1
+                     AND sa.word_id NOT IN (
+                       SELECT word_id FROM spelling_attempts
+                       WHERE user_id=? AND attempt_number=1 AND correct=1
+                     )""",
+                (user_id, lid, user_id),
+            ).fetchone()["cnt"]
+            progress[lid] = {
+                "total": total,
+                "first_try": first_try,
+                "second_try": second_try,
+                "first_pct": round(first_try / total * 100) if total else 0,
+                "second_pct": round(second_try / total * 100) if total else 0,
+            }
+
     badge_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "badge"}
     trophy_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "trophy"}
     return templates.TemplateResponse(request, "child/dashboard.html", {
@@ -35,6 +67,7 @@ def child_dashboard(request: Request, user=Depends(require_child)):
         "badge_list_ids": badge_list_ids,
         "trophy_list_ids": trophy_list_ids,
         "recent_sessions": recent_sessions,
+        "progress": progress,
     })
 
 
@@ -57,4 +90,17 @@ def pick_list(request: Request, user=Depends(require_child)):
         "unlocked": unlocked,
         "badge_list_ids": badge_list_ids,
         "trophy_list_ids": trophy_list_ids,
+    })
+
+
+GAME_FILES = {g["file"] for g in MINI_GAMES}
+
+@router.get("/games/{filename}")
+def play_game(filename: str, request: Request, user=Depends(require_child)):
+    if filename not in GAME_FILES:
+        raise HTTPException(404)
+    game = next(g for g in MINI_GAMES if g["file"] == filename)
+    return templates.TemplateResponse(request, "child/game.html", {
+        "game": game,
+        "duration": 60,
     })

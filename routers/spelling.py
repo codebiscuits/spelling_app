@@ -62,33 +62,26 @@ def show_word(request: Request, user=Depends(require_child)):
 
     word_id = word_queue[idx]
     attempt = test["attempt_number"]
-    user_mode = user.get("mode", "audio")
+    well_done = request.query_params.get("well_done") == "1"
 
     with get_db() as db:
         word_row = db.execute("SELECT * FROM words WHERE id=?", (word_id,)).fetchone()
         if not word_row:
             raise HTTPException(500, "Word not found")
 
-        audio_url = None
-        if user_mode == "audio" or attempt == 2:
-            audio_url = get_audio_url(word_row["word"], db)
-
-    # Audio mode attempt 1: word MUST NOT be in page source.
-    # Visual mode attempt 1: word shown briefly via JS (acceptable — it's displayed visually).
-    # Attempt 2 (both modes): word shown so child can study it before second try.
-    if attempt == 2 or (user_mode == "visual" and attempt == 1):
-        word_text = word_row["word"]
-    else:
-        word_text = None
+        # Attempt 1: audio only — word must NOT appear in page source
+        # Attempt 2: word shown visually so child can study it before second try
+        audio_url = get_audio_url(word_row["word"], db) if attempt == 1 else None
+        word_text = word_row["word"] if attempt == 2 else None
 
     return templates.TemplateResponse(request, "child/test.html", {
         "word_id": word_id,
-        "word_text": word_text,   # None on attempt 1 — never in source
+        "word_text": word_text,
         "audio_url": audio_url,
         "attempt": attempt,
-        "mode": user_mode,
         "word_number": idx + 1,
         "total_words": len(word_queue),
+        "well_done": well_done,
     })
 
 
@@ -129,7 +122,6 @@ def submit_word(
             )
 
     if correct or attempt == 2:
-        # Move to next word
         test["current_index"] += 1
         test["attempt_number"] = 1
     else:
@@ -137,7 +129,8 @@ def submit_word(
         test["attempt_number"] = 2
 
     request.session["test"] = test
-    return RedirectResponse("/test/word", status_code=303)
+    redirect_url = "/test/word?well_done=1" if correct else "/test/word"
+    return RedirectResponse(redirect_url, status_code=303)
 
 
 @router.get("/results")

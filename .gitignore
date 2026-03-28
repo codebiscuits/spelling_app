@@ -1,5 +1,6 @@
 .env
 static/audio/
+memory/
 __pycache__/
 *.pyc
 *.db

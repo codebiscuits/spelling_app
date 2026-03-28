@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ game.name }}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; font-family: system-ui, sans-serif; }
+
+    #game-frame {
+      width: 100vw;
+      height: 100vh;
+      border: none;
+      display: block;
+    }
+
+    #timer-overlay {
+      position: fixed;
+      top: 1rem;
+      right: 1rem;
+      background: rgba(0,0,0,0.65);
+      color: white;
+      padding: 0.5rem 1rem;
+      border-radius: 999px;
+      font-size: 1.1rem;
+      font-weight: 700;
+      z-index: 100;
+      pointer-events: none;
+    }
+    #timer-overlay.warning { color: #ff6b6b; }
+
+    #time-up-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.82);
+      z-index: 200;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.5rem;
+      text-align: center;
+      color: white;
+    }
+    #time-up-overlay.show { display: flex; }
+    #time-up-overlay h1 { font-size: 3rem; }
+    #time-up-overlay p  { font-size: 1.2rem; color: #ccc; }
+    .back-btn {
+      display: inline-block;
+      padding: 0.8rem 2rem;
+      background: #4ecdc4;
+      color: white;
+      text-decoration: none;
+      border-radius: 12px;
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <iframe id="game-frame" src="/mini-games/{{ game.file }}" sandbox="allow-scripts"></iframe>
+
+  <div id="timer-overlay">&#9203; <span id="countdown">{{ duration }}</span>s</div>
+
+  <div id="time-up-overlay">
+    <h1>&#8987; Time's up!</h1>
+    <p>Great playing! Time to get back to spelling.</p>
+    <a class="back-btn" href="/child/dashboard">Back to My Dashboard</a>
+  </div>
+
+  <script>
+    var remaining = {{ duration }};
+    var countdownEl = document.getElementById('countdown');
+    var timerOverlay = document.getElementById('timer-overlay');
+    var timeUpOverlay = document.getElementById('time-up-overlay');
+
+    var interval = setInterval(function () {
+      remaining--;
+      countdownEl.textContent = remaining;
+      if (remaining <= 10) timerOverlay.classList.add('warning');
+      if (remaining <= 0) {
+        clearInterval(interval);
+        timeUpOverlay.classList.add('show');
+      }
+    }, 1000);
+  </script>
+</body>
+</html>

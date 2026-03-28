@@ -33,7 +33,7 @@
       <tr class="{{ 'correct' if a.correct else 'incorrect' }}">
         <td>{{ a.word }}</td>
         <td>{{ a.attempt_number }}</td>
-        <td>{{ '&#10003;' if a.correct else '&#10007;' }}</td>
+        <td>{{ '✓ Correct' if a.correct else '✗ Wrong' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -42,7 +42,7 @@
   {% if game_reward %}
   <div class="game-reward">
     <h2>&#127918; You've unlocked a game!</h2>
-    <a href="/mini-games/{{ game_reward.file }}" target="_blank" class="btn btn-secondary btn-large">
+    <a href="/child/games/{{ game_reward.file }}" class="btn btn-secondary btn-large">
       Play {{ game_reward.name }}
     </a>
   </div>

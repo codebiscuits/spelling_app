@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block title %}Spelling Test — Word {{ word_number }}{% endblock %}
 {% block content %}
+
+{% if well_done %}
+<div class="well-done-banner">Well done! &#127775;</div>
+{% endif %}
+
 <div class="test-progress">
   Word {{ word_number }} of {{ total_words }}
   {% if attempt == 2 %}
@@ -8,45 +13,34 @@
   {% endif %}
 </div>
 
-{# All config in data-* attributes — no inline scripts with word data #}
 <div id="test-root"
-  data-mode="{{ mode }}"
   data-attempt="{{ attempt }}"
-  data-audio-url="{{ audio_url or '' }}"
   {% if word_text %}data-word="{{ word_text }}"{% endif %}
 ></div>
 
 <form method="post" action="/test/word" id="spell-form">
   <input type="hidden" name="word_id" value="{{ word_id }}">
 
-  {% if attempt == 2 %}
-  {# Show the word prominently; JS hides it when Ready is clicked #}
-  <div id="word-display" class="word-display">{{ word_text }}</div>
-  <button type="button" id="ready-btn" class="btn btn-secondary btn-large">
-    I'm Ready!
-  </button>
-  {% endif %}
-
-  {% if mode == "audio" or attempt == 2 %}
-  <div id="audio-section" {% if attempt == 2 %}style="display:none"{% endif %}>
+  {% if attempt == 1 %}
+  {# Audio only — word never appears in source #}
+  <div id="audio-section">
     {% if audio_url %}
     <button type="button" id="play-btn" class="btn btn-secondary btn-large">
       &#9654; Play Word
     </button>
     <audio id="word-audio" src="{{ audio_url }}" preload="auto"></audio>
     {% else %}
-    <p class="audio-unavailable">Audio unavailable for this word.</p>
+    <p class="audio-unavailable">Audio unavailable — please ask for help.</p>
     {% endif %}
   </div>
   {% endif %}
 
-  {% if mode == "visual" and attempt == 1 %}
-  <div id="visual-section">
-    <div id="visual-word" class="word-display"></div>
-    <button type="button" id="hide-word-btn" class="btn btn-secondary btn-large" style="display:none">
-      I'm Ready — Hide Word
-    </button>
-  </div>
+  {% if attempt == 2 %}
+  {# Show the word; child clicks Ready to hide it and reveal input #}
+  <div id="word-display" class="word-display">{{ word_text }}</div>
+  <button type="button" id="ready-btn" class="btn btn-secondary btn-large">
+    I'm Ready — Hide Word
+  </button>
   {% endif %}
 
   <div id="answer-section" style="display:none">
