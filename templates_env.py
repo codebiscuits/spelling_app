@@ -19,6 +19,8 @@ MINI_GAMES = [
     {"file": "metaballs.html",     "name": "Metaballs",     "description": "Wobbly metaball shapes"},
     {"file": "particles.html",     "name": "Particles",     "description": "Particle fountain"},
     {"file": "starfield.html",     "name": "Starfield",     "description": "Fly through the stars"},
+    {"file": "worms.html",         "name": "Generative Worms", "description": "Wriggly worms"},
+    {"file": "flow.html",          "name": "Generative Flow", "description": "Update this description"},
 ]
 
 

@@ -41,4 +41,17 @@
     <button type="submit" class="btn btn-secondary">Warm Audio Cache</button>
   </form>
 </section>
+
+<section class="admin-section">
+  <h2>Mini Games</h2>
+  <p style="font-size:0.85rem;color:#888;margin-bottom:0.75rem">Opens without the 60-second timer.</p>
+  <div class="games-grid">
+    {% for game in mini_games_list %}
+    <a class="game-card" href="/mini-games/{{ game.file }}" target="_blank">
+      <div class="game-name">{{ game.name }}</div>
+      <div class="game-desc">{{ game.description }}</div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
 {% endblock %}

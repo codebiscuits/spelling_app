@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Generative Worms</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #0a0a15;
+  }
+  canvas {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+
+let w, h;
+function resize() {
+  w = canvas.width = window.innerWidth;
+  h = canvas.height = window.innerHeight;
+}
+window.addEventListener("resize", resize);
+resize();
+
+class Worm {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.angle = Math.random() * Math.PI * 2;
+    this.speed = 1 + Math.random() * 2;
+    this.turn = (Math.random() - 0.5) * 0.2;
+    this.size = 2 + Math.random() * 4;
+    this.life = 200 + Math.random() * 300;
+    this.hue = Math.random() * 360;
+    this.history = [];
+  }
+
+  update() {
+    this.angle += this.turn + (Math.random() - 0.5) * 0.1;
+    this.x += Math.cos(this.angle) * this.speed;
+    this.y += Math.sin(this.angle) * this.speed;
+
+    this.history.push({ x: this.x, y: this.y });
+    if (this.history.length > 20) this.history.shift();
+
+    this.life--;
+  }
+
+  draw() {
+    ctx.beginPath();
+    for (let i = 0; i < this.history.length - 1; i++) {
+      const p1 = this.history[i];
+      const p2 = this.history[i + 1];
+      ctx.strokeStyle = `hsla(${this.hue + i * 2}, 100%, 60%, ${i / this.history.length})`;
+      ctx.lineWidth = this.size;
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+    }
+    ctx.stroke();
+  }
+}
+
+let worms = [];
+
+function spawn(x, y, count = 5) {
+  for (let i = 0; i < count; i++) {
+    worms.push(new Worm(x, y));
+  }
+}
+
+canvas.addEventListener("mousemove", e => {
+  spawn(e.clientX, e.clientY, 2);
+});
+
+canvas.addEventListener("click", e => {
+  spawn(e.clientX, e.clientY, 15);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  ctx.fillStyle = "rgba(10,10,21,0.15)";
+  ctx.fillRect(0, 0, w, h);
+
+  for (let i = worms.length - 1; i >= 0; i--) {
+    let worm = worms[i];
+    worm.update();
+    worm.draw();
+
+    if (
+      worm.life <= 0 ||
+      worm.x < -50 || worm.x > w + 50 ||
+      worm.y < -50 || worm.y > h + 50
+    ) {
+      worms.splice(i, 1);
+    }
+  }
+
+  // cap population
+  if (worms.length > 500) {
+    worms.splice(0, worms.length - 500);
+  }
+}
+
+// initial ambient motion
+for (let i = 0; i < 50; i++) {
+  spawn(Math.random() * w, Math.random() * h, 1);
+}
+
+animate();
+</script>
+</body>
+</html>

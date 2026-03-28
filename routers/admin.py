@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from database import get_db
 from auth import require_admin, hash_password, generate_csrf_token, verify_csrf_token
-from templates_env import templates
+from templates_env import templates, MINI_GAMES
 
 router = APIRouter(prefix="/admin")
 
@@ -18,7 +18,8 @@ def admin_dashboard(request: Request, admin=Depends(require_admin)):
         children = db.execute("SELECT * FROM users WHERE is_admin=0 ORDER BY name").fetchall()
     csrf = generate_csrf_token(request)
     return templates.TemplateResponse(request, "admin/dashboard.html", {
-        "lists": lists, "children": children, "csrf_token": csrf
+        "lists": lists, "children": children, "csrf_token": csrf,
+        "mini_games_list": MINI_GAMES,
     })
 
 
