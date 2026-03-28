@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Pencil: tip bottom-left, eraser top-right, drawn upright then rotated 45° -->
+  <g transform="rotate(45 16 16)">
+    <!-- Eraser cap -->
+    <rect x="13" y="5" width="6" height="3.5" rx="1" fill="#FF8FA3"/>
+    <!-- Ferrule -->
+    <rect x="13" y="8.5" width="6" height="2" fill="#9BA8B4"/>
+    <!-- Body -->
+    <rect x="13" y="10.5" width="6" height="11" fill="#FFD700"/>
+    <!-- Body highlight -->
+    <line x1="14.5" y1="10.5" x2="14.5" y2="21.5" stroke="#FFE55C" stroke-width="1.2"/>
+    <!-- Wood tip -->
+    <polygon points="13,21.5 19,21.5 16,27" fill="#DEB887"/>
+    <!-- Graphite -->
+    <polygon points="14.5,24.5 17.5,24.5 16,27" fill="#555"/>
+  </g>
+</svg>

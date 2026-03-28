@@ -60,9 +60,6 @@ Go to [http://localhost:8000/login](http://localhost:8000/login) and log in with
 2. Fill in:
    - **Name** — this is what the child uses to log in (e.g. `Emma`)
    - **Date of Birth**
-   - **Test Mode** — choose between:
-     - *Audio* — the word is read aloud; the child types what they hear
-     - *Visual* — the word is shown on screen; the child clicks "Hide Word" when ready, then types from memory
    - **Password** — a simple password the child will remember
    - **Unlocked Word Lists** — tick the lists this child should have access to (start with Year 1–2)
 3. Click **Create**
@@ -84,25 +81,25 @@ They are taken straight to their dashboard.
 1. From their dashboard (or the **Start Test** button), the child clicks **Choose a Word List**
 2. They pick a list and the test begins — 10 words per test
 3. For each word:
-   - **Audio mode:** click "Play Word" to hear it, then type the spelling
-   - **Visual mode:** the word appears on screen; click "Hide Word" when ready, then type
-4. If wrong on the first attempt, the word is shown/played again for a second try (worth 1 point instead of 2)
+   - Click **Play Word** to hear it, then type the spelling
+   - If wrong on the first attempt, the word is shown on screen; click **I'm Ready — Hide Word** then type it again (worth 1 point instead of 2)
 5. After 10 words the results page shows the score, any badges or trophies earned, and — if the score was 16/20 or higher — a mini game to play as a reward
 
 ---
 
-## 8. Badges and trophies
+## 8. Badges, medals, and trophies
 
 Awards are calculated automatically after each test:
 
 | Award | Condition |
 |-------|-----------|
-| **Badge** ⭐ | Average score across all sessions for a list reaches 70% (1.4/2 per word) |
-| **Trophy** 🎉 | Every word in the list has been spelled correctly first-try at least once |
+| **Badge** ⭐ | Session score ≥ 16/20 (awarded every qualifying test) |
+| **Medal** 🏅 | ≥ 50% of the list's words spelled correctly first-try (cumulative, once per list) |
+| **Trophy** 🏆 | ≥ 95% first-try correct + all remaining words second-try correct (cumulative, once per list) |
 
-Earning a badge also **unlocks the next year group's lists** automatically:
-- Year 1–2 badge → unlocks Year 3–4
-- Year 3–4 badge → unlocks Year 5–6
+Earning a **trophy** also **unlocks the next year group's lists** automatically:
+- Year 1–2 trophy → unlocks Year 3–4
+- Year 3–4 trophy → unlocks Year 5–6
 
 ---
 

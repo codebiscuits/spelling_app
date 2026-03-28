@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+body { margin:0; overflow:hidden; background:#0a0a15; }
+canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas=c;
+const ctx=canvas.getContext("2d");
+
+let w,h;
+function resize(){ w=canvas.width=innerWidth; h=canvas.height=innerHeight; }
+addEventListener("resize",resize);
+resize();
+
+let particles=[];
+const maxParticles=700;
+
+let attractors=[];
+
+class Attractor{
+  constructor(x,y){
+    this.x=x;
+    this.y=y;
+    this.strength=Math.random()>0.5?1:-1;
+  }
+}
+
+class Particle{
+  constructor(){
+    this.x=Math.random()*w;
+    this.y=Math.random()*h;
+    this.vx=0;
+    this.vy=0;
+    this.hue=Math.random()*360;
+  }
+  update(){
+    attractors.forEach(a=>{
+      let dx=a.x-this.x;
+      let dy=a.y-this.y;
+      let d=Math.sqrt(dx*dx+dy*dy)+0.01;
+      let force=a.strength*50/(d*d);
+      this.vx+=dx/d*force;
+      this.vy+=dy/d*force;
+    });
+
+    this.vx*=0.95;
+    this.vy*=0.95;
+
+    this.x+=this.vx;
+    this.y+=this.vy;
+  }
+  draw(){
+    ctx.fillStyle=`hsla(${this.hue},100%,70%,0.6)`;
+    ctx.fillRect(this.x,this.y,1.5,1.5);
+  }
+}
+
+for(let i=0;i<maxParticles;i++) particles.push(new Particle());
+
+addEventListener("click",e=>{
+  attractors.push(new Attractor(e.clientX,e.clientY));
+  if(attractors.length>5) attractors.shift();
+});
+
+function loop(){
+  requestAnimationFrame(loop);
+  ctx.fillStyle="rgba(10,10,21,0.1)";
+  ctx.fillRect(0,0,w,h);
+
+  particles.forEach(p=>{
+    p.update();
+    p.draw();
+  });
+}
+loop();
+</script>
+</body>
+</html>

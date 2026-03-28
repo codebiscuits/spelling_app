@@ -7,7 +7,7 @@ A web-based spelling practice app for primary school children. Children listen t
 - **Audio-first testing** — words are read aloud using text-to-speech; no reading required to take a test
 - **Two-attempt scoring** — 2 points for first-try correct, 1 point for second-try correct; on a second attempt the word is shown visually so the child can study it
 - **Adaptive word selection** — words the child struggles with appear more frequently; unseen words are prioritised over well-known ones
-- **Badges and trophies** — awarded as children improve; earning a badge unlocks the next year group's word list
+- **Badges, medals, and trophies** — awarded as children improve; earning a trophy unlocks the next year group's word list
 - **Progress tracking** — per-list progress bars on the child dashboard show first-try and second-try mastery at a glance
 - **Mini game rewards** — scoring 16/20 or higher unlocks a 60-second interactive canvas game as a reward
 - **Admin interface** — manage children, word lists, and view detailed per-child performance stats
@@ -121,18 +121,19 @@ Children log in with their name and password. From their dashboard they can:
 | Wrong on both attempts | 0 |
 | **Maximum per test** | **20** |
 
-### Badges and trophies
+### Badges, medals, and trophies
 
-| Award | Condition |
-|---|---|
-| 🏅 Badge | Average score across all sessions ≥ 1.4 / 2.0 per word (70%) |
-| 🎉 Trophy | Every word in the list spelled correctly first-try at least once |
+| Award | Condition | Frequency |
+|---|---|---|
+| ⭐ Badge | Session score ≥ 16/20 | Every qualifying session |
+| 🏅 Medal | ≥ 50% of the list's words spelled correctly first-try (cumulative, across all sessions) | Once per list |
+| 🏆 Trophy | ≥ 95% of words first-try correct + all remaining words second-try correct (cumulative) | Once per list |
 
 ### List unlock
 
-The next year group's lists unlock automatically when a child has:
-- Spelled **≥ 95%** of the current list's words correctly on the **first attempt** (at least once, across any session)
-- Spelled all remaining words correctly on the **second attempt** at least once
+The next year group's lists unlock automatically when a child earns a **trophy** for the current list:
+- ≥ 95% of words spelled correctly on the **first attempt** (at least once, across any session)
+- All remaining words spelled correctly on the **second attempt** at least once
 
 This ensures children are genuinely ready before moving on.
 
@@ -157,6 +158,7 @@ spelling_app/
 ├── static/
 │   ├── css/style.css
 │   ├── js/spelling.js
+│   ├── img/                 # SVG icons: badge, medal, trophy, favicon
 │   └── audio/               # Cached .mp3 files (git-ignored)
 ├── templates/
 │   ├── base.html

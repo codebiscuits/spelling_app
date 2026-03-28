@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+body { margin:0; overflow:hidden; background:#0a0a15; }
+canvas { display:block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = c;
+const ctx = canvas.getContext("2d");
+
+let w,h;
+function resize(){ w=canvas.width=innerWidth; h=canvas.height=innerHeight; }
+addEventListener("resize", resize);
+resize();
+
+let blobs=[];
+const maxBlobs=80;
+
+class Blob{
+  constructor(x,y){
+    this.x=x;
+    this.y=y;
+    this.radius=Math.random()*20+10;
+    this.growth=Math.random()*0.6+0.2;
+    this.life=200+Math.random()*200;
+    this.hue=Math.random()*360;
+  }
+  update(){
+    this.radius+=this.growth;
+    this.life--;
+  }
+  draw(){
+    const grad=ctx.createRadialGradient(this.x,this.y,0,this.x,this.y,this.radius);
+    grad.addColorStop(0,`hsla(${this.hue},100%,60%,0.4)`);
+    grad.addColorStop(1,`hsla(${this.hue},100%,60%,0)`);
+    ctx.fillStyle=grad;
+    ctx.beginPath();
+    ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function spawn(x,y,n){
+  for(let i=0;i<n;i++){
+    if(blobs.length>maxBlobs) blobs.shift();
+    blobs.push(new Blob(x,y));
+  }
+}
+
+addEventListener("mousemove",e=>spawn(e.clientX,e.clientY,2));
+addEventListener("click",e=>spawn(e.clientX,e.clientY,10));
+
+function loop(){
+  requestAnimationFrame(loop);
+  ctx.fillStyle="rgba(10,10,21,0.1)";
+  ctx.fillRect(0,0,w,h);
+
+  blobs.forEach((b,i)=>{
+    b.update();
+    b.draw();
+    if(b.life<=0) blobs.splice(i,1);
+  });
+}
+loop();
+</script>
+</body>
+</html>

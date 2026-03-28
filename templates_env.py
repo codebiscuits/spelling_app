@@ -20,7 +20,10 @@ MINI_GAMES = [
     {"file": "particles.html",     "name": "Particles",     "description": "Particle fountain"},
     {"file": "starfield.html",     "name": "Starfield",     "description": "Fly through the stars"},
     {"file": "worms.html",         "name": "Generative Worms", "description": "Wriggly worms"},
-    {"file": "flow.html",          "name": "Generative Flow", "description": "Update this description"},
+    {"file": "flow.html",          "name": "Generative Flow", "description": "Flowing particles"},
+    {"file": "ink_drops.html", "name": "Ink Drops", "description": "Fluid diffusion blobs"},
+    {"file": "worm_trails.html", "name": "Worm Trails", "description": "Organic, snake-like motion"},
+    {"file": "magnetic_lines.html", "name": "Magnetic Field Lines", "description": "Particles aligning to invisible forces"},
 ]
 
 
