@@ -36,11 +36,7 @@ def select_words(user_id: int, list_id: int, n: int, db) -> list[int]:
         if rows:
             avg = sum(r["word_score"] for r in rows) / len(rows)
         else:
-            avg = 2.0  # no history → treat as max score for neutral weight? No — treat as unseen.
-            # Actually unseen words should be weighted the same as fully-correct words
-            # so they get a fair chance. Weight = 1/(2+0.5) = 0.4.
-            # Struggling words (avg≈0) get weight = 1/0.5 = 2.0 — 5x more likely.
-            avg = 2.0
+            avg = 1.0  # unseen → neutral midpoint of 0–2 range
         weight = 1.0 / (avg + 0.5)
         weights.append(weight)
 
