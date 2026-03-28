@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Login — Spelling Practice{% endblock %}
+{% block content %}
+<div class="login-card">
+  <h1>&#9733; Spelling Practice</h1>
+  <p class="subtitle">Log in to start your spelling test!</p>
+
+  {% if error %}
+  <p class="error-msg">Wrong name or password. Try again!</p>
+  {% endif %}
+
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field">
+      <label for="username">Name</label>
+      <input type="text" id="username" name="username" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit" class="btn btn-primary btn-large">Log In</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Edit: {{ list.name }}{% endblock %}
+{% block content %}
+<h1>Edit Word List: {{ list.name }}</h1>
+
+<section>
+  <h2>List Details</h2>
+  <form method="post" action="/admin/lists/{{ list.id }}/edit" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="name" value="{{ list.name }}" required>
+    <input type="number" name="year_group" value="{{ list.year_group or '' }}" placeholder="Year group" min="1" max="6">
+    <button type="submit" class="btn btn-primary">Save</button>
+  </form>
+</section>
+
+<section>
+  <h2>Words ({{ words|length }})</h2>
+  <form method="post" action="/admin/lists/{{ list.id }}/words/add" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="word" placeholder="Add a word" required>
+    <button type="submit" class="btn btn-primary">Add</button>
+  </form>
+
+  <table class="admin-table">
+    <thead><tr><th>Word</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for w in words %}
+      <tr>
+        <td>{{ w.word }}</td>
+        <td>
+          <form method="post" action="/admin/lists/{{ list.id }}/words/{{ w.id }}/delete" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<p><a href="/admin/lists" class="btn btn-secondary">&#8592; Back to Lists</a></p>
+{% endblock %}

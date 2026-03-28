@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}My Dashboard{% endblock %}
+{% block content %}
+<h1>Hello, {{ child.name }}! &#127775;</h1>
+
+<div class="card-row">
+  <a href="/child/pick-list" class="btn btn-primary btn-large">Start a Spelling Test</a>
+</div>
+
+{% if unlocked %}
+<section>
+  <h2>Your Word Lists</h2>
+  <div class="badge-wall">
+    {% for lst in unlocked %}
+    <div class="badge-card">
+      <div class="badge-name">{{ lst.name }}</div>
+      <div class="badge-icons">
+        {% if lst.id in badge_list_ids %}
+          <span class="badge-icon trophy" title="Badge earned!">&#127942;</span>
+        {% endif %}
+        {% if lst.id in trophy_list_ids %}
+          <span class="badge-icon trophy" title="Trophy earned!">&#127881;</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if recent_sessions %}
+<section>
+  <h2>Recent Tests</h2>
+  <table class="scores-table">
+    <thead>
+      <tr><th>List</th><th>Score</th><th>Date</th></tr>
+    </thead>
+    <tbody>
+      {% for s in recent_sessions %}
+      <tr>
+        <td>{{ s.list_name }}</td>
+        <td>{{ s.score }} / {{ s.max_score }}</td>
+        <td>{{ s.timestamp[:10] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section>
+  <h2>&#127918; Mini Games</h2>
+  <div class="games-grid">
+    {% for game in mini_games %}
+    <a class="game-card" href="/mini-games/{{ game.file }}" target="_blank">
+      <div class="game-name">{{ game.name }}</div>
+      <div class="game-desc">{{ game.description }}</div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endblock %}

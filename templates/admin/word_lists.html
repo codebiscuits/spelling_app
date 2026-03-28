@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Word Lists{% endblock %}
+{% block content %}
+<h1>Word Lists</h1>
+
+<section>
+  <h2>Create New List</h2>
+  <form method="post" action="/admin/lists/create" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="text" name="name" placeholder="List name" required>
+    <input type="number" name="year_group" placeholder="Year group (optional)" min="1" max="6">
+    <button type="submit" class="btn btn-primary">Create</button>
+  </form>
+</section>
+
+<section>
+  <table class="admin-table">
+    <thead>
+      <tr><th>Name</th><th>Year Group</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for lst in lists %}
+      <tr>
+        <td><a href="/admin/lists/{{ lst.id }}/edit">{{ lst.name }}</a></td>
+        <td>{{ lst.year_group or '—' }}</td>
+        <td>
+          <a href="/admin/lists/{{ lst.id }}/edit" class="btn btn-sm">Edit</a>
+          <form method="post" action="/admin/lists/{{ lst.id }}/delete" style="display:inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-sm btn-danger"
+                    onclick="return confirm('Delete this list and all its words?')">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

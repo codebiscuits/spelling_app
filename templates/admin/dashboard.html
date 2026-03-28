@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Admin Dashboard{% endblock %}
+{% block content %}
+<h1>Admin Dashboard</h1>
+
+{% if request.query_params.get('warmed') %}
+<div class="flash-success">Audio cache warmed for {{ request.query_params['warmed'] }} words.</div>
+{% endif %}
+
+<div class="admin-grid">
+  <section class="admin-section">
+    <div class="section-header">
+      <h2>Word Lists ({{ lists|length }})</h2>
+      <a href="/admin/lists" class="btn btn-secondary">Manage</a>
+    </div>
+    <ul>
+      {% for lst in lists %}
+      <li><a href="/admin/lists/{{ lst.id }}/edit">{{ lst.name }}</a>
+        {% if lst.year_group %}(Y{{ lst.year_group }}){% endif %}</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="admin-section">
+    <div class="section-header">
+      <h2>Children ({{ children|length }})</h2>
+      <a href="/admin/children/new" class="btn btn-secondary">Add Child</a>
+    </div>
+    <ul>
+      {% for child in children %}
+      <li><a href="/admin/children/{{ child.id }}">{{ child.name }}</a></li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+
+<section class="admin-section">
+  <h2>Audio Cache</h2>
+  <form method="post" action="/admin/warm-audio-cache">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token if csrf_token is defined else '' }}">
+    <button type="submit" class="btn btn-secondary">Warm Audio Cache</button>
+  </form>
+</section>
+{% endblock %}

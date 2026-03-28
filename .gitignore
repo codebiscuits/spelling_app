@@ -1,0 +1,8 @@
+.env
+static/audio/
+__pycache__/
+*.pyc
+*.db
+*.sqlite3
+.venv/
+venv/

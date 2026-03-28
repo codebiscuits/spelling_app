@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}{{ child.name }} — Detail{% endblock %}
+{% block content %}
+<div class="detail-header">
+  <h1>{{ child.name }}</h1>
+  <a href="/admin/children/{{ child.id }}/edit" class="btn btn-secondary">Edit</a>
+</div>
+
+<p>DOB: {{ child.dob }} &nbsp;|&nbsp; Mode: {{ child.mode }}</p>
+
+<section>
+  <h2>Badges &amp; Trophies</h2>
+  {% if badges %}
+  <ul class="badge-list">
+    {% for b in badges %}
+    <li>
+      {{ '&#127942;' if b.badge_type == 'badge' else '&#127881;' }}
+      {{ b.badge_type|title }} — List #{{ b.list_id }} — {{ b.earned_at[:10] }}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>None yet.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Unlocked Lists</h2>
+  {% set unlocked_ids_set = unlocked | map(attribute='list_id') | list %}
+  <form method="post" action="/admin/children/{{ child.id }}/unlock">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <select name="list_id">
+      {% for lst in all_lists %}
+      {% if lst.id not in unlocked_ids_set %}
+      <option value="{{ lst.id }}">{{ lst.name }}</option>
+      {% endif %}
+      {% endfor %}
+    </select>
+    <button type="submit" class="btn btn-secondary">Unlock List</button>
+  </form>
+  <ul>
+    {% for u in unlocked %}
+    <li>{{ u.name }} (since {{ u.unlocked_at[:10] }})</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section>
+  <h2>Test History</h2>
+  {% if sessions %}
+  <canvas id="score-chart" width="600" height="200"></canvas>
+  <script>
+    new Chart(document.getElementById('score-chart'), {
+      type: 'line',
+      data: {
+        labels: [{% for s in sessions %}"{{ s.timestamp[:10] }}"{% if not loop.last %},{% endif %}{% endfor %}],
+        datasets: [{
+          label: 'Score',
+          data: [{% for s in sessions %}{{ s.score }}{% if not loop.last %},{% endif %}{% endfor %}],
+          borderColor: 'var(--color-1)',
+          backgroundColor: 'transparent',
+          tension: 0.3,
+        }]
+      },
+      options: { scales: { y: { min: 0, max: {{ sessions[0].max_score if sessions else 20 }} } } }
+    });
+  </script>
+
+  <table class="admin-table">
+    <thead><tr><th>List</th><th>Score</th><th>Date</th></tr></thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr>
+        <td>{{ s.list_name }}</td>
+        <td>{{ s.score }} / {{ s.max_score }}</td>
+        <td>{{ s.timestamp[:10] }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No tests yet.</p>
+  {% endif %}
+</section>
+
+{% if word_stats %}
+<section>
+  <h2>Word Performance</h2>
+  <table class="admin-table">
+    <thead><tr><th>Word</th><th>Sessions</th><th>First-try correct</th></tr></thead>
+    <tbody>
+      {% for w in word_stats %}
+      <tr>
+        <td>{{ w.word }}</td>
+        <td>{{ w.sessions }}</td>
+        <td>{{ w.first_try }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<p><a href="/admin/" class="btn btn-secondary">&#8592; Dashboard</a></p>
+{% endblock %}

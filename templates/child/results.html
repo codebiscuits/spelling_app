@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Results{% endblock %}
+{% block content %}
+<div class="results-card">
+  <h1>Test Complete! &#127881;</h1>
+  <div class="score-display">
+    <span class="score-number">{{ session.score }}</span>
+    <span class="score-denom">/ {{ session.max_score }}</span>
+  </div>
+  <p class="list-name">{{ list.name }}</p>
+
+  {% if gamification.trophy_awarded %}
+  <div class="award-banner trophy">&#127881; Trophy Unlocked! You spelled every word perfectly first try!</div>
+  {% endif %}
+  {% if gamification.badge_awarded %}
+  <div class="award-banner badge">&#127942; Badge Earned! You're doing brilliantly!</div>
+  {% endif %}
+  {% if gamification.lists_unlocked %}
+  <div class="award-banner unlock">&#127275; New word list{{ 's' if gamification.lists_unlocked|length > 1 else '' }} unlocked!</div>
+  {% endif %}
+
+  <table class="attempts-table">
+    <thead>
+      <tr><th>Word</th><th>Attempt</th><th>Result</th></tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(last_word='', attempt1_correct=false) %}
+      {% for a in attempts %}
+      {% if a.word != ns.last_word %}
+        {% set ns.last_word = a.word %}
+        {% set ns.attempt1_correct = false %}
+      {% endif %}
+      <tr class="{{ 'correct' if a.correct else 'incorrect' }}">
+        <td>{{ a.word }}</td>
+        <td>{{ a.attempt_number }}</td>
+        <td>{{ '&#10003;' if a.correct else '&#10007;' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if game_reward %}
+  <div class="game-reward">
+    <h2>&#127918; You've unlocked a game!</h2>
+    <a href="/mini-games/{{ game_reward.file }}" target="_blank" class="btn btn-secondary btn-large">
+      Play {{ game_reward.name }}
+    </a>
+  </div>
+  {% endif %}
+
+  <div class="results-actions">
+    <a href="/child/pick-list" class="btn btn-primary">Try Another List</a>
+    <a href="/child/dashboard" class="btn btn-secondary">My Dashboard</a>
+  </div>
+</div>
+{% endblock %}

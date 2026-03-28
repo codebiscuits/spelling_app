@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Spelling Practice{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script>
+    (function () {
+      var palette = {{ current_palette().colours | tojson }};
+      // Fisher-Yates shuffle
+      for (var i = palette.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var tmp = palette[i]; palette[i] = palette[j]; palette[j] = tmp;
+      }
+      var root = document.documentElement;
+      for (var k = 0; k < palette.length; k++) {
+        root.style.setProperty('--color-' + (k + 1), palette[k]);
+      }
+    })();
+  </script>
+</head>
+<body>
+  <nav class="navbar">
+    <a class="nav-brand" href="/">&#9733; Spelling App</a>
+    <div class="nav-links">
+      {% if request.session.get('user') %}
+        <span class="nav-greeting">Hi, {{ request.session['user']['name'] }}!</span>
+        {% if request.session['user']['is_admin'] %}
+          <a href="/admin/">Dashboard</a>
+          <a href="/admin/lists">Word Lists</a>
+        {% else %}
+          <a href="/child/dashboard">My Dashboard</a>
+          <a href="/child/pick-list">Start Test</a>
+        {% endif %}
+        <a href="/logout">Logout</a>
+      {% endif %}
+    </div>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

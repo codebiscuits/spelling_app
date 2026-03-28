@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if child else 'New' }} Child{% endblock %}
+{% block content %}
+<h1>{{ 'Edit' if child else 'New Child Profile' }}</h1>
+
+<form method="post" action="{{ '/admin/children/' + child.id|string + '/edit' if child else '/admin/children/new' }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+  <div class="field">
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" value="{{ child.name if child else '' }}" required>
+  </div>
+
+  <div class="field">
+    <label for="dob">Date of Birth</label>
+    <input type="date" id="dob" name="dob" value="{{ child.dob if child else '' }}" required>
+  </div>
+
+  <div class="field">
+    <label for="mode">Test Mode</label>
+    <select id="mode" name="mode">
+      <option value="audio" {{ 'selected' if (child and child.mode == 'audio') or not child else '' }}>Audio</option>
+      <option value="visual" {{ 'selected' if child and child.mode == 'visual' else '' }}>Visual</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="password">{{ 'New Password (leave blank to keep current)' if child else 'Password' }}</label>
+    <input type="password" id="password" name="{{ 'new_password' if child else 'password' }}"
+           {{ '' if child else 'required' }}>
+  </div>
+
+  <div class="field">
+    <label>Unlocked Word Lists</label>
+    <div class="checkbox-list">
+      {% for lst in lists %}
+      <label class="checkbox-item">
+        <input type="checkbox" name="unlock_lists" value="{{ lst.id }}"
+               {{ 'checked' if lst.id in unlocked_ids else '' }}>
+        {{ lst.name }}{% if lst.year_group %} (Y{{ lst.year_group }}){% endif %}
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">{{ 'Save' if child else 'Create' }}</button>
+    <a href="{{ '/admin/children/' + child.id|string if child else '/admin/' }}" class="btn btn-secondary">Cancel</a>
+  </div>
+</form>
+
+{% if child %}
+<hr>
+<form method="post" action="/admin/children/{{ child.id }}/delete"
+      onsubmit="return confirm('Permanently delete {{ child.name }}?')">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button type="submit" class="btn btn-danger">Delete This Child</button>
+</form>
+{% endif %}
+{% endblock %}
