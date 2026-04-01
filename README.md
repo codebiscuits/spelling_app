@@ -49,28 +49,13 @@ uv sync
 
 ### 3. Create a `.env` file
 
+Run the setup script, passing your chosen admin password:
+
 ```bash
-cp .env.example .env
+bash setup_env.sh
 ```
 
-Edit `.env` with your values:
-
-```env
-SECRET_KEY=<random 64-char hex string>
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD_HASH=<bcrypt hash>
-HTTPS_ONLY=false
-```
-
-**Generate a secret key:**
-```bash
-uv run python -c "import secrets; print(secrets.token_hex(32))"
-```
-
-**Generate the admin password hash:**
-```bash
-uv run python -c "import bcrypt; print(bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode())"
-```
+This generates a secure `.env` with a random secret key, hashed password, and correct permissions. Alternatively, copy `.env.example` and fill in the values manually — see `SETUP.md` for instructions.
 
 ### 4. Run the server
 

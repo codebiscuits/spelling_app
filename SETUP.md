@@ -8,31 +8,36 @@ uv sync
 
 ## 2. Create your `.env` file
 
-Copy the example and fill in your values:
+The easiest way is to run the setup script:
+
+```bash
+bash setup_env.sh
+```
+
+It will prompt you for an admin password, then generate `.env` automatically with a random secret key, bcrypt-hashed password, and restricted file permissions (`chmod 600`).
+
+**Manual alternative:** copy the example and fill in the values yourself:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-
 ```
 SECRET_KEY=<random string>
-ADMIN_USERNAME=<your chosen admin username>
+ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=<bcrypt hash of your admin password>
 HTTPS_ONLY=false
 ```
 
-**Generating a secret key:**
+Generating a secret key:
 ```bash
 uv run python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-**Generating the admin password hash:**
+Generating the admin password hash:
 ```bash
 uv run python -c "import bcrypt; print(bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode())"
 ```
-Replace `yourpassword` with your actual admin password. Paste the output into `.env` as `ADMIN_PASSWORD_HASH`.
 
 ---
 
