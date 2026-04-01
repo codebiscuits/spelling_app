@@ -1,24 +1,19 @@
 # Setup & Getting Started
 
-## 1. Install dependencies
-
-```bash
-uv sync
-```
-
-## 2. Create your `.env` file
+## 1. Installation
 
 The easiest way is to run the setup script:
 
 ```bash
-bash setup_env.sh
+bash installation.sh
 ```
 
 It will prompt you for an admin password, then generate `.env` automatically with a random secret key, bcrypt-hashed password, and restricted file permissions (`chmod 600`).
 
-**Manual alternative:** copy the example and fill in the values yourself:
+**Manual alternative:** install python dependencies and then copy the .env.example and fill in the values yourself:
 
 ```bash
+uv sync
 cp .env.example .env
 ```
 
@@ -41,7 +36,7 @@ uv run python -c "import bcrypt; print(bcrypt.hashpw(b'yourpassword', bcrypt.gen
 
 ---
 
-## 3. Start the server
+## 2. Start the server
 
 ```bash
 uv run uvicorn main:app --reload
@@ -53,13 +48,13 @@ On first startup the database is created automatically and seeded with the UK Na
 
 ---
 
-## 4. Log in as admin
+## 3. Log in as admin
 
 Go to [http://localhost:8000/login](http://localhost:8000/login) and log in with the `ADMIN_USERNAME` and password you set in `.env`.
 
 ---
 
-## 5. Add a child
+## 4. Add a child
 
 1. From the admin dashboard, click **Add Child**
 2. Fill in:
@@ -71,7 +66,7 @@ Go to [http://localhost:8000/login](http://localhost:8000/login) and log in with
 
 ---
 
-## 6. Child logs in
+## 5. Child logs in
 
 The child goes to the login page and enters:
 - **Name** — exactly as entered by the admin (case-sensitive)
@@ -81,7 +76,7 @@ They are taken straight to their dashboard.
 
 ---
 
-## 7. Taking a spelling test
+## 6. Taking a spelling test
 
 1. From their dashboard (or the **Start Test** button), the child clicks **Choose a Word List**
 2. They pick a list and the test begins — 10 words per test
@@ -92,7 +87,7 @@ They are taken straight to their dashboard.
 
 ---
 
-## 8. Badges, medals, and trophies
+## 7. Badges, medals, and trophies
 
 Awards are calculated automatically after each test:
 
@@ -108,7 +103,7 @@ Earning a **trophy** also **unlocks the next year group's lists** automatically:
 
 ---
 
-## 9. Managing word lists
+## 8. Managing word lists
 
 Go to **Admin → Word Lists** to:
 - Create custom lists with any name and optional year group
@@ -119,7 +114,7 @@ Custom lists must be unlocked manually for each child via **Edit Child → Unloc
 
 ---
 
-## 10. Viewing a child's progress
+## 9. Viewing a child's progress
 
 From the admin dashboard, click a child's name to see:
 - A score chart across recent sessions
