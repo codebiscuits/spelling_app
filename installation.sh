@@ -7,25 +7,28 @@ if ! command -v uv &> /dev/null; then
     exit 1
 fi
 
-# 2. Guardrail check: Don't overwrite existing files
+# 2. Install python dependecies
+uv sync
+
+# 3. Guardrail check: Don't overwrite existing files
 if [ -f .env ]; then
     echo ".env already exists — delete it first if you want to regenerate it."
     exit 1
 fi
 
-# 3. Securely read the password (it won't echo to the screen or process list)
+# 4. Securely read the password (it won't echo to the screen or process list)
 read -s -p "Enter admin password: " PASSWORD
 echo # Moves to a new line after the hidden input
 
-# 4. Create an empty .env and lock down permissions immediately (chmod 600)
+# 5. Create an empty .env and lock down permissions immediately (chmod 600)
 # This prevents other users on the system from reading your secrets.
 touch .env
 chmod 600 .env
 
-# 5. Export the password temporarily to the environment so Python can read it safely
+# 6. Export the password temporarily to the environment so Python can read it safely
 export TEMP_PASS="$PASSWORD"
 
-# 6. Run Python once, asking 'uv' to ensure 'bcrypt' is available
+# 7. Populate .env file with secrets
 echo "Generating secure environment file..."
 uv run --with bcrypt python -c "
 import os, secrets, bcrypt
@@ -41,8 +44,10 @@ print(f'ADMIN_PASSWORD_HASH={pw_hash}')
 print('HTTPS_ONLY=false')
 " > .env
 
-# 7. Clean up memory
+echo ".env created successfully with restricted file permissions."
+
+# 8. Clean up memory
 unset TEMP_PASS
 unset PASSWORD
 
-echo ".env created successfully with restricted file permissions."
+echo "Setup completed successfully."
