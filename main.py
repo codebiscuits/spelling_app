@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import RedirectResponse
@@ -17,7 +18,14 @@ from routers import spelling as spelling_router
 load_dotenv()
 
 # ── App setup ──────────────────────────────────────────────────────────────
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    with get_db() as db:
+        seed(db)
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 secret_key = os.getenv("SECRET_KEY")
 if not secret_key:
@@ -37,13 +45,6 @@ app.mount("/mini-games", StaticFiles(directory="mini_games"), name="mini_games")
 app.include_router(admin_router.router)
 app.include_router(child_router.router)
 app.include_router(spelling_router.router)
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
-    with get_db() as db:
-        seed(db)
 
 
 # ── Login / Logout ─────────────────────────────────────────────────────────

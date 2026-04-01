@@ -8,6 +8,12 @@
   var answerSec   = document.getElementById('answer-section');
   var answerInput = document.getElementById('answer');
 
+  var wellDoneBanner = document.querySelector('.well-done-banner');
+
+  function dismissWellDone() {
+    if (wellDoneBanner) wellDoneBanner.style.display = 'none';
+  }
+
   // ── Attempt 1: play button reveals input ─────────────────────────────────
   if (attempt === 1) {
     var playBtn = document.getElementById('play-btn');
@@ -15,6 +21,7 @@
 
     if (playBtn && audioEl) {
       playBtn.addEventListener('click', function () {
+        dismissWellDone();
         audioEl.play();
         answerSec.style.display = '';
         answerInput.focus();
@@ -33,6 +40,7 @@
 
     if (readyBtn) {
       readyBtn.addEventListener('click', function () {
+        dismissWellDone();
         if (wordDisplay) wordDisplay.style.display = 'none';
         readyBtn.style.display = 'none';
         answerSec.style.display = '';
