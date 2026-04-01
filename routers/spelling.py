@@ -158,6 +158,7 @@ def results(request: Request, user=Depends(require_child)):
     request.session.pop("test", None)
 
     # Mini game reward: unlock when score >= 10/20 (50%)
+    # When adjusting this threshold, update README.md and SETUP.md as well
     game_reward = None
     if MINI_GAMES and session["score"] >= 10:
         game_reward = random.choice(MINI_GAMES)
