@@ -9,7 +9,7 @@ A web-based spelling practice app for primary school children. Children listen t
 - **Adaptive word selection** — words the child struggles with appear more frequently; unseen words are prioritised over well-known ones
 - **Badges, medals, and trophies** — awarded as children improve; earning a trophy unlocks the next year group's word list
 - **Progress tracking** — per-list progress bars on the child dashboard show first-try and second-try mastery at a glance
-- **Mini game rewards** — scoring 16/20 or higher unlocks a 60-second interactive canvas game as a reward
+- **Mini game rewards** — scoring 10/20 or higher unlocks a 60-second interactive canvas game as a reward
 - **Admin interface** — manage children, word lists, and view detailed per-child performance stats
 - **UK National Curriculum word lists** — Years 1–2, 3–4, and 5–6 lists seeded automatically on first run
 - **Daily colour palettes** — the UI colour scheme rotates through 7 palettes, one per day of the week
@@ -86,16 +86,15 @@ Children log in with their name and password. From their dashboard they can:
 - Start a spelling test from any unlocked word list
 - View their progress bars showing how many words they have mastered
 - See recent test scores
-- Play a mini game (only available after scoring ≥ 16/20 on a test)
 
 ### Test flow
 
-1. A word is read aloud — the child clicks **Play Word** to hear it
+1. A word is read aloud — the child can click **Play Word** to hear it again
 2. The child types their spelling and submits
 3. If correct, a "Well done!" message appears on the next word
 4. If wrong, the word is shown on screen; the child clicks **I'm Ready — Hide Word** then types it again
 5. After 10 words, results are shown with a full breakdown
-6. Scoring ≥ 16/20 unlocks a mini game reward
+6. Scoring ≥ 10/20 unlocks a mini game reward
 
 ## Scoring and progression
 
