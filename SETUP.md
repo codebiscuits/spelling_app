@@ -88,7 +88,7 @@ They are taken straight to their dashboard.
 3. For each word:
    - Click **Play Word** to hear it, then type the spelling
    - If wrong on the first attempt, the word is shown on screen; click **I'm Ready — Hide Word** then type it again (worth 1 point instead of 2)
-5. After 10 words the results page shows the score, any badges or trophies earned, and — if the score was 16/20 or higher — a mini game to play as a reward
+5. After 10 words the results page shows the score, any badges or trophies earned, and — if the score was 10/20 or higher — a mini game to play as a reward
 
 ---
 
