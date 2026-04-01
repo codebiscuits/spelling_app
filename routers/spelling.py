@@ -157,9 +157,9 @@ def results(request: Request, user=Depends(require_child)):
     # Clear test session state
     request.session.pop("test", None)
 
-    # Mini game reward: unlock when score >= 16/20 (80%)
+    # Mini game reward: unlock when score >= 10/20 (50%)
     game_reward = None
-    if MINI_GAMES and session["score"] >= 16:
+    if MINI_GAMES and session["score"] >= 10:
         game_reward = random.choice(MINI_GAMES)
 
     return templates.TemplateResponse(request, "child/results.html", {
