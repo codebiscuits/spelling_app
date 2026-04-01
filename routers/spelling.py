@@ -73,6 +73,7 @@ def show_word(request: Request, user=Depends(require_child)):
         # Attempt 2: word shown visually so child can study it before second try
         audio_url = get_audio_url(word_row["word"], db) if attempt == 1 else None
         word_text = word_row["word"] if attempt == 2 else None
+        phrase_audio_url = get_audio_url("not quite, try again", db) if attempt == 2 else None
 
     return templates.TemplateResponse(request, "child/test.html", {
         "word_id": word_id,
@@ -82,6 +83,7 @@ def show_word(request: Request, user=Depends(require_child)):
         "word_number": idx + 1,
         "total_words": len(word_queue),
         "well_done": well_done,
+        "phrase_audio_url": phrase_audio_url,
     })
 
 
