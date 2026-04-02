@@ -38,7 +38,7 @@
   {% if attempt == 2 %}
   {# Show the word; child clicks Ready to hide it and reveal input #}
   {% if phrase_audio_url %}
-  <audio src="{{ phrase_audio_url }}" autoplay></audio>
+  <audio id="phrase-audio" src="{{ phrase_audio_url }}"></audio>
   {% endif %}
   <div id="word-display" class="word-display">{{ word_text }}</div>
   <button type="button" id="ready-btn" class="btn btn-secondary btn-large">
