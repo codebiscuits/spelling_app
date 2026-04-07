@@ -1,42 +1,42 @@
 # Setup & Getting Started
 
-## 1. Install dependencies
+## 1. Installation
+
+The easiest way is to run the setup script:
+
+```bash
+bash installation.sh
+```
+
+It will prompt you for an admin password, then generate `.env` automatically with a random secret key, bcrypt-hashed password, and restricted file permissions (`chmod 600`).
+
+**Manual alternative:** install python dependencies and then copy the .env.example and fill in the values yourself:
 
 ```bash
 uv sync
-```
-
-## 2. Create your `.env` file
-
-Copy the example and fill in your values:
-
-```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-
 ```
 SECRET_KEY=<random string>
-ADMIN_USERNAME=<your chosen admin username>
+ADMIN_USERNAME=admin
 ADMIN_PASSWORD_HASH=<bcrypt hash of your admin password>
 HTTPS_ONLY=false
 ```
 
-**Generating a secret key:**
+Generating a secret key:
 ```bash
 uv run python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-**Generating the admin password hash:**
+Generating the admin password hash:
 ```bash
 uv run python -c "import bcrypt; print(bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode())"
 ```
-Replace `yourpassword` with your actual admin password. Paste the output into `.env` as `ADMIN_PASSWORD_HASH`.
 
 ---
 
-## 3. Start the server
+## 2. Start the server
 
 ```bash
 uv run uvicorn main:app --reload
@@ -48,13 +48,13 @@ On first startup the database is created automatically and seeded with the UK Na
 
 ---
 
-## 4. Log in as admin
+## 3. Log in as admin
 
 Go to [http://localhost:8000/login](http://localhost:8000/login) and log in with the `ADMIN_USERNAME` and password you set in `.env`.
 
 ---
 
-## 5. Add a child
+## 4. Add a child
 
 1. From the admin dashboard, click **Add Child**
 2. Fill in:
@@ -66,7 +66,7 @@ Go to [http://localhost:8000/login](http://localhost:8000/login) and log in with
 
 ---
 
-## 6. Child logs in
+## 5. Child logs in
 
 The child goes to the login page and enters:
 - **Name** — exactly as entered by the admin (case-sensitive)
@@ -76,18 +76,18 @@ They are taken straight to their dashboard.
 
 ---
 
-## 7. Taking a spelling test
+## 6. Taking a spelling test
 
 1. From their dashboard (or the **Start Test** button), the child clicks **Choose a Word List**
 2. They pick a list and the test begins — 10 words per test
 3. For each word:
    - Click **Play Word** to hear it, then type the spelling
    - If wrong on the first attempt, the word is shown on screen; click **I'm Ready — Hide Word** then type it again (worth 1 point instead of 2)
-5. After 10 words the results page shows the score, any badges or trophies earned, and — if the score was 16/20 or higher — a mini game to play as a reward
+5. After 10 words the results page shows the score, any badges or trophies earned, and — if the score was 10/20 or higher — a mini game to play as a reward
 
 ---
 
-## 8. Badges, medals, and trophies
+## 7. Badges, medals, and trophies
 
 Awards are calculated automatically after each test:
 
@@ -103,7 +103,7 @@ Earning a **trophy** also **unlocks the next year group's lists** automatically:
 
 ---
 
-## 9. Managing word lists
+## 8. Managing word lists
 
 Go to **Admin → Word Lists** to:
 - Create custom lists with any name and optional year group
@@ -114,7 +114,7 @@ Custom lists must be unlocked manually for each child via **Edit Child → Unloc
 
 ---
 
-## 10. Viewing a child's progress
+## 9. Viewing a child's progress
 
 From the admin dashboard, click a child's name to see:
 - A score chart across recent sessions

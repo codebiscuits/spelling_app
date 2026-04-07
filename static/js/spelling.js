@@ -8,6 +8,21 @@
   var answerSec   = document.getElementById('answer-section');
   var answerInput = document.getElementById('answer');
 
+  var wellDoneBanner = document.querySelector('.well-done-banner');
+
+  function dismissWellDone() {
+    if (wellDoneBanner) wellDoneBanner.style.display = 'none';
+  }
+
+  function playAudio(el) {
+    var promise = el.play();
+    if (promise !== undefined) {
+      promise.catch(function (err) {
+        console.warn('Audio playback failed:', err);
+      });
+    }
+  }
+
   // ── Attempt 1: play button reveals input ─────────────────────────────────
   if (attempt === 1) {
     var playBtn = document.getElementById('play-btn');
@@ -15,7 +30,8 @@
 
     if (playBtn && audioEl) {
       playBtn.addEventListener('click', function () {
-        audioEl.play();
+        dismissWellDone();
+        playAudio(audioEl);
         answerSec.style.display = '';
         answerInput.focus();
       });
@@ -26,13 +42,19 @@
     }
   }
 
-  // ── Attempt 2: "I'm Ready" hides the word and reveals input ──────────────
+  // ── Attempt 2: auto-play phrase, then "I'm Ready" hides the word ─────────
   if (attempt === 2) {
+    var phraseAudio = document.getElementById('phrase-audio');
     var readyBtn    = document.getElementById('ready-btn');
     var wordDisplay = document.getElementById('word-display');
 
+    if (phraseAudio) {
+      playAudio(phraseAudio);
+    }
+
     if (readyBtn) {
       readyBtn.addEventListener('click', function () {
+        dismissWellDone();
         if (wordDisplay) wordDisplay.style.display = 'none';
         readyBtn.style.display = 'none';
         answerSec.style.display = '';
