@@ -19,7 +19,7 @@ def get_audio_url(word_text: str, db) -> str | None:
     cached = db.execute(
         "SELECT file_path FROM audio_cache WHERE word_text=?", (word_lower,)
     ).fetchone()
-    if cached:
+    if cached and os.path.exists(cached["file_path"]):
         return "/" + cached["file_path"].replace("\\", "/")
 
     safe_name = re.sub(r"[^a-z0-9]", "_", word_lower) + ".mp3"
