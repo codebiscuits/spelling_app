@@ -31,6 +31,20 @@ def start_test(list_id: int, request: Request, user=Depends(require_child)):
         if not word_ids:
             raise HTTPException(400, "No words in list")
 
+        word_texts = [
+            db.execute("SELECT word FROM words WHERE id=?", (wid,)).fetchone()["word"]
+            for wid in word_ids
+        ]
+
+    # Pre-generate audio outside the main transaction so that gTTS calls
+    # (which can be slow) don't hold the DB write lock.  Rapid successive
+    # calls mid-test can trigger Google's soft rate-limit, returning
+    # near-silent audio instead of raising an error.
+    for word_text in word_texts:
+        with get_db() as db:
+            get_audio_url(word_text, db)
+
+    with get_db() as db:
         now = datetime.now(timezone.utc).isoformat()
         cur = db.execute(
             "INSERT INTO test_sessions (timestamp, user_id, list_id, score, max_score) VALUES (?,?,?,0,?)",

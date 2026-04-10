@@ -30,6 +30,19 @@ def get_audio_url(word_text: str, db) -> str | None:
         tts = gTTS(text=word_text, lang="en", tld="co.uk")
         tts.save(file_path)
 
+        # Guard against soft rate-limit responses: Google sometimes returns a
+        # 200 with near-silent minimal audio instead of a proper error.  Any
+        # legitimate word audio is several kilobytes; if the file is tiny it
+        # is unusable.
+        file_size = os.path.getsize(file_path)
+        if file_size < 2000:
+            logger.warning(
+                "TTS output for %r is suspiciously small (%d bytes) — discarding",
+                word_text, file_size,
+            )
+            os.remove(file_path)
+            return None
+
         now = datetime.now(timezone.utc).isoformat()
         db.execute(
             "INSERT OR REPLACE INTO audio_cache (word_text, file_path, created_at) VALUES (?,?,?)",

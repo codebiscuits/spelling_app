@@ -29,10 +29,8 @@ def test_regenerates_when_cached_file_missing(db, tmp_path, mocker):
     )
     db.commit()
 
-    real_output = tmp_path / "cat.mp3"
-
     def fake_save(path):
-        open(path, "wb").write(b"fake mp3")
+        open(path, "wb").write(b"x" * 3000)
 
     mock_tts = MagicMock()
     mock_tts.return_value.save.side_effect = fake_save
@@ -47,7 +45,7 @@ def test_regenerates_when_cached_file_missing(db, tmp_path, mocker):
 
 def test_generates_and_caches_new_audio(db, tmp_path, mocker):
     def fake_save(path):
-        open(path, "wb").write(b"fake mp3")
+        open(path, "wb").write(b"x" * 3000)
 
     mock_tts = MagicMock()
     mock_tts.return_value.save.side_effect = fake_save
@@ -68,3 +66,23 @@ def test_returns_none_on_gtts_failure(db, tmp_path, mocker):
 
     url = get_audio_url("fish", db)
     assert url is None
+
+
+def test_returns_none_when_generated_file_too_small(db, tmp_path, mocker):
+    """A suspiciously small file (soft rate-limit response) should be discarded."""
+    def fake_save(path):
+        open(path, "wb").write(b"x" * 100)
+
+    mock_tts = MagicMock()
+    mock_tts.return_value.save.side_effect = fake_save
+    mocker.patch("services.tts.gTTS", mock_tts)
+    mocker.patch("services.tts.AUDIO_DIR", str(tmp_path))
+
+    url = get_audio_url("bird", db)
+
+    assert url is None
+    # File should be cleaned up
+    assert not (tmp_path / "bird.mp3").exists()
+    # Nothing should be cached
+    cached = db.execute("SELECT file_path FROM audio_cache WHERE word_text='bird'").fetchone()
+    assert cached is None
