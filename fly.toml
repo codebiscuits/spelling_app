@@ -1,28 +1,33 @@
-# fly.toml
-# Replace "spelling-app" with your chosen app name (must be globally unique on Fly)
-app = "spelling-app"
-primary_region = "lhr"
+# fly.toml app configuration file generated for spelling-app on 2026-04-24T14:09:55Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'spelling-app'
+primary_region = 'lhr'
+
+[build]
 
 [env]
-  DB_PATH    = "/data/spelling.db"
-  AUDIO_DIR  = "/data/audio"
-  HTTPS_ONLY = "true"
+  AUDIO_DIR = '/data/audio'
+  DB_PATH = '/data/spelling.db'
+  HTTPS_ONLY = 'true'
 
 [[mounts]]
-  source      = "spelling_data"
-  destination = "/data"
+  source = 'spelling_data'
+  destination = '/data'
 
 [http_service]
-  internal_port        = 8000
-  force_https          = true
-  auto_stop_machines   = true
-  auto_start_machines  = true
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
   min_machines_running = 0
 
   [http_service.concurrency]
-    type       = "connections"
+    type = 'connections'
     hard_limit = 25
     soft_limit = 20
 
-[vm]
-  size = "shared-cpu-1x"
+[[vm]]
+  size = 'shared-cpu-1x'
