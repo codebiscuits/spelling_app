@@ -1,7 +1,8 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 
-DB_PATH = "spelling.db"
+DB_PATH = os.getenv("DB_PATH", "spelling.db")
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;

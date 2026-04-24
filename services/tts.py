@@ -6,7 +6,8 @@ from gtts import gTTS
 
 logger = logging.getLogger(__name__)
 
-AUDIO_DIR = "static/audio"
+AUDIO_DIR = os.getenv("AUDIO_DIR", "static/audio")
+AUDIO_URL_PREFIX = "/static/audio"
 
 
 def get_audio_url(word_text: str, db) -> str | None:
@@ -15,15 +16,15 @@ def get_audio_url(word_text: str, db) -> str | None:
     Returns None on failure.
     """
     word_lower = word_text.lower().strip()
+    safe_name = re.sub(r"[^a-z0-9]", "_", word_lower) + ".mp3"
+    file_path = os.path.join(AUDIO_DIR, safe_name)
+    audio_url = f"{AUDIO_URL_PREFIX}/{safe_name}"
 
     cached = db.execute(
         "SELECT file_path FROM audio_cache WHERE word_text=?", (word_lower,)
     ).fetchone()
     if cached and os.path.exists(cached["file_path"]):
-        return "/" + cached["file_path"].replace("\\", "/")
-
-    safe_name = re.sub(r"[^a-z0-9]", "_", word_lower) + ".mp3"
-    file_path = os.path.join(AUDIO_DIR, safe_name)
+        return audio_url
 
     try:
         os.makedirs(AUDIO_DIR, exist_ok=True)
@@ -49,7 +50,7 @@ def get_audio_url(word_text: str, db) -> str | None:
             (word_lower, file_path, now),
         )
 
-        return "/" + file_path.replace("\\", "/")
+        return audio_url
 
     except Exception as e:
         logger.error("TTS failed for %r: %s", word_text, e)

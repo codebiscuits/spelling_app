@@ -39,6 +39,9 @@ app.add_middleware(
     max_age=86400 * 7,
 )
 
+audio_dir = os.getenv("AUDIO_DIR", "static/audio")
+os.makedirs(audio_dir, exist_ok=True)
+app.mount("/static/audio", StaticFiles(directory=audio_dir), name="audio")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/mini-games", StaticFiles(directory="mini_games"), name="mini_games")
 
