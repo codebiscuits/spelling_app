@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Request, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse
 from datetime import datetime, timezone
-import random
 
 from database import get_db
 from auth import require_child
@@ -175,14 +174,12 @@ def results(request: Request, user=Depends(require_child)):
 
     # Mini game reward: unlock when score >= 10/20 (50%)
     # When adjusting this threshold, update README.md and SETUP.md as well
-    game_reward = None
-    if MINI_GAMES and session["score"] >= 10:
-        game_reward = random.choice(MINI_GAMES)
+    games = MINI_GAMES if (MINI_GAMES and session["score"] >= 10) else []
 
     return templates.TemplateResponse(request, "child/results.html", {
         "session": session,
         "attempts": attempts,
         "list": list_row,
         "gamification": gamification,
-        "game_reward": game_reward,
+        "games": games,
     })

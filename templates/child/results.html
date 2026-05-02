@@ -42,12 +42,18 @@
     </tbody>
   </table>
 
-  {% if game_reward %}
-  <div class="game-reward">
-    <h2>&#127918; You've unlocked a game!</h2>
-    <a href="/child/games/{{ game_reward.file }}" class="btn btn-secondary btn-large">
-      Play {{ game_reward.name }}
-    </a>
+  {% if games %}
+  <div class="game-picker">
+    <h2>&#127918; Pick a game to play!</h2>
+    <div class="games-grid">
+      {% for game in games %}
+      <a href="/child/games/{{ game.file }}" class="game-card">
+        <img src="/static/img/game-thumbs/{{ game.file | replace('.html', '.png') }}"
+             alt="{{ game.name }}" class="game-thumb">
+        <span class="game-name">{{ game.name }}</span>
+      </a>
+      {% endfor %}
+    </div>
   </div>
   {% endif %}
 
