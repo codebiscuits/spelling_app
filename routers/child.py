@@ -115,11 +115,12 @@ def pick_list(request: Request, user=Depends(require_child)):
 GAME_FILES = {g["file"] for g in MINI_GAMES}
 
 @router.get("/games/{filename}")
-def play_game(filename: str, request: Request, user=Depends(require_child)):
+def play_game(filename: str, request: Request, score: int = 10, user=Depends(require_child)):
     if filename not in GAME_FILES:
         raise HTTPException(404)
     game = next(g for g in MINI_GAMES if g["file"] == filename)
+    duration = max(60, (min(score, 20) - 10) * 6 + 60)
     return templates.TemplateResponse(request, "child/game.html", {
         "game": game,
-        "duration": 60,
+        "duration": duration,
     })
