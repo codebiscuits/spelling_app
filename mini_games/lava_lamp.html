@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Lava Lamp</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; cursor: crosshair; }
+    #bg { position: fixed; inset: 0; background: linear-gradient(to top, #2a0a00 0%, #0d0820 35%, #050510 100%); }
+    #c { display: block; position: relative; filter: url('#gooey'); }
+    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; z-index: 10; }
+    svg { position: absolute; width: 0; height: 0; }
+  </style>
+</head>
+<body>
+<div id="bg"></div>
+<svg><defs><filter id="gooey">
+  <feGaussianBlur in="SourceGraphic" stdDeviation="14" result="blur"/>
+  <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 26 -10" result="gooey"/>
+  <feBlend in="SourceGraphic" in2="gooey" mode="normal"/>
+</filter></defs></svg>
+<canvas id="c"></canvas>
+<div id="hint">Move: heat blobs &nbsp;·&nbsp; Left-click: add blob &nbsp;·&nbsp; Right-click: cool blobs &nbsp;·&nbsp; Scroll: blob size</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = canvas.width = window.innerWidth;
+let h = canvas.height = window.innerHeight;
+
+let mouse = { x: w / 2, y: h / 2 };
+let cooling = false;
+let nextRadius = 55;
+
+class Blob {
+  constructor(x, y, radius) {
+    this.x = x ?? (w * 0.2 + Math.random() * w * 0.6);
+    this.y = y ?? (h * 0.3 + Math.random() * h * 0.4);
+    this.vx = (Math.random() - 0.5) * 0.6;
+    this.vy = (Math.random() - 0.5) * 0.6;
+    this.radius = radius ?? (45 + Math.random() * 40);
+    this.hue = Math.random() * 360;
+    this.temp = Math.random();
+  }
+  update() {
+    const posTemp = 1 - this.y / h;
+    this.temp += (posTemp - this.temp) * 0.006;
+    const dx = this.x - mouse.x, dy = this.y - mouse.y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 140) {
+      const inf = (1 - d / 140) * 0.018;
+      this.temp += cooling ? -inf : inf;
+      this.temp = Math.max(0, Math.min(1, this.temp));
+    }
+    const buoyancy = (this.temp - 0.5) * -0.22;
+    this.vy += buoyancy * 0.06;
+    this.vx *= 0.985; this.vy *= 0.985;
+    this.x += this.vx; this.y += this.vy;
+    const margin = this.radius;
+    if (this.x < margin) { this.x = margin; this.vx = Math.abs(this.vx); }
+    if (this.x > w - margin) { this.x = w - margin; this.vx = -Math.abs(this.vx); }
+    if (this.y < margin) { this.y = margin; this.vy = Math.abs(this.vy) * 0.5; }
+    if (this.y > h - margin) { this.y = h - margin; this.vy = -Math.abs(this.vy) * 0.5; }
+  }
+  draw() {
+    const lit = 38 + this.temp * 28;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fillStyle = `hsl(${this.hue},82%,${lit}%)`;
+    ctx.fill();
+  }
+}
+
+const blobs = Array.from({ length: 11 }, () => new Blob());
+
+function animate() {
+  ctx.clearRect(0, 0, w, h);
+  for (const b of blobs) { b.update(); b.draw(); }
+  requestAnimationFrame(animate);
+}
+
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('click', e => {
+  blobs.push(new Blob(e.clientX, e.clientY, nextRadius));
+  if (blobs.length > 18) blobs.shift();
+});
+canvas.addEventListener('mousedown', e => { if (e.button === 2) cooling = true; });
+canvas.addEventListener('mouseup', e => { if (e.button === 2) cooling = false; });
+canvas.addEventListener('contextmenu', e => { e.preventDefault(); cooling = true; });
+window.addEventListener('mouseup', e => { if (e.button === 2) cooling = false; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  nextRadius = Math.max(20, Math.min(120, nextRadius - e.deltaY * 0.06));
+}, { passive: false });
+window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
+
+animate();
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Boids</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #050510; cursor: default; }
+    canvas { display: block; }
+    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Move: attract flock &nbsp;·&nbsp; Left-click: drop food &nbsp;·&nbsp; Right-click: drop predator &nbsp;·&nbsp; Scroll: flock speed</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = canvas.width = window.innerWidth;
+let h = canvas.height = window.innerHeight;
+
+let mouse = { x: w / 2, y: h / 2 };
+let maxSpeed = 3.5;
+const foods = [], predators = [];
+
+class Boid {
+  constructor() {
+    this.x = Math.random() * w; this.y = Math.random() * h;
+    this.vx = (Math.random() - 0.5) * 3; this.vy = (Math.random() - 0.5) * 3;
+    this.hue = Math.random() * 60 + 160;
+  }
+  update(boids) {
+    let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0, n = 0;
+    for (const b of boids) {
+      if (b === this) continue;
+      const dx = b.x - this.x, dy = b.y - this.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < 28) { sepX -= dx / (d + 0.1); sepY -= dy / (d + 0.1); }
+      if (d < 90) { aliX += b.vx; aliY += b.vy; cohX += b.x; cohY += b.y; n++; }
+    }
+    if (n > 0) {
+      this.vx += (aliX / n - this.vx) * 0.04 + (cohX / n - this.x) * 0.001;
+      this.vy += (aliY / n - this.vy) * 0.04 + (cohY / n - this.y) * 0.001;
+    }
+    this.vx += sepX * 0.06; this.vy += sepY * 0.06;
+    for (const f of foods) {
+      const dx = f.x - this.x, dy = f.y - this.y, d = Math.sqrt(dx * dx + dy * dy) + 1;
+      this.vx += (dx / d) * 0.12; this.vy += (dy / d) * 0.12;
+    }
+    for (const p of predators) {
+      const dx = p.x - this.x, dy = p.y - this.y, d = Math.sqrt(dx * dx + dy * dy) + 1;
+      if (d < 180) { this.vx -= (dx / d) * 2.5; this.vy -= (dy / d) * 2.5; }
+    }
+    const mdx = mouse.x - this.x, mdy = mouse.y - this.y;
+    const md = Math.sqrt(mdx * mdx + mdy * mdy) + 1;
+    this.vx += (mdx / md) * 0.04; this.vy += (mdy / md) * 0.04;
+    const sp = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    if (sp > maxSpeed) { this.vx = (this.vx / sp) * maxSpeed; this.vy = (this.vy / sp) * maxSpeed; }
+    this.x = (this.x + this.vx + w) % w; this.y = (this.y + this.vy + h) % h;
+  }
+  draw() {
+    const a = Math.atan2(this.vy, this.vx);
+    ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(9, 0); ctx.lineTo(-6, 4); ctx.lineTo(-6, -4); ctx.closePath();
+    ctx.fillStyle = `hsl(${this.hue},80%,62%)`;
+    ctx.fill(); ctx.restore();
+  }
+}
+
+class Predator {
+  constructor(x, y) { this.x = x; this.y = y; this.vx = (Math.random() - 0.5) * 2; this.vy = (Math.random() - 0.5) * 2; }
+  update(boids) {
+    let nx = 0, ny = 0, minD = Infinity;
+    for (const b of boids) {
+      const dx = b.x - this.x, dy = b.y - this.y, d = dx * dx + dy * dy;
+      if (d < minD) { minD = d; nx = dx; ny = dy; }
+    }
+    const md = Math.sqrt(minD) + 1;
+    this.vx += (nx / md) * 0.03; this.vy += (ny / md) * 0.03;
+    const sp = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    if (sp > 1.6) { this.vx = (this.vx / sp) * 1.6; this.vy = (this.vy / sp) * 1.6; }
+    this.x = (this.x + this.vx + w) % w; this.y = (this.y + this.vy + h) % h;
+  }
+  draw() {
+    const a = Math.atan2(this.vy, this.vx);
+    ctx.save(); ctx.translate(this.x, this.y); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-9, 6); ctx.lineTo(-9, -6); ctx.closePath();
+    ctx.fillStyle = '#ff4455'; ctx.fill(); ctx.restore();
+    ctx.beginPath(); ctx.arc(this.x, this.y, 18, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255,68,85,0.2)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+const boids = Array.from({ length: 150 }, () => new Boid());
+
+function animate() {
+  ctx.fillStyle = 'rgba(5,5,16,0.28)';
+  ctx.fillRect(0, 0, w, h);
+  for (const p of predators) { p.update(boids); p.draw(); }
+  for (const b of boids) b.update(boids);
+  for (const b of boids) b.draw();
+  for (const f of foods) {
+    ctx.beginPath(); ctx.arc(f.x, f.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#44ff88'; ctx.fill();
+    ctx.beginPath(); ctx.arc(f.x, f.y, 9, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(68,255,136,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+  requestAnimationFrame(animate);
+}
+
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('click', e => {
+  foods.push({ x: e.clientX, y: e.clientY });
+  if (foods.length > 5) foods.shift();
+});
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  predators.push(new Predator(e.clientX, e.clientY));
+  if (predators.length > 3) predators.shift();
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  maxSpeed = Math.max(1.5, Math.min(8, maxSpeed - e.deltaY * 0.003));
+}, { passive: false });
+window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
+
+animate();
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cloth</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0c0c1e; cursor: default; }
+    canvas { display: block; }
+    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Move: wind turbulence &nbsp;·&nbsp; Hold left-click: grab cloth &nbsp;·&nbsp; Right-click: tear &nbsp;·&nbsp; Scroll: wind strength</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = canvas.width = window.innerWidth;
+let h = canvas.height = window.innerHeight;
+
+const COLS = 30, ROWS = 22, ITERS = 8, GRAVITY = 0.45;
+const SPACING = Math.min(w, h) * 0.028;
+let windStrength = 1.0;
+let mouse = { x: -999, y: -999, px: -999, py: -999 };
+let dragPoint = null;
+
+const points = [];
+const constraints = [];
+
+function makeCloth() {
+  points.length = 0; constraints.length = 0;
+  const ox = (w - COLS * SPACING) / 2;
+  const oy = h * 0.06;
+  for (let row = 0; row <= ROWS; row++) {
+    for (let col = 0; col <= COLS; col++) {
+      const x = ox + col * SPACING;
+      const y = oy + row * SPACING;
+      points.push({ x, y, ox: x, oy: y, pinned: row === 0 });
+    }
+  }
+  for (let row = 0; row <= ROWS; row++) {
+    for (let col = 0; col <= COLS; col++) {
+      const i = row * (COLS + 1) + col;
+      if (col < COLS) constraints.push({ p1: points[i], p2: points[i + 1], rest: SPACING, active: true, col });
+      if (row < ROWS) constraints.push({ p1: points[i], p2: points[i + COLS + 1], rest: SPACING, active: true, col: -1 });
+    }
+  }
+}
+makeCloth();
+
+function resolve(c) {
+  if (!c.active) return;
+  const dx = c.p2.x - c.p1.x, dy = c.p2.y - c.p1.y;
+  const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+  if (dist > c.rest * 3.8) { c.active = false; return; }
+  const diff = (dist - c.rest) / dist * 0.5;
+  const ox = dx * diff, oy = dy * diff;
+  if (!c.p1.pinned) { c.p1.x += ox; c.p1.y += oy; }
+  if (!c.p2.pinned) { c.p2.x -= ox; c.p2.y -= oy; }
+}
+
+function update() {
+  const windX = (mouse.x - mouse.px) * windStrength * 0.18;
+  const windY = (mouse.y - mouse.py) * windStrength * 0.18;
+  for (const p of points) {
+    if (p.pinned) continue;
+    if (p === dragPoint) { p.x = mouse.x; p.y = mouse.y; p.ox = mouse.x; p.oy = mouse.y; continue; }
+    const vx = (p.x - p.ox) * 0.98;
+    const vy = (p.y - p.oy) * 0.98;
+    const dx = p.x - mouse.x, dy = p.y - mouse.y;
+    const mdist = Math.sqrt(dx * dx + dy * dy);
+    const inf = Math.max(0, 1 - mdist / 110);
+    p.ox = p.x; p.oy = p.y;
+    p.x += vx + windX * inf;
+    p.y += vy + windY * inf + GRAVITY;
+    p.x = Math.max(0, Math.min(w, p.x));
+    p.y = Math.max(0, Math.min(h * 1.3, p.y));
+  }
+  for (let i = 0; i < ITERS; i++) for (const c of constraints) resolve(c);
+  mouse.px = mouse.x; mouse.py = mouse.y;
+}
+
+function draw() {
+  ctx.fillStyle = 'rgba(12,12,30,0.55)';
+  ctx.fillRect(0, 0, w, h);
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      const tl = points[row * (COLS + 1) + col];
+      const tr = points[row * (COLS + 1) + col + 1];
+      const br = points[(row + 1) * (COLS + 1) + col + 1];
+      const bl = points[(row + 1) * (COLS + 1) + col];
+      const maxEdge = Math.max(
+        Math.hypot(tr.x - tl.x, tr.y - tl.y),
+        Math.hypot(br.x - tr.x, br.y - tr.y),
+        Math.hypot(bl.x - br.x, bl.y - br.y),
+        Math.hypot(tl.x - bl.x, tl.y - bl.y)
+      );
+      if (maxEdge > SPACING * 3.6) continue;
+      const hue = (col / COLS) * 300 + 10;
+      const lit = 32 + (row / ROWS) * 22;
+      ctx.fillStyle = `hsl(${hue},72%,${lit}%)`;
+      ctx.beginPath();
+      ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y);
+      ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+}
+
+function animate() { update(); draw(); requestAnimationFrame(animate); }
+
+canvas.addEventListener('mousemove', e => {
+  mouse.px = mouse.x; mouse.py = mouse.y;
+  mouse.x = e.clientX; mouse.y = e.clientY;
+});
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  let minD = Infinity;
+  for (const p of points) {
+    const d = (p.x - e.clientX) ** 2 + (p.y - e.clientY) ** 2;
+    if (d < minD) { minD = d; dragPoint = p; }
+  }
+  if (minD > 3600) dragPoint = null;
+});
+canvas.addEventListener('mouseup', () => dragPoint = null);
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  let minD = Infinity, nearest = null;
+  for (const c of constraints) {
+    if (!c.active) continue;
+    const mx = (c.p1.x + c.p2.x) / 2, my = (c.p1.y + c.p2.y) / 2;
+    const d = (mx - e.clientX) ** 2 + (my - e.clientY) ** 2;
+    if (d < minD) { minD = d; nearest = c; }
+  }
+  if (nearest) nearest.active = false;
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  windStrength = Math.max(0, Math.min(6, windStrength - e.deltaY * 0.003));
+}, { passive: false });
+window.addEventListener('resize', () => {
+  w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; makeCloth();
+});
+
+animate();
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
+</script>
+</body>
+</html>

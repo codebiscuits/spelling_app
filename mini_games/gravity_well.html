@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Gravity Well</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #030318; cursor: crosshair; }
+    canvas { display: block; }
+    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Move: gravity well &nbsp;·&nbsp; Hold left-click: attract &nbsp;·&nbsp; Right-click: explode &nbsp;·&nbsp; Scroll: strength</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = canvas.width = window.innerWidth;
+let h = canvas.height = window.innerHeight;
+
+let mouse = { x: w / 2, y: h / 2 };
+let attracting = false;
+let fieldStrength = 1.0;
+
+class Particle {
+  constructor(random) {
+    this.reset(random);
+  }
+  reset(random) {
+    this.x = random ? Math.random() * w : mouse.x + (Math.random() - 0.5) * w * 0.8;
+    this.y = random ? Math.random() * h : mouse.y + (Math.random() - 0.5) * h * 0.8;
+    this.vx = (Math.random() - 0.5) * 2;
+    this.vy = (Math.random() - 0.5) * 2;
+    this.hue = Math.random() * 80 + 170;
+    this.size = Math.random() * 1.5 + 0.5;
+    this.trail = [];
+  }
+  update() {
+    const dx = mouse.x - this.x;
+    const dy = mouse.y - this.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+    const pull = fieldStrength * (attracting ? 3.5 : 0.7) * 7000 / (dist * dist + 80);
+    this.vx += (dx / dist) * pull * 0.01;
+    this.vy += (dy / dist) * pull * 0.01;
+    const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+    if (speed > 14) { this.vx = this.vx / speed * 14; this.vy = this.vy / speed * 14; }
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > 22) this.trail.shift();
+    this.x += this.vx;
+    this.y += this.vy;
+    if (dist < 6 || this.x < -120 || this.x > w + 120 || this.y < -120 || this.y > h + 120) this.reset(false);
+  }
+  draw() {
+    if (this.trail.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(this.trail[0].x, this.trail[0].y);
+    for (let i = 1; i < this.trail.length; i++) ctx.lineTo(this.trail[i].x, this.trail[i].y);
+    ctx.lineTo(this.x, this.y);
+    ctx.strokeStyle = `hsla(${this.hue}, 90%, 68%, 0.35)`;
+    ctx.lineWidth = this.size;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size + 0.8, 0, Math.PI * 2);
+    ctx.fillStyle = `hsl(${this.hue}, 90%, 78%)`;
+    ctx.fill();
+  }
+}
+
+const particles = Array.from({ length: 700 }, () => new Particle(true));
+
+function drawWell() {
+  const colour = attracting ? '80,210,255' : '190,100,255';
+  for (let r = 80; r > 0; r -= 18) {
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${colour},${0.08 * (1 - r / 80)})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  const grad = ctx.createRadialGradient(mouse.x, mouse.y, 0, mouse.x, mouse.y, 10);
+  grad.addColorStop(0, `rgba(${colour},0.9)`);
+  grad.addColorStop(1, `rgba(${colour},0)`);
+  ctx.beginPath();
+  ctx.arc(mouse.x, mouse.y, 10, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+function explode() {
+  for (const p of particles) {
+    const dx = p.x - mouse.x;
+    const dy = p.y - mouse.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) + 1;
+    const force = Math.max(0, 350 - dist) / dist * 5;
+    p.vx += (dx / dist) * force;
+    p.vy += (dy / dist) * force;
+    p.trail = [];
+  }
+}
+
+function animate() {
+  ctx.fillStyle = 'rgba(3,3,24,0.18)';
+  ctx.fillRect(0, 0, w, h);
+  for (const p of particles) { p.update(); p.draw(); }
+  drawWell();
+  requestAnimationFrame(animate);
+}
+
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => { if (e.button === 0) attracting = true; });
+canvas.addEventListener('mouseup', e => { if (e.button === 0) attracting = false; });
+canvas.addEventListener('contextmenu', e => { e.preventDefault(); explode(); });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  fieldStrength = Math.max(0.1, Math.min(5, fieldStrength - e.deltaY * 0.001));
+}, { passive: false });
+window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
+
+animate();
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
+</script>
+</body>
+</html>

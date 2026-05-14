@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Orbits</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #020208; cursor: crosshair; }
+    canvas { display: block; }
+    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+    #info { position: fixed; top: 1rem; right: 1rem; color: rgba(255,255,255,0.4); font: 12px system-ui; pointer-events: none; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Left-click: place body &nbsp;·&nbsp; Right-click: remove nearest &nbsp;·&nbsp; Scroll: next body mass &nbsp;·&nbsp; Move: preview</div>
+<div id="info"></div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = canvas.width = window.innerWidth;
+let h = canvas.height = window.innerHeight;
+
+const G = 0.5, SOFTEN = 400, TRAIL_LEN = 280;
+let mouse = { x: w / 2, y: h / 2 };
+let nextMass = 8;
+const MASS_STEPS = [2, 6, 14, 30, 80];
+let massIdx = 1;
+
+// Starfield
+const stars = Array.from({ length: 180 }, () => ({
+  x: Math.random() * w, y: Math.random() * h,
+  r: Math.random() * 1.2 + 0.2, a: Math.random() * 0.7 + 0.15
+}));
+
+class Body {
+  constructor(x, y, mass, vx = 0, vy = 0) {
+    this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+    this.mass = mass;
+    this.radius = Math.pow(mass, 0.42) * 3.2;
+    this.hue = Math.random() * 360;
+    this.trail = [];
+    this.age = 0;
+  }
+  update(bodies) {
+    for (const other of bodies) {
+      if (other === this) continue;
+      const dx = other.x - this.x, dy = other.y - this.y;
+      const d2 = dx * dx + dy * dy + SOFTEN;
+      const f = G * other.mass / d2;
+      const d = Math.sqrt(d2);
+      this.vx += (dx / d) * f; this.vy += (dy / d) * f;
+    }
+    this.trail.push({ x: this.x, y: this.y });
+    if (this.trail.length > TRAIL_LEN) this.trail.shift();
+    this.x += this.vx; this.y += this.vy;
+    this.age++;
+    // Soft wrap
+    if (this.x < -200) this.x += w + 400;
+    if (this.x > w + 200) this.x -= w + 400;
+    if (this.y < -200) this.y += h + 400;
+    if (this.y > h + 200) this.y -= h + 400;
+  }
+  draw() {
+    if (this.trail.length > 1) {
+      for (let i = 1; i < this.trail.length; i++) {
+        const t = i / this.trail.length;
+        ctx.beginPath();
+        ctx.moveTo(this.trail[i-1].x, this.trail[i-1].y);
+        ctx.lineTo(this.trail[i].x, this.trail[i].y);
+        ctx.strokeStyle = `hsla(${this.hue},80%,65%,${t * 0.5})`;
+        ctx.lineWidth = t * this.radius * 0.4;
+        ctx.stroke();
+      }
+    }
+    const grad = ctx.createRadialGradient(this.x - this.radius * 0.3, this.y - this.radius * 0.3, 0, this.x, this.y, this.radius);
+    grad.addColorStop(0, `hsl(${this.hue},90%,90%)`);
+    grad.addColorStop(0.4, `hsl(${this.hue},85%,65%)`);
+    grad.addColorStop(1, `hsl(${this.hue},70%,30%)`);
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fillStyle = grad; ctx.fill();
+    if (this.mass > 20) {
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.radius * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${this.hue},80%,70%,0.06)`; ctx.fill();
+    }
+  }
+}
+
+function getOrbitalVelocity(x, y) {
+  let bestBody = null, maxMass = 0;
+  for (const b of bodies) { if (b.mass > maxMass) { maxMass = b.mass; bestBody = b; } }
+  if (!bestBody) return { vx: 0, vy: 0 };
+  const dx = x - bestBody.x, dy = y - bestBody.y;
+  const dist = Math.sqrt(dx * dx + dy * dy) + 1;
+  const speed = Math.sqrt(G * bestBody.mass / dist) * 0.95;
+  return { vx: bestBody.vx + (-dy / dist) * speed, vy: bestBody.vy + (dx / dist) * speed };
+}
+
+const bodies = [];
+bodies.push(new Body(w / 2, h / 2, 120, 0, 0));
+bodies[0].hue = 48;
+
+function drawPreview() {
+  const pr = Math.pow(nextMass, 0.42) * 3.2;
+  ctx.beginPath(); ctx.arc(mouse.x, mouse.y, pr, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1.5;
+  ctx.setLineDash([3, 4]); ctx.stroke(); ctx.setLineDash([]);
+  const { vx, vy } = getOrbitalVelocity(mouse.x, mouse.y);
+  const len = Math.sqrt(vx * vx + vy * vy) * 8;
+  if (len > 2) {
+    ctx.beginPath(); ctx.moveTo(mouse.x, mouse.y);
+    ctx.lineTo(mouse.x + vx * 8, mouse.y + vy * 8);
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function animate() {
+  ctx.fillStyle = 'rgba(2,2,8,0.35)';
+  ctx.fillRect(0, 0, w, h);
+  for (const s of stars) {
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${s.a})`; ctx.fill();
+  }
+  for (const b of bodies) b.update(bodies);
+  for (const b of bodies) b.draw();
+  drawPreview();
+  document.getElementById('info').textContent = `bodies: ${bodies.length}  ·  next mass: ${nextMass}`;
+  requestAnimationFrame(animate);
+}
+
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('click', e => {
+  const { vx, vy } = getOrbitalVelocity(e.clientX, e.clientY);
+  bodies.push(new Body(e.clientX, e.clientY, nextMass, vx, vy));
+  if (bodies.length > 20) bodies.splice(1, 1);
+});
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (bodies.length <= 1) return;
+  let minD = Infinity, minI = -1;
+  for (let i = 1; i < bodies.length; i++) {
+    const dx = bodies[i].x - e.clientX, dy = bodies[i].y - e.clientY;
+    const d = dx * dx + dy * dy;
+    if (d < minD) { minD = d; minI = i; }
+  }
+  if (minI >= 0) bodies.splice(minI, 1);
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  massIdx = (massIdx + (e.deltaY > 0 ? 1 : -1) + MASS_STEPS.length) % MASS_STEPS.length;
+  nextMass = MASS_STEPS[massIdx];
+}, { passive: false });
+window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
+
+animate();
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
+</script>
+</body>
+</html>

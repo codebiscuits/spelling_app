@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Liquid Pour</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #07071a; cursor: crosshair; }
+    canvas { display: block; }
+    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Move: aim pour &nbsp;·&nbsp; Left-click: add platform &nbsp;·&nbsp; Right-click: clear platforms &nbsp;·&nbsp; Scroll: viscosity</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = canvas.width = window.innerWidth;
+let h = canvas.height = window.innerHeight;
+
+const GRAVITY = 0.32, RADIUS = 5.5, MAX = 220;
+let damping = 0.982;
+const particles = [], platforms = [];
+let mouse = { x: w / 2, y: h * 0.2 };
+let frame = 0;
+
+class Drop {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = (Math.random() - 0.5) * 2.5; this.vy = 0;
+    this.hue = 205 + Math.random() * 25;
+    this.sat = 72 + Math.random() * 25;
+  }
+  update() {
+    this.vy += GRAVITY; this.vx *= damping; this.vy *= damping;
+    for (const pl of platforms) {
+      if (this.y + RADIUS > pl.y && this.y - RADIUS < pl.y + 10 &&
+          this.x > pl.x - 2 && this.x < pl.x + pl.w + 2 && this.vy > 0) {
+        this.y = pl.y - RADIUS; this.vy *= -0.3; this.vx *= 0.82;
+      }
+    }
+    if (this.x - RADIUS < 0)    { this.x = RADIUS;     this.vx =  Math.abs(this.vx) * 0.55; }
+    if (this.x + RADIUS > w)    { this.x = w - RADIUS; this.vx = -Math.abs(this.vx) * 0.55; }
+    if (this.y + RADIUS > h)    { this.y = h - RADIUS; this.vy = -Math.abs(this.vy) * 0.28; this.vx *= 0.9; }
+    this.x += this.vx; this.y += this.vy;
+  }
+  draw() {
+    ctx.beginPath(); ctx.arc(this.x, this.y, RADIUS, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${this.hue},${this.sat}%,62%,0.82)`;
+    ctx.fill();
+  }
+}
+
+function applyPressure() {
+  const MIN = RADIUS * 2.3;
+  for (let i = 0; i < particles.length; i++) {
+    for (let j = i + 1; j < particles.length; j++) {
+      const dx = particles[j].x - particles[i].x;
+      const dy = particles[j].y - particles[i].y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < MIN * MIN && d2 > 0) {
+        const d = Math.sqrt(d2);
+        const f = (MIN - d) / MIN * 0.45;
+        const fx = (dx / d) * f, fy = (dy / d) * f;
+        particles[i].vx -= fx; particles[i].vy -= fy;
+        particles[j].vx += fx; particles[j].vy += fy;
+      }
+    }
+  }
+}
+
+function animate() {
+  ctx.fillStyle = 'rgba(7,7,26,0.38)';
+  ctx.fillRect(0, 0, w, h);
+
+  if (frame % 4 === 0 && particles.length < MAX) {
+    particles.push(new Drop(mouse.x + (Math.random() - 0.5) * 12, mouse.y));
+  }
+  frame++;
+
+  applyPressure();
+  for (const p of particles) { p.update(); p.draw(); }
+
+  for (const pl of platforms) {
+    ctx.fillStyle = '#1e2240'; ctx.strokeStyle = '#5577cc'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(pl.x, pl.y, pl.w, 10, 5);
+    ctx.fill(); ctx.stroke();
+  }
+
+  // Pour spout
+  ctx.strokeStyle = 'rgba(130,190,255,0.5)'; ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 6]);
+  ctx.beginPath(); ctx.moveTo(mouse.x, 0); ctx.lineTo(mouse.x, mouse.y);
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(130,190,255,0.8)'; ctx.fill();
+
+  requestAnimationFrame(animate);
+}
+
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('click', e => {
+  const pw = 120 + Math.random() * 140;
+  platforms.push({ x: e.clientX - pw / 2, y: e.clientY, w: pw });
+  if (platforms.length > 12) platforms.shift();
+});
+canvas.addEventListener('contextmenu', e => { e.preventDefault(); platforms.length = 0; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  damping = Math.max(0.91, Math.min(0.999, damping + e.deltaY * -0.00006));
+}, { passive: false });
+window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
+
+animate();
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
+</script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sand</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0f0f1a; cursor: crosshair; }
+    canvas { display: block; image-rendering: pixelated; }
+    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Move: aim &nbsp;·&nbsp; Hold left-click: pour sand &nbsp;·&nbsp; Hold right-click: pour water &nbsp;·&nbsp; Scroll: pour width</div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = canvas.width = window.innerWidth;
+let h = canvas.height = window.innerHeight;
+
+const CELL = 4;
+let COLS = Math.floor(w / CELL);
+let ROWS = Math.floor(h / CELL);
+
+const EMPTY = 0, SAND = 1, WATER = 2;
+let grid = new Uint8Array(COLS * ROWS);
+let hues = new Int8Array(COLS * ROWS);
+
+const off = document.createElement('canvas');
+off.width = COLS; off.height = ROWS;
+const offCtx = off.getContext('2d');
+
+let mouse = { x: w / 2, y: h / 2 };
+let pourSand = false, pourWater = false;
+let pourRadius = 2;
+
+function idx(c, r) { return r * COLS + c; }
+
+function step() {
+  for (let row = ROWS - 2; row >= 0; row--) {
+    const leftFirst = Math.random() < 0.5;
+    for (let ci = 0; ci < COLS; ci++) {
+      const col = leftFirst ? ci : COLS - 1 - ci;
+      const cell = grid[idx(col, row)];
+      if (cell === EMPTY) continue;
+      if (cell === SAND) {
+        if (row + 1 < ROWS && grid[idx(col, row + 1)] === EMPTY) {
+          grid[idx(col, row + 1)] = SAND; hues[idx(col, row + 1)] = hues[idx(col, row)];
+          grid[idx(col, row)] = EMPTY;
+        } else {
+          const d = Math.random() < 0.5 ? 1 : -1;
+          const nc = col + d;
+          if (nc >= 0 && nc < COLS && row + 1 < ROWS && grid[idx(nc, row + 1)] === EMPTY) {
+            grid[idx(nc, row + 1)] = SAND; hues[idx(nc, row + 1)] = hues[idx(col, row)];
+            grid[idx(col, row)] = EMPTY;
+          } else {
+            const nc2 = col - d;
+            if (nc2 >= 0 && nc2 < COLS && row + 1 < ROWS && grid[idx(nc2, row + 1)] === EMPTY) {
+              grid[idx(nc2, row + 1)] = SAND; hues[idx(nc2, row + 1)] = hues[idx(col, row)];
+              grid[idx(col, row)] = EMPTY;
+            }
+          }
+        }
+      } else if (cell === WATER) {
+        if (row + 1 < ROWS && grid[idx(col, row + 1)] === EMPTY) {
+          grid[idx(col, row + 1)] = WATER; hues[idx(col, row + 1)] = hues[idx(col, row)];
+          grid[idx(col, row)] = EMPTY;
+        } else {
+          const d = Math.random() < 0.5 ? 1 : -1;
+          const nc = col + d;
+          if (nc >= 0 && nc < COLS && grid[idx(nc, row)] === EMPTY) {
+            grid[idx(nc, row)] = WATER; hues[idx(nc, row)] = hues[idx(col, row)];
+            grid[idx(col, row)] = EMPTY;
+          } else {
+            const nc2 = col - d;
+            if (nc2 >= 0 && nc2 < COLS && grid[idx(nc2, row)] === EMPTY) {
+              grid[idx(nc2, row)] = WATER; hues[idx(nc2, row)] = hues[idx(col, row)];
+              grid[idx(col, row)] = EMPTY;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+function pour(type) {
+  const gc = Math.floor(mouse.x / CELL);
+  const gr = Math.floor(mouse.y / CELL);
+  const r = Math.round(pourRadius);
+  for (let dr = -r; dr <= r; dr++) {
+    for (let dc = -r; dc <= r; dc++) {
+      if (dc * dc + dr * dr > r * r) continue;
+      const c = gc + dc, row = gr + dr;
+      if (c >= 0 && c < COLS && row >= 0 && row < ROWS && Math.random() < 0.7) {
+        grid[idx(c, row)] = type;
+        hues[idx(c, row)] = (Math.random() * 30 - 15) | 0;
+      }
+    }
+  }
+}
+
+function render() {
+  const imgData = offCtx.createImageData(COLS, ROWS);
+  const d = imgData.data;
+  for (let i = 0; i < COLS * ROWS; i++) {
+    const cell = grid[i]; const hv = hues[i]; const p = i * 4;
+    if (cell === EMPTY) { d[p] = 15; d[p+1] = 15; d[p+2] = 26; }
+    else if (cell === SAND) { d[p] = 200 + hv; d[p+1] = 158 + hv; d[p+2] = 72; }
+    else { d[p] = 38; d[p+1] = 110 + hv; d[p+2] = 215; }
+    d[p+3] = 255;
+  }
+  offCtx.putImageData(imgData, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, w, h);
+
+  // Cursor ring
+  ctx.beginPath();
+  ctx.arc(mouse.x, mouse.y, pourRadius * CELL, 0, Math.PI * 2);
+  ctx.strokeStyle = pourWater ? 'rgba(80,160,255,0.6)' : 'rgba(220,180,80,0.6)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+}
+
+function animate() {
+  if (pourSand) pour(SAND);
+  if (pourWater) pour(WATER);
+  for (let i = 0; i < 3; i++) step();
+  render();
+  requestAnimationFrame(animate);
+}
+
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) pourSand = true;
+  if (e.button === 2) pourWater = true;
+});
+canvas.addEventListener('mouseup', e => {
+  if (e.button === 0) pourSand = false;
+  if (e.button === 2) pourWater = false;
+});
+canvas.addEventListener('contextmenu', e => { e.preventDefault(); pourWater = true; });
+window.addEventListener('mouseup', e => {
+  if (e.button === 0) pourSand = false;
+  if (e.button === 2) pourWater = false;
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  pourRadius = Math.max(1, Math.min(10, pourRadius - e.deltaY * 0.005));
+}, { passive: false });
+window.addEventListener('resize', () => {
+  w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight;
+  COLS = Math.floor(w / CELL); ROWS = Math.floor(h / CELL);
+  off.width = COLS; off.height = ROWS;
+  grid = new Uint8Array(COLS * ROWS); hues = new Int8Array(COLS * ROWS);
+});
+
+animate();
+setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
+</script>
+</body>
+</html>
