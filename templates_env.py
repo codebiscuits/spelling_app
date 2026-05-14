@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from fastapi.templating import Jinja2Templates
 
@@ -21,9 +22,17 @@ MINI_GAMES = [
     {"file": "starfield.html",     "name": "Starfield",     "description": "Fly through the stars"},
     {"file": "worms.html",         "name": "Generative Worms", "description": "Wriggly worms"},
     {"file": "flow.html",          "name": "Generative Flow", "description": "Flowing particles"},
-    {"file": "ink_drops.html", "name": "Ink Drops", "description": "Fluid diffusion blobs"},
-    {"file": "worm_trails.html", "name": "Worm Trails", "description": "Organic, snake-like motion"},
-    {"file": "magnetic_lines.html", "name": "Magnetic Field Lines", "description": "Particles aligning to invisible forces"},
+    {"file": "ink_drops.html",     "name": "Ink Drops",     "description": "Fluid diffusion blobs"},
+    {"file": "worm_trails.html",   "name": "Worm Trails",   "description": "Organic, snake-like motion"},
+    {"file": "magnetic_lines.html","name": "Magnetic Field Lines", "description": "Particles aligning to invisible forces"},
+    {"file": "gravity_well.html",  "name": "Gravity Well",  "description": "Particles orbit your cursor"},
+    {"file": "cloth.html",         "name": "Cloth",         "description": "Tear and blow a colourful fabric"},
+    {"file": "boids.html",         "name": "Boids",         "description": "A flocking swarm with food and predators"},
+    {"file": "lava_lamp.html",     "name": "Lava Lamp",     "description": "Gooey blobs rising and sinking"},
+    {"file": "sand.html",          "name": "Sand",          "description": "Pour sand and water"},
+    {"file": "liquid_pour.html",   "name": "Liquid Pour",   "description": "Pour water and build platforms"},
+    {"file": "orbits.html",        "name": "Orbits",        "description": "Place planets and watch them orbit"},
+    {"file": "smoke.html",         "name": "Smoke",         "description": "Swirling smoke with deflectors"},
 ]
 
 
@@ -31,5 +40,14 @@ def current_palette():
     return PALETTES[datetime.today().weekday()]
 
 
+def static_version(path: str) -> str:
+    """Returns the file mtime as a cache-busting version string."""
+    try:
+        return str(int(os.path.getmtime(os.path.join("static", path))))
+    except OSError:
+        return "0"
+
+
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["current_palette"] = current_palette
+templates.env.globals["static_version"] = static_version

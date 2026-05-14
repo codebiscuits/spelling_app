@@ -25,9 +25,10 @@ CREATE TABLE IF NOT EXISTS word_lists (
 );
 
 CREATE TABLE IF NOT EXISTS words (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    word    TEXT NOT NULL,
-    list_id INTEGER NOT NULL REFERENCES word_lists(id) ON DELETE CASCADE,
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    word             TEXT NOT NULL,
+    list_id          INTEGER NOT NULL REFERENCES word_lists(id) ON DELETE CASCADE,
+    context_sentence TEXT,
     UNIQUE(word, list_id)
 );
 
@@ -101,6 +102,11 @@ def init_db():
     con.row_factory = sqlite3.Row
     try:
         con.executescript(SCHEMA)
-        con.commit()
+        # Migration: add context_sentence to existing databases
+        try:
+            con.execute("ALTER TABLE words ADD COLUMN context_sentence TEXT")
+            con.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     finally:
         con.close()

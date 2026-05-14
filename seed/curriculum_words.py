@@ -1,6 +1,47 @@
 # UK National Curriculum statutory word lists
 # year_group: 1 = Years 1-2, 3 = Years 3-4, 5 = Years 5-6
 
+# Context sentences for words that have homophones, to disambiguate during audio-only testing.
+CONTEXT_SENTENCES = {
+    # Year 1–2
+    "i":      "I am going to school today.",
+    "eye":    "She had a speck of dust in her eye.",
+    "our":    "We put our books away before lunch.",
+    "hour":   "We waited for one hour.",
+    "to":     "She walked to school in the morning.",
+    "do":     "What do you want to play?",
+    "you":    "Are you coming to the party?",
+    "your":   "Is this your pencil?",
+    "be":     "Try to be kind to everyone.",
+    "we":     "We went to the park after school.",
+    "no":     "There is no more cake left.",
+    "so":     "It was cold, so we put our coats on.",
+    "by":     "The cat sat by the fire.",
+    "here":   "Come and sit here next to me.",
+    "there":  "The bag is over there by the door.",
+    "where":  "Do you know where my bag is?",
+    "some":   "Can I have some more juice please?",
+    "one":    "I have one sister.",
+    "poor":   "The poor dog was lost in the rain.",
+    "great":  "You did a great job!",
+    "break":  "We had a break at playtime.",
+    "steak":  "Grandad likes to eat steak for dinner.",
+    "past":   "We walked past the park on the way home.",
+    "would":  "I would like some water please.",
+    "whole":  "She ate the whole sandwich.",
+    # Year 3–4
+    "caught":   "She caught the ball with one hand.",
+    "eight":    "I have eight crayons in my pencil case.",
+    "heard":    "I heard the bell ring at the end of break.",
+    "reign":    "During the queen's reign, the country was peaceful.",
+    "straight": "Draw a straight line across the page.",
+    "through":  "The train went through the tunnel.",
+    "weight":   "We measured the weight of the parcel.",
+    # Year 5–6
+    "muscle": "He strained a muscle in his arm during the race.",
+    "symbol": "The heart is a symbol of love.",
+}
+
 CURRICULUM = {
     1: [
         "the", "a", "do", "to", "today", "of", "said", "says", "are", "were",
@@ -76,7 +117,14 @@ def seed(db):
             list_id = cur.lastrowid
 
         for word in words:
+            word_lower = word.lower()
             db.execute(
                 "INSERT OR IGNORE INTO words (word, list_id) VALUES (?,?)",
-                (word.lower(), list_id),
+                (word_lower, list_id),
             )
+            sentence = CONTEXT_SENTENCES.get(word_lower)
+            if sentence:
+                db.execute(
+                    "UPDATE words SET context_sentence=? WHERE word=? AND list_id=?",
+                    (sentence, word_lower, list_id),
+                )

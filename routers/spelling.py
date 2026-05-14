@@ -6,7 +6,7 @@ from database import get_db
 from auth import require_child
 from services.word_selection import select_words
 from services.gamification import check_and_award
-from services.tts import get_audio_url
+from services.tts import get_audio_url, get_sentence_audio_url
 from templates_env import templates, MINI_GAMES
 
 router = APIRouter(prefix="/test")
@@ -30,8 +30,8 @@ def start_test(list_id: int, request: Request, user=Depends(require_child)):
         if not word_ids:
             raise HTTPException(400, "No words in list")
 
-        word_texts = [
-            db.execute("SELECT word FROM words WHERE id=?", (wid,)).fetchone()["word"]
+        word_rows = [
+            db.execute("SELECT word, context_sentence FROM words WHERE id=?", (wid,)).fetchone()
             for wid in word_ids
         ]
 
@@ -39,9 +39,11 @@ def start_test(list_id: int, request: Request, user=Depends(require_child)):
     # (which can be slow) don't hold the DB write lock.  Rapid successive
     # calls mid-test can trigger Google's soft rate-limit, returning
     # near-silent audio instead of raising an error.
-    for word_text in word_texts:
+    for row in word_rows:
         with get_db() as db:
-            get_audio_url(word_text, db)
+            get_audio_url(row["word"], db)
+            if row["context_sentence"]:
+                get_sentence_audio_url(row["word"], row["context_sentence"], db)
 
     with get_db() as db:
         now = datetime.now(timezone.utc).isoformat()
@@ -87,6 +89,11 @@ def show_word(request: Request, user=Depends(require_child)):
         audio_url = get_audio_url(word_row["word"], db) if attempt == 1 else None
         word_text = word_row["word"] if attempt == 2 else None
         phrase_audio_url = get_audio_url("not quite, try again", db) if attempt == 2 else None
+        sentence_audio_url = None
+        if attempt == 1 and word_row["context_sentence"]:
+            sentence_audio_url = get_sentence_audio_url(
+                word_row["word"], word_row["context_sentence"], db
+            )
 
     return templates.TemplateResponse(request, "child/test.html", {
         "word_id": word_id,
@@ -97,6 +104,7 @@ def show_word(request: Request, user=Depends(require_child)):
         "total_words": len(word_queue),
         "well_done": well_done,
         "phrase_audio_url": phrase_audio_url,
+        "sentence_audio_url": sentence_audio_url,
     })
 
 

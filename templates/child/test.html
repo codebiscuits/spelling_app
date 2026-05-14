@@ -32,6 +32,12 @@
     {% else %}
     <p class="audio-unavailable">Audio unavailable — please ask for help.</p>
     {% endif %}
+    {% if sentence_audio_url %}
+    <button type="button" id="sentence-btn" class="btn btn-secondary"
+            data-src="{{ sentence_audio_url }}">
+      &#9654; Hear it in a sentence
+    </button>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -55,5 +61,5 @@
   </div>
 </form>
 
-<script src="/static/js/spelling.js"></script>
+<script src="/static/js/spelling.js?v={{ static_version('js/spelling.js') }}"></script>
 {% endblock %}

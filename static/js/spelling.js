@@ -15,30 +15,49 @@
   }
 
   function playAudio(el) {
-    var promise = el.play();
-    if (promise !== undefined) {
-      promise.catch(function (err) {
-        console.warn('Audio playback failed:', err);
-      });
+    try {
+      var promise = el.play();
+      if (promise !== undefined) {
+        promise.catch(function (err) {
+          console.warn('Audio playback failed:', err);
+        });
+      }
+    } catch (err) {
+      console.warn('Audio playback failed:', err);
     }
   }
 
   // ── Attempt 1: play button reveals input ─────────────────────────────────
   if (attempt === 1) {
-    var playBtn = document.getElementById('play-btn');
-    var audioEl = document.getElementById('word-audio');
+    var playBtn      = document.getElementById('play-btn');
+    var audioEl      = document.getElementById('word-audio');
+    var sentenceBtn = document.getElementById('sentence-btn');
+
+    function revealInput() {
+      answerSec.style.display = '';
+      answerInput.focus();
+    }
 
     if (playBtn && audioEl) {
       playBtn.addEventListener('click', function () {
         dismissWellDone();
         playAudio(audioEl);
-        answerSec.style.display = '';
-        answerInput.focus();
+        revealInput();
       });
     } else {
       // No audio — reveal input immediately
-      answerSec.style.display = '';
-      answerInput.focus();
+      revealInput();
+    }
+
+    if (sentenceBtn) {
+      sentenceBtn.addEventListener('click', function () {
+        dismissWellDone();
+        var audio = new Audio(sentenceBtn.dataset.src);
+        audio.play().catch(function (err) {
+          console.error('Sentence audio failed:', err);
+        });
+        revealInput();
+      });
     }
   }
 
