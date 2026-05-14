@@ -28,11 +28,12 @@ Requires a `.env` file — see `SETUP.md`.
 
 ## Key architectural decisions
 
-- **Shared Jinja2 instance** — `templates_env.py` holds the single `Jinja2Templates` instance imported by all routers. Never create a separate instance in a router; Jinja2 globals (e.g. `current_palette`) are set on this shared instance and would be invisible to any other.
+- **Shared Jinja2 instance** — `templates_env.py` holds the single `Jinja2Templates` instance imported by all routers. Never create a separate instance in a router; Jinja2 globals (e.g. `current_palette`, `static_version`) are set on this shared instance and would be invisible to any other.
 - **New-style TemplateResponse API** — always use `templates.TemplateResponse(request, "name.html", context)` with `request` as a positional argument, not inside the context dict.
 - **uv for everything** — use `uv add` to install packages and `uv run` to run scripts. Never use `pip`.
 - **No ORM** — all database access uses raw parameterised SQL via the `sqlite3` module.
 - **No async for gTTS** — gTTS is synchronous; keep TTS calls and their callers synchronous.
+- **Static file cache-busting** — `static_version(path)` in `templates_env.py` returns the file's mtime as a query string (e.g. `?v=1234567890`). Use it on all local JS/CSS `<link>`/`<script>` tags so browsers pick up changes without a hard refresh.
 
 ## Project structure
 
@@ -41,17 +42,17 @@ spelling_app/
 ├── main.py                  # App factory, middleware, login/logout routes
 ├── database.py              # Schema, get_db(), init_db()
 ├── auth.py                  # Password hashing, session guards, CSRF
-├── templates_env.py         # Shared Jinja2 instance, colour palettes, MINI_GAMES list
+├── templates_env.py         # Shared Jinja2 instance, colour palettes, MINI_GAMES list, static_version()
 ├── routers/
 │   ├── admin.py             # /admin/* — word lists, children, progress
 │   ├── child.py             # /child/* — dashboard, pick list, game wrapper
 │   └── spelling.py          # /test/* — start, word, results
 ├── services/
-│   ├── tts.py               # gTTS audio generation with file caching
+│   ├── tts.py               # gTTS audio generation with file caching; get_audio_url() + get_sentence_audio_url()
 │   ├── word_selection.py    # Weighted adaptive word sampling
 │   └── gamification.py      # Badge, medal, trophy, and list unlock logic
 ├── seed/
-│   └── curriculum_words.py  # UK National Curriculum word lists (idempotent)
+│   └── curriculum_words.py  # UK National Curriculum word lists + homophone context sentences (idempotent)
 ├── static/
 │   ├── css/style.css
 │   ├── js/spelling.js
@@ -72,6 +73,10 @@ spelling_app/
 | Badge ⭐ | Session score ≥ 16/20 | Every qualifying session |
 | Medal 🏅 | ≥ 50% of list words spelled correctly first-try (cumulative) | Once per list |
 | Trophy 🏆 | ≥ 95% first-try correct + all remaining words second-try correct (cumulative) | Once per list; also unlocks next year group |
+
+## Homophone support
+
+Words with homophones have a `context_sentence` TEXT column in the `words` table (added via `ALTER TABLE` migration in `init_db()`). The seed script populates this for ~34 curriculum words (e.g. *where*, *eight*, *reign*). During a test, `spelling.py` calls `get_sentence_audio_url(word, sentence, db)` to generate and cache a sentence MP3 (filename: `sentence_<word>.mp3`, cache key: `__sentence__<word>`). The test template shows a "Hear it in a sentence" button only on attempt 1 when a sentence URL is available.
 
 ## Colour palettes
 

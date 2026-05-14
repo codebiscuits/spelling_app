@@ -5,6 +5,7 @@ A web-based spelling practice app for primary school children. Children listen t
 ## Features
 
 - **Audio-first testing** — words are read aloud using text-to-speech; no reading required to take a test
+- **Context sentences for homophones** — words with common homophones (e.g. *where/wear*, *eight/ate*, *symbol/cymbal*) show a "Hear it in a sentence" button so children can disambiguate before spelling
 - **Two-attempt scoring** — 2 points for first-try correct, 1 point for second-try correct; on a second attempt the word is shown visually so the child can study it
 - **Adaptive word selection** — words the child struggles with appear more frequently; unseen words are prioritised over well-known ones
 - **Badges, medals, and trophies** — awarded as children improve; earning a trophy unlocks the next year group's word list
@@ -90,11 +91,12 @@ Children log in with their name and password. From their dashboard they can:
 ### Test flow
 
 1. A word is read aloud — the child can click **Play Word** to hear it again
-2. The child types their spelling and submits
-3. If correct, a "Well done!" message appears on the next word
-4. If wrong, the word is shown on screen; the child clicks **I'm Ready — Hide Word** then types it again
-5. After 10 words, results are shown with a full breakdown
-6. Scoring ≥ 10/20 unlocks a mini game reward
+2. For words with homophones, a **Hear it in a sentence** button is also shown; clicking it plays a sentence using the word in context
+3. The child types their spelling and submits
+4. If correct, a "Well done!" message appears on the next word
+5. If wrong, the word is shown on screen; the child clicks **I'm Ready — Hide Word** then types it again (worth 1 point instead of 2)
+6. After 10 words, results are shown with a full breakdown
+7. Scoring ≥ 10/20 unlocks a mini game reward
 
 ## Scoring and progression
 
@@ -128,7 +130,7 @@ spelling_app/
 ├── main.py                  # App factory, middleware, login/logout routes
 ├── database.py              # Schema, get_db(), init_db()
 ├── auth.py                  # Password hashing, session guards, CSRF
-├── templates_env.py         # Shared Jinja2 instance, colour palettes, game list
+├── templates_env.py         # Shared Jinja2 instance, colour palettes, game list, static_version helper
 ├── routers/
 │   ├── admin.py             # /admin/* — word lists, children, progress
 │   ├── child.py             # /child/* — dashboard, pick list, game wrapper
@@ -138,7 +140,7 @@ spelling_app/
 │   ├── word_selection.py    # Weighted adaptive word sampling
 │   └── gamification.py      # Badge, trophy, and list unlock logic
 ├── seed/
-│   └── curriculum_words.py  # UK National Curriculum word lists (idempotent)
+│   └── curriculum_words.py  # UK National Curriculum word lists + homophone context sentences (idempotent)
 ├── static/
 │   ├── css/style.css
 │   ├── js/spelling.js
