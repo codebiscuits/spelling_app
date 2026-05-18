@@ -1,14 +1,15 @@
 import random
 
 
-def select_words(user_id: int, list_id: int, n: int, db) -> list[int]:
+def select_words(user_id: int, list_ids: list[int], n: int, db) -> list[int]:
     """
-    Weighted sampling of word IDs from list_id for user_id.
+    Weighted sampling of word IDs from list_ids for user_id.
     Words with poor history are weighted higher (more likely to appear).
     Uses Efraimidis-Spirakis algorithm (no external deps).
     """
+    placeholders = ",".join("?" * len(list_ids))
     word_rows = db.execute(
-        "SELECT id FROM words WHERE list_id=?", (list_id,)
+        f"SELECT id FROM words WHERE list_id IN ({placeholders})", list_ids
     ).fetchall()
 
     if not word_rows:

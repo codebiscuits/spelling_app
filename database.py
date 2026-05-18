@@ -108,5 +108,28 @@ def init_db():
             con.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        # Migration: make test_sessions.list_id nullable for multi-list sessions
+        try:
+            cols = {r["name"]: r for r in con.execute("PRAGMA table_info(test_sessions)").fetchall()}
+            if cols.get("list_id") and cols["list_id"]["notnull"]:
+                con.executescript("""
+                    PRAGMA foreign_keys=OFF;
+                    CREATE TABLE test_sessions_new (
+                        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        list_id   INTEGER REFERENCES word_lists(id),
+                        score     INTEGER NOT NULL,
+                        max_score INTEGER NOT NULL
+                    );
+                    INSERT INTO test_sessions_new SELECT * FROM test_sessions;
+                    DROP TABLE test_sessions;
+                    ALTER TABLE test_sessions_new RENAME TO test_sessions;
+                    PRAGMA foreign_keys=ON;
+                """)
+                con.commit()
+        except Exception:
+            pass
     finally:
         con.close()

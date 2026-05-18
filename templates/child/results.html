@@ -7,7 +7,7 @@
     <span class="score-number">{{ session.score }}</span>
     <span class="score-denom">/ {{ session.max_score }}</span>
   </div>
-  <p class="list-name">{{ list.name }}</p>
+  <p class="list-name">Mixed practice</p>
 
   {% if gamification.badge_awarded %}
   <div class="award-banner award-badge"><img src="/static/img/badge.svg" class="banner-icon" alt=""> Badge earned! Great score!</div>
@@ -58,7 +58,7 @@
   {% endif %}
 
   <div class="results-actions">
-    <a href="/child/pick-list" class="btn btn-primary">Try Another List</a>
+    <a href="/test/start" class="btn btn-primary">Practice Again</a>
     <a href="/child/dashboard" class="btn btn-secondary">My Dashboard</a>
   </div>
 </div>

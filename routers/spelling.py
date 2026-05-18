@@ -14,21 +14,20 @@ router = APIRouter(prefix="/test")
 WORDS_PER_TEST = 10
 
 
-@router.get("/start/{list_id}")
-def start_test(list_id: int, request: Request, user=Depends(require_child)):
+@router.get("/start")
+def start_test(request: Request, user=Depends(require_child)):
     user_id = user["user_id"]
     with get_db() as db:
-        # Verify child has this list unlocked
-        unlock = db.execute(
-            "SELECT 1 FROM user_list_unlocks WHERE user_id=? AND list_id=?",
-            (user_id, list_id),
-        ).fetchone()
-        if not unlock:
-            raise HTTPException(403, "List not unlocked")
+        unlock_rows = db.execute(
+            "SELECT list_id FROM user_list_unlocks WHERE user_id=?", (user_id,)
+        ).fetchall()
+        list_ids = [r["list_id"] for r in unlock_rows]
+        if not list_ids:
+            return RedirectResponse("/child/dashboard", status_code=303)
 
-        word_ids = select_words(user_id, list_id, WORDS_PER_TEST, db)
+        word_ids = select_words(user_id, list_ids, WORDS_PER_TEST, db)
         if not word_ids:
-            raise HTTPException(400, "No words in list")
+            return RedirectResponse("/child/dashboard", status_code=303)
 
         word_rows = [
             db.execute("SELECT word, context_sentence FROM words WHERE id=?", (wid,)).fetchone()
@@ -48,14 +47,13 @@ def start_test(list_id: int, request: Request, user=Depends(require_child)):
     with get_db() as db:
         now = datetime.now(timezone.utc).isoformat()
         cur = db.execute(
-            "INSERT INTO test_sessions (timestamp, user_id, list_id, score, max_score) VALUES (?,?,?,0,?)",
-            (now, user_id, list_id, WORDS_PER_TEST * 2),
+            "INSERT INTO test_sessions (timestamp, user_id, list_id, score, max_score) VALUES (?,?,NULL,0,?)",
+            (now, user_id, WORDS_PER_TEST * 2),
         )
         session_id = cur.lastrowid
 
     request.session["test"] = {
         "session_id": session_id,
-        "list_id": list_id,
         "word_queue": word_ids,
         "current_index": 0,
         "attempt_number": 1,
@@ -67,7 +65,7 @@ def start_test(list_id: int, request: Request, user=Depends(require_child)):
 def show_word(request: Request, user=Depends(require_child)):
     test = request.session.get("test")
     if not test:
-        return RedirectResponse("/child/pick-list", status_code=303)
+        return RedirectResponse("/child/dashboard", status_code=303)
 
     idx = test["current_index"]
     word_queue = test["word_queue"]
@@ -117,7 +115,7 @@ def submit_word(
 ):
     test = request.session.get("test")
     if not test:
-        return RedirectResponse("/child/pick-list", status_code=303)
+        return RedirectResponse("/child/dashboard", status_code=303)
 
     user_id = user["user_id"]
     attempt = test["attempt_number"]
@@ -163,7 +161,6 @@ def results(request: Request, user=Depends(require_child)):
         return RedirectResponse("/child/dashboard", status_code=303)
 
     session_id = test["session_id"]
-    list_id = test["list_id"]
     user_id = user["user_id"]
 
     with get_db() as db:
@@ -174,8 +171,22 @@ def results(request: Request, user=Depends(require_child)):
                WHERE sa.session_id=? ORDER BY sa.id""",
             (session_id,),
         ).fetchall()
-        list_row = db.execute("SELECT * FROM word_lists WHERE id=?", (list_id,)).fetchone()
-        gamification = check_and_award(user_id, list_id, session_id, session["score"], db)
+
+        # Determine which lists had words in this session, then run gamification for each
+        distinct_list_ids = db.execute(
+            """SELECT DISTINCT w.list_id
+               FROM spelling_attempts sa JOIN words w ON w.id=sa.word_id
+               WHERE sa.session_id=?""",
+            (session_id,),
+        ).fetchall()
+
+        gamification = {"badge_awarded": False, "medal_awarded": False, "trophy_awarded": False, "lists_unlocked": []}
+        for row in distinct_list_ids:
+            result = check_and_award(user_id, row["list_id"], session_id, session["score"], db)
+            gamification["badge_awarded"] = gamification["badge_awarded"] or result["badge_awarded"]
+            gamification["medal_awarded"] = gamification["medal_awarded"] or result["medal_awarded"]
+            gamification["trophy_awarded"] = gamification["trophy_awarded"] or result["trophy_awarded"]
+            gamification["lists_unlocked"].extend(result["lists_unlocked"])
 
     # Clear test session state
     request.session.pop("test", None)
@@ -187,7 +198,6 @@ def results(request: Request, user=Depends(require_child)):
     return templates.TemplateResponse(request, "child/results.html", {
         "session": session,
         "attempts": attempts,
-        "list": list_row,
         "gamification": gamification,
         "games": games,
     })
