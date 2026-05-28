@@ -26,12 +26,17 @@
         </div>
       </div>
       {% if p.total > 0 %}
-      <div class="progress-bar-wrap" title="{{ p.first_try }} first-try, {{ p.second_try }} second-try, {{ p.total - p.first_try - p.second_try }} to go">
+      <div class="progress-bar-wrap">
         <div class="progress-bar">
           <div class="progress-first" style="width:{{ p.first_pct }}%"></div>
           <div class="progress-second" style="width:{{ p.second_pct }}%"></div>
         </div>
-        <div class="progress-label">{{ p.first_try + p.second_try }} / {{ p.total }} words</div>
+        <div class="word-stats">
+          <span class="stat-label">Total</span><span class="stat-value">{{ p.total }}</span>
+          <span class="stat-label">Mastered</span><span class="stat-value">{{ p.first_try }}</span>
+          <span class="stat-label">Practising</span><span class="stat-value">{{ p.practising }}</span>
+          <span class="stat-label">New</span><span class="stat-value">{{ p.new }}</span>
+        </div>
       </div>
       {% endif %}
     </div>

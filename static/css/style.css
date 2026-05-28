@@ -170,7 +170,16 @@ input:focus, select:focus {
 }
 .progress-first  { background: var(--color-3); height: 100%; transition: width 0.4s ease; }
 .progress-second { background: var(--color-2); height: 100%; transition: width 0.4s ease; }
-.progress-label  { font-size: 0.75rem; color: #888; margin-top: 0.3rem; }
+.word-stats {
+  display: grid;
+  grid-template-columns: auto auto;
+  column-gap: 0.75rem;
+  row-gap: 0.1rem;
+  margin-top: 0.4rem;
+  font-size: 0.75rem;
+}
+.stat-label { color: #888; }
+.stat-value { font-weight: 600; text-align: right; }
 
 /* ── Games grid ── */
 .games-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1rem; margin-top: 1rem; }

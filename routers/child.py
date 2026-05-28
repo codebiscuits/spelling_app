@@ -67,12 +67,20 @@ def child_dashboard(request: Request, user=Depends(require_child)):
                      )""",
                 (user_id, lid, user_id),
             ).fetchone()["cnt"]
+            attempted = db.execute(
+                """SELECT COUNT(DISTINCT sa.word_id) AS cnt
+                   FROM spelling_attempts sa JOIN words w ON w.id=sa.word_id
+                   WHERE sa.user_id=? AND w.list_id=?""",
+                (user_id, lid),
+            ).fetchone()["cnt"]
             progress[lid] = {
                 "total": total,
                 "first_try": first_try,
                 "second_try": second_try,
                 "first_pct": round(first_try / total * 100) if total else 0,
                 "second_pct": round(second_try / total * 100) if total else 0,
+                "practising": attempted - first_try,
+                "new": total - attempted,
             }
 
     medal_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "medal"}
