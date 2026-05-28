@@ -7,12 +7,28 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { overflow: hidden; background: #0c0c1e; cursor: default; }
     canvas { display: block; }
-    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #888; }
+    #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">Move: wind turbulence &nbsp;·&nbsp; Hold left-click: grab cloth &nbsp;·&nbsp; Right-click: tear &nbsp;·&nbsp; Scroll: wind strength</div>
+<div id="ui">
+  <h3>🧵 Cloth</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Wind turbulence</span></div>
+  <div class="param"><span class="key">Hold Left Click</span><span class="val">Grab cloth</span></div>
+  <div class="param"><span class="key">Right Click</span><span class="val">Tear cloth</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Wind: <span id="windVal">1.0</span></span></div>
+</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -108,7 +124,11 @@ function draw() {
   }
 }
 
-function animate() { update(); draw(); requestAnimationFrame(animate); }
+function updateUI() {
+  document.getElementById('windVal').textContent = windStrength.toFixed(1);
+}
+
+function animate() { update(); draw(); updateUI(); requestAnimationFrame(animate); }
 
 canvas.addEventListener('mousemove', e => {
   mouse.px = mouse.x; mouse.py = mouse.y;
@@ -144,7 +164,6 @@ window.addEventListener('resize', () => {
 });
 
 animate();
-setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
 </script>
 </body>
 </html>

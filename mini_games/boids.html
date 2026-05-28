@@ -7,12 +7,31 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { overflow: hidden; background: #050510; cursor: default; }
     canvas { display: block; }
-    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #888; }
+    #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">Move: attract flock &nbsp;·&nbsp; Left-click: drop food &nbsp;·&nbsp; Right-click: drop predator &nbsp;·&nbsp; Scroll: flock speed</div>
+<div id="ui">
+  <h3>🐦 Boids</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Attract flock</span></div>
+  <div class="param"><span class="key">Left Click</span><span class="val">Drop food</span></div>
+  <div class="param"><span class="key">Right Click</span><span class="val">Drop predator</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Speed: <span id="speedVal">3.5</span></span></div>
+  <br>
+  <div class="param"><span class="key">Food:</span><span class="val" id="foodCount">0</span></div>
+  <div class="param"><span class="key">Predators:</span><span class="val" id="predCount">0</span></div>
+</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -93,21 +112,6 @@ class Predator {
 
 const boids = Array.from({ length: 150 }, () => new Boid());
 
-function animate() {
-  ctx.fillStyle = 'rgba(5,5,16,0.28)';
-  ctx.fillRect(0, 0, w, h);
-  for (const p of predators) { p.update(boids); p.draw(); }
-  for (const b of boids) b.update(boids);
-  for (const b of boids) b.draw();
-  for (const f of foods) {
-    ctx.beginPath(); ctx.arc(f.x, f.y, 5, 0, Math.PI * 2);
-    ctx.fillStyle = '#44ff88'; ctx.fill();
-    ctx.beginPath(); ctx.arc(f.x, f.y, 9, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(68,255,136,0.3)'; ctx.lineWidth = 1; ctx.stroke();
-  }
-  requestAnimationFrame(animate);
-}
-
 canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
 canvas.addEventListener('click', e => {
   foods.push({ x: e.clientX, y: e.clientY });
@@ -124,8 +128,29 @@ canvas.addEventListener('wheel', e => {
 }, { passive: false });
 window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
 
+function updateUI() {
+  document.getElementById('speedVal').textContent = maxSpeed.toFixed(1);
+  document.getElementById('foodCount').textContent = foods.length;
+  document.getElementById('predCount').textContent = predators.length;
+}
+
+function animate() {
+  ctx.fillStyle = 'rgba(5,5,16,0.28)';
+  ctx.fillRect(0, 0, w, h);
+  for (const p of predators) { p.update(boids); p.draw(); }
+  for (const b of boids) b.update(boids);
+  for (const b of boids) b.draw();
+  for (const f of foods) {
+    ctx.beginPath(); ctx.arc(f.x, f.y, 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#44ff88'; ctx.fill();
+    ctx.beginPath(); ctx.arc(f.x, f.y, 9, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(68,255,136,0.3)'; ctx.lineWidth = 1; ctx.stroke();
+  }
+  updateUI();
+  requestAnimationFrame(animate);
+}
+
 animate();
-setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
 </script>
 </body>
 </html>

@@ -7,14 +7,31 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { overflow: hidden; background: #020208; cursor: crosshair; }
     canvas { display: block; }
-    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; }
-    #info { position: fixed; top: 1rem; right: 1rem; color: rgba(255,255,255,0.4); font: 12px system-ui; pointer-events: none; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #888; }
+    #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<div id="hint">Left-click: place body &nbsp;·&nbsp; Right-click: remove nearest &nbsp;·&nbsp; Scroll: next body mass &nbsp;·&nbsp; Move: preview</div>
-<div id="info"></div>
+<div id="ui">
+  <h3>🪐 Orbits</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Preview orbit</span></div>
+  <div class="param"><span class="key">Left Click</span><span class="val">Place body</span></div>
+  <div class="param"><span class="key">Right Click</span><span class="val">Remove nearest</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Body mass</span></div>
+  <br>
+  <div class="param"><span class="key">Bodies:</span><span class="val" id="bodyCount">1</span></div>
+  <div class="param"><span class="key">Next mass:</span><span class="val" id="massVal">8</span></div>
+</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -125,7 +142,8 @@ function animate() {
   for (const b of bodies) b.update(bodies);
   for (const b of bodies) b.draw();
   drawPreview();
-  document.getElementById('info').textContent = `bodies: ${bodies.length}  ·  next mass: ${nextMass}`;
+  document.getElementById('bodyCount').textContent = bodies.length;
+  document.getElementById('massVal').textContent = nextMass;
   requestAnimationFrame(animate);
 }
 
@@ -154,7 +172,6 @@ canvas.addEventListener('wheel', e => {
 window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
 
 animate();
-setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
 </script>
 </body>
 </html>

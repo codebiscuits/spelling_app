@@ -5,10 +5,27 @@
 <style>
 body { margin:0; overflow:hidden; background:#0a0a15; }
 canvas { display:block; }
+#ui {
+  position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+  pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+  padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+  min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+#ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+#ui .param { display: flex; justify-content: space-between; gap: 12px; }
+#ui .key { color: #888; }
+#ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="ui">
+  <h3>🧲 Magnetic Lines</h3>
+  <div class="param"><span class="key">Left Click</span><span class="val">Place attractor</span></div>
+  <br>
+  <div class="param"><span class="key">Attractors:</span><span class="val" id="attractorCount">0</span></div>
+</div>
 <script>
 const canvas=c;
 const ctx=canvas.getContext("2d");
@@ -77,6 +94,7 @@ function loop(){
     p.update();
     p.draw();
   });
+  document.getElementById('attractorCount').textContent = attractors.length;
 }
 loop();
 </script>

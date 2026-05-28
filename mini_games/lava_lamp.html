@@ -8,8 +8,18 @@
     body { overflow: hidden; cursor: crosshair; }
     #bg { position: fixed; inset: 0; background: linear-gradient(to top, #2a0a00 0%, #0d0820 35%, #050510 100%); }
     #c { display: block; position: relative; filter: url('#gooey'); }
-    #hint { position: fixed; bottom: 1rem; left: 1rem; color: rgba(255,255,255,0.35); font: 12px system-ui; pointer-events: none; transition: opacity 2s; z-index: 10; }
     svg { position: absolute; width: 0; height: 0; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #888; }
+    #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -20,7 +30,16 @@
   <feBlend in="SourceGraphic" in2="gooey" mode="normal"/>
 </filter></defs></svg>
 <canvas id="c"></canvas>
-<div id="hint">Move: heat blobs &nbsp;·&nbsp; Left-click: add blob &nbsp;·&nbsp; Right-click: cool blobs &nbsp;·&nbsp; Scroll: blob size</div>
+<div id="ui">
+  <h3>🔴 Lava Lamp</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Heat nearby blobs</span></div>
+  <div class="param"><span class="key">Left Click</span><span class="val">Add blob</span></div>
+  <div class="param"><span class="key">Hold Right Click</span><span class="val">Cool blobs</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Size: <span id="sizeVal">55</span></span></div>
+  <br>
+  <div class="param"><span class="key">Blobs:</span><span class="val" id="blobCount">11</span></div>
+  <div class="param"><span class="key">Cooling:</span><span class="val" id="coolingVal">NO</span></div>
+</div>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -72,9 +91,16 @@ class Blob {
 
 const blobs = Array.from({ length: 11 }, () => new Blob());
 
+function updateUI() {
+  document.getElementById('sizeVal').textContent = Math.round(nextRadius);
+  document.getElementById('blobCount').textContent = blobs.length;
+  document.getElementById('coolingVal').textContent = cooling ? 'YES' : 'NO';
+}
+
 function animate() {
   ctx.clearRect(0, 0, w, h);
   for (const b of blobs) { b.update(); b.draw(); }
+  updateUI();
   requestAnimationFrame(animate);
 }
 
@@ -94,7 +120,6 @@ canvas.addEventListener('wheel', e => {
 window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
 
 animate();
-setTimeout(() => document.getElementById('hint').style.opacity = 0, 4000);
 </script>
 </body>
 </html>
