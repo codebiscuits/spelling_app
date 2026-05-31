@@ -58,7 +58,7 @@
   </style>
 </head>
 <body>
-  <iframe id="game-frame" src="/mini-games/{{ game.file }}" sandbox="allow-scripts"></iframe>
+  <iframe id="game-frame" src="/mini-games/{{ game.file }}" sandbox="allow-scripts" onload="this.focus()"></iframe>
 
   <div id="timer-overlay">&#9203; <span id="countdown">{{ duration }}</span>s</div>
 
