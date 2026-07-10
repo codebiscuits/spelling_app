@@ -8,12 +8,15 @@ no build step, no libraries, and no assets — the same constraints as the games
 this folder. Each section pairs the *inspiration* (what's possible, who's done it
 brilliantly) with the *technique* (how to actually get there).
 
-> **Reference implementation:** [`jelly.html`](jelly.html) ("Jelly Buddies") was
-> built from this handbook and is annotated with section references throughout.
-> It demonstrates the engine bones (§2.1–2.3), pressure soft bodies (§3.1),
-> spring-driven pop-in (§3.2), cosine palettes (§4.1), glow sprites and additive
-> particles (§4.2), and the juice checklist — trauma² screenshake, pentatonic
-> synth sounds off by default, blinking eyes, ambient bokeh (§5, §7).
+> **Reference implementations:** [`jelly.html`](jelly.html) ("Jelly Buddies")
+> was built from this handbook and is annotated with section references
+> throughout. It demonstrates the engine bones (§2.1–2.3), pressure soft bodies
+> (§3.1), spring-driven pop-in (§3.2), cosine palettes (§4.1), glow sprites and
+> additive particles (§4.2), and the juice checklist — trauma² screenshake,
+> pentatonic synth sounds off by default, blinking eyes, ambient bokeh (§5, §7).
+> [`lens_lab.html`](lens_lab.html) ("Lens Lab") is the shader-side companion:
+> a full-screen fragment shader (§4.9) with draggable composable lenses,
+> kaleidoscope folds, and chromatic dispersion (§4.10).
 
 ---
 
@@ -549,6 +552,61 @@ that's pixel-bound. Many polished toys are Canvas 2D for logic with a single
 WebGL post pass. (WebGPU + compute shaders is the 2026 frontier — million-
 particle SPH in a browser — but WebGL2 remains the safe target.)
 
+### 4.10 Lenses and fake optics
+
+*(Reference implementation: [`lens_lab.html`](lens_lab.html) — draggable
+kaleidoscope/crystal/prism/ripple lenses over a procedural light field.)*
+
+Every 2D "optical" effect — refraction, magnification, kaleidoscopes, heat
+shimmer, water distortion — is the same trick: **warp the coordinate you
+sample the scene at.** Instead of computing `scene(p)`, compute
+`scene(warp(p))`. That one idea, plus a handful of warp functions, is an
+entire genre of toy. In a fragment shader it's per-pixel and free; on Canvas
+2D a small magnifier can be faked with a clipped, scaled `drawImage` of the
+region under it, but anything full-screen wants the shader.
+
+The warp vocabulary (all operate on `d = p - centre`, `r = |d| / radius`,
+applied only where `r < 1`):
+
+- **Kaleidoscope fold** — convert to polar, wrap the angle into one sector,
+  mirror it, convert back:
+  `a = mod(atan(d.y, d.x), seg); a = min(a, seg - a);` with
+  `seg = 2π / N`. Everything inside becomes an N-fold mandala. **The lesson
+  learned the hard way:** also *scale the sample radius up* (`rad = |d| ×
+  1.2–1.5`) so the fold reaches past the lens rim and pulls the surrounding
+  scenery into the mandala — folding only the lens's own patch mirrors mush.
+  Crisp source features (bright dots, stars, thin lines) fold into crisp
+  spokes; soft gradients fold into soup, so give the background sharp detail.
+- **Sphere/magnifier** — scale `d` by a factor that goes from `k < 1` at the
+  centre (zoom in) to `1` at the rim: `p' = centre + d * mix(k, 1.0,
+  pow(r, n))`. `k ≈ 0.4, n ≈ 1.7` reads as a crystal ball.
+- **Swirl** — rotate `d` by an angle proportional to `(1 - r)`; the twist dies
+  off at the rim so the boundary stays seamless.
+- **Ripple** — displace radially by `sin(r·freq − t)·(1 − r)`; animated
+  concentric water rings.
+
+Three finishing moves turn "a warp" into "glass":
+
+1. **Chromatic dispersion — the single biggest upgrade.** Run the warp three
+   times with a slightly different strength per colour channel (±3–6%), then
+   assemble `vec3(scene(pR).r, scene(pG).g, scene(pB).b)`. Every edge and fold
+   seam fringes into rainbow — instantly expensive-looking, and physically the
+   same reason real prisms make rainbows. Costs 3× the scene evaluation; on a
+   GPU, irrelevant.
+2. **Fade the warp at the rim.** Blend between warped and unwarped coordinates
+   with `smoothstep(1.0, ~0.75, r)` so there's never a hard discontinuity at
+   the lens edge.
+3. **Sell the physical object**: a bright ring at `r ≈ 0.97`
+   (`smoothstep` on `|r − 0.97|`), a fixed specular glint
+   (`pow(max(cos(angle − θ_light), 0), 24)` on the ring), fresnel edge
+   darkening inside the rim, and a saturation/brightness boost on the lens
+   interior so looking through it is *better* than not.
+
+Lenses **compose**: apply them sequentially to the coordinate before sampling
+(`p = lensB(lensA(p))`) and overlapping a swirl with a kaleidoscope
+kaleidoscopes the swirl. Let the user drag them and stack them — the
+combinatorics are the toy.
+
 ---
 
 ## 5. Juice
@@ -664,6 +722,7 @@ Concrete toys, each pairing techniques from above. Roughly ordered by effort.
 | **Splash bath** | Clavet SPH water (§3.5b) + goo render (§4.3) + pourable containers from static line colliders | Real splashable water; the liquid_pour game's final form |
 | **Shadow maze** | Raycast visibility polygon (§4.8) + darkness + hidden glowing collectables | Sight-and-light is an unforgettable effect almost nobody ships |
 | **Particle life zoo** | 4–6 particle species with an asymmetric attraction matrix + spatial hash (§3.3) | Self-organising "cells" crawl, chase, and reproduce from ~30 lines of rules |
+| **Mandala generator** | Kaleidoscope fold (§4.10) applied to *painting*: the pointer draws glowing strokes (§4.2) into a feedback buffer, folded into N mirrored sectors with dispersion fringes; scroll changes the symmetry count | Symmetry makes anyone an artist — every scribble comes out a rose window; the child is generating the content, not just watching it |
 | **Reaction-diffusion painter** | Gray-Scott in a fragment shader with ping-pong buffers (§4.9), pointer seeds | Coral/leopard/fingerprint patterns growing under the finger; the flagship "jump to WebGL" project |
 | **Wrecking yard** | Verlet boxes (§3.8) + tearable constraints + trauma screenshake + hit-stop (§5) | Pure demolition catharsis; juice showcase |
 
