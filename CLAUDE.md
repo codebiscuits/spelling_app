@@ -76,7 +76,18 @@ spelling_app/
 
 ## Homophone support
 
-Words with homophones have a `context_sentence` TEXT column in the `words` table (added via `ALTER TABLE` migration in `init_db()`). The seed script populates this for ~34 curriculum words (e.g. *where*, *eight*, *reign*). During a test, `spelling.py` calls `get_sentence_audio_url(word, sentence, db)` to generate and cache a sentence MP3 (filename: `sentence_<word>.mp3`, cache key: `__sentence__<word>`). The test template shows a "Hear it in a sentence" button only on attempt 1 when a sentence URL is available.
+Words with homophones have a `context_sentence` TEXT column in the `words` table (added via `ALTER TABLE` migration in `init_db()`). The seed script populates this for ~34 curriculum words (e.g. *where*, *eight*, *reign*). During a test, `spelling.py` calls `get_sentence_audio_url(word, sentence, db)` to generate and cache a sentence MP3 (cache key: `__sentence__<word>`). The test template shows a "Hear it in a sentence" button only on attempt 1 when a sentence URL is available.
+
+Audio filenames are SHA-256 hashes (`services/tts.py: _hashed_filename()`), never the word itself — the mp3 URL appears in the attempt-1 page source, and a readable filename would reveal the spelling. Cache entries whose stored filename doesn't match the hashed scheme are treated as stale and regenerated.
+
+## Testing
+
+```bash
+uv run pytest              # unit + route tests (fast, no network; gTTS is faked)
+uv run pytest -m e2e       # Playwright browser test (needs chromium installed)
+```
+
+Route tests use the fixtures in `tests/conftest.py` (`client`, `admin_client`, `child_client`) which run the app against a temp database with gTTS mocked. A core invariant covered by `tests/test_spelling_flow.py`: on attempt 1 the word must never appear anywhere in the page source, including audio URLs.
 
 ## Colour palettes
 
