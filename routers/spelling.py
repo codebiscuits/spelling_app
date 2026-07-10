@@ -117,6 +117,15 @@ def submit_word(
     if not test:
         return RedirectResponse("/child/dashboard", status_code=303)
 
+    idx = test["current_index"]
+    word_queue = test["word_queue"]
+    if idx >= len(word_queue):
+        return RedirectResponse("/test/results", status_code=303)
+    # Only accept an answer for the word currently being asked — rejects
+    # stale forms, double submissions, and hand-crafted word_ids
+    if word_id != word_queue[idx]:
+        return RedirectResponse("/test/word", status_code=303)
+
     user_id = user["user_id"]
     attempt = test["attempt_number"]
     now = datetime.now(timezone.utc).isoformat()
