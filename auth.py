@@ -1,8 +1,6 @@
-import os
 import secrets
 import bcrypt
 from fastapi import Request, HTTPException
-from fastapi.responses import RedirectResponse
 
 
 def hash_password(password: str) -> str:
