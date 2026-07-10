@@ -95,10 +95,11 @@ def check_and_award(user_id: int, list_id: int, session_id: int, session_score: 
                     for nl in db.execute(
                         "SELECT id FROM word_lists WHERE year_group=?", (next_yg,)
                     ).fetchall():
-                        db.execute(
+                        cur = db.execute(
                             "INSERT OR IGNORE INTO user_list_unlocks (user_id, list_id, unlocked_at) VALUES (?,?,?)",
                             (user_id, nl["id"], now),
                         )
-                        result["lists_unlocked"].append(nl["id"])
+                        if cur.rowcount:
+                            result["lists_unlocked"].append(nl["id"])
 
     return result

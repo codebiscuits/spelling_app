@@ -7,6 +7,9 @@ def select_words(user_id: int, list_ids: list[int], n: int, db) -> list[int]:
     Words with poor history are weighted higher (more likely to appear).
     Uses Efraimidis-Spirakis algorithm (no external deps).
     """
+    if not list_ids:
+        return []
+
     placeholders = ",".join("?" * len(list_ids))
     word_rows = db.execute(
         f"SELECT id FROM words WHERE list_id IN ({placeholders})", list_ids

@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS test_sessions (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
     user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    list_id   INTEGER NOT NULL REFERENCES word_lists(id),
+    list_id   INTEGER REFERENCES word_lists(id),
     score     INTEGER NOT NULL,
     max_score INTEGER NOT NULL
 );
