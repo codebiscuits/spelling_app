@@ -9,6 +9,13 @@ from templates_env import templates, MINI_GAMES
 router = APIRouter(prefix="/admin")
 
 
+def parse_year_group(value: str) -> int | None:
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 # ── Dashboard ──────────────────────────────────────────────────────────────
 
 @router.get("/")
@@ -44,7 +51,7 @@ def create_word_list(
     admin=Depends(require_admin),
 ):
     verify_csrf_token(request, csrf_token)
-    yg = int(year_group) if year_group.strip() else None
+    yg = parse_year_group(year_group)
     with get_db() as db:
         db.execute("INSERT INTO word_lists (name, year_group) VALUES (?, ?)", (name.strip(), yg))
     return RedirectResponse("/admin/lists", status_code=303)
@@ -75,7 +82,7 @@ def edit_word_list(
     admin=Depends(require_admin),
 ):
     verify_csrf_token(request, csrf_token)
-    yg = int(year_group) if year_group.strip() else None
+    yg = parse_year_group(year_group)
     with get_db() as db:
         db.execute(
             "UPDATE word_lists SET name=?, year_group=? WHERE id=?",
@@ -93,6 +100,10 @@ def delete_word_list(
 ):
     verify_csrf_token(request, csrf_token)
     with get_db() as db:
+        # Legacy single-list sessions reference the list without ON DELETE;
+        # detach them so they survive as "Mixed practice" rather than
+        # blocking the delete with a foreign-key error
+        db.execute("UPDATE test_sessions SET list_id=NULL WHERE list_id=?", (list_id,))
         db.execute("DELETE FROM word_lists WHERE id=?", (list_id,))
     return RedirectResponse("/admin/lists", status_code=303)
 
@@ -174,8 +185,8 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
         if not child:
             raise HTTPException(404)
         sessions = db.execute(
-            """SELECT ts.*, wl.name AS list_name
-               FROM test_sessions ts JOIN word_lists wl ON wl.id=ts.list_id
+            """SELECT ts.*, COALESCE(wl.name, 'Mixed practice') AS list_name
+               FROM test_sessions ts LEFT JOIN word_lists wl ON wl.id=ts.list_id
                WHERE ts.user_id=? ORDER BY ts.timestamp DESC LIMIT 20""",
             (child_id,),
         ).fetchall()
@@ -183,7 +194,7 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
             "SELECT * FROM user_badges WHERE user_id=?", (child_id,)
         ).fetchall()
         unlocked = db.execute(
-            """SELECT ul.list_id, wl.name FROM user_list_unlocks ul
+            """SELECT ul.list_id, ul.unlocked_at, wl.name FROM user_list_unlocks ul
                JOIN word_lists wl ON wl.id=ul.list_id WHERE ul.user_id=?""",
             (child_id,),
         ).fetchall()
