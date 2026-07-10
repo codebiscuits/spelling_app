@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lens Lab</title>
+  <!--
+    HANDBOOK.md §4.9 in action: the whole scene is one full-screen fragment
+    shader. Draggable "lenses" warp the sampling coordinates (kaleidoscope
+    folds, refraction, swirls, ripples), and every lens samples the R/G/B
+    channels at slightly different strengths — chromatic dispersion — so
+    edges bloom into rainbows no real kaleidoscope could manage.
+    JS only moves lenses (springs, §3.2) and uploads uniforms.
+  -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0c0c1e; }
+    canvas { display: block; touch-action: none; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #888; }
+    #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+    #resetBtn, #muteBtn {
+      position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); }
+    #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; line-height: 1; }
+    #resetBtn:hover, #muteBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+    #nogl {
+      position: fixed; inset: 0; display: none; place-items: center; color: #ccc;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>🔮 Lens Lab</h3>
+  <div class="param"><span class="key">Drag</span><span class="val">Move a lens</span></div>
+  <div class="param"><span class="key">Click space</span><span class="val">New lens</span></div>
+  <div class="param"><span class="key">Double Click</span><span class="val">Change lens type</span></div>
+  <div class="param"><span class="key">Right Click</span><span class="val">Remove lens</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Resize lens</span></div>
+  <br>
+  <div class="param"><span class="key">Lenses:</span><span class="val" id="lensCount">0</span></div>
+</div>
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
+<button id="resetBtn">&#x21BA; Reset lenses</button>
+<div id="nogl"><p>This toy needs WebGL2,<br>which isn't available in this browser.</p></div>
+
+<script>
+'use strict';
+const MAX_LENSES = 8;
+
+// ---------------------------------------------------------------- shaders --
+const VERT = `#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vUv;
+void main() { vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+
+const FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform vec2  uRes;                 // buffer pixels
+uniform float uTime;
+uniform int   uCount;
+uniform vec4  uLens[${MAX_LENSES}]; // x, y (buffer px, origin bottom-left), radius, rotation
+uniform int   uType[${MAX_LENSES}]; // 0 kaleido, 1 crystal, 2 prism swirl, 3 ripple
+uniform float uSeg[${MAX_LENSES}];  // kaleidoscope segment count
+
+// §4.1 cosine gradient palette — every colour in the toy comes through this
+vec3 palette(float t) {
+  return 0.55 + 0.45 * cos(6.2831853 * (t + vec3(0.0, 0.33, 0.67)));
+}
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x),
+             mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  return vnoise(p) * 0.5 + vnoise(p * 2.03) * 0.25 + vnoise(p * 4.09) * 0.125;
+}
+
+// The light field the lenses look at: drifting gems, rotating light bars,
+// and a domain-warped nebula (§4.5). Calm alone — the lenses do the drama.
+vec3 scene(vec2 px) {
+  vec2 q = px / uRes.y;
+  float aspect = uRes.x / uRes.y;
+  vec3 col = mix(vec3(0.020, 0.014, 0.050), vec3(0.055, 0.030, 0.110), q.y);
+
+  vec2 wp = q * 2.2 + 0.35 * vec2(fbm(q * 3.0 + uTime * 0.020),
+                                  fbm(q * 3.0 - uTime * 0.016));
+  float n = fbm(wp * 2.0 + uTime * 0.010);
+  col += palette(n * 0.7 + uTime * 0.006) * n * n * 0.40;
+
+  for (int i = 0; i < 2; i++) {
+    float a = uTime * (0.06 + 0.037 * float(i)) + float(i) * 2.1;
+    vec2 dir = vec2(cos(a), sin(a));
+    float d = abs(dot(q - vec2(aspect * 0.5, 0.5), vec2(-dir.y, dir.x)));
+    col += palette(float(i) * 0.45 + uTime * 0.012) * exp(-d * d * 180.0) * 0.30;
+  }
+
+  for (int i = 0; i < 9; i++) {
+    float fi = float(i);
+    vec2 base = vec2((0.12 + 0.76 * fract(fi * 0.618034)) * aspect,
+                      0.15 + 0.70 * fract(fi * 0.377));
+    float sp = 0.10 + 0.03 * fi;
+    vec2 c = base + vec2(cos(uTime * sp + fi * 2.4),
+                         sin(uTime * sp * 1.31 + fi * 1.7)) * (0.08 + 0.028 * fi);
+    float d = length(q - c);
+    vec3 gc = palette(fi * 0.14 + uTime * 0.010);
+    float rr = 0.030 + 0.014 * fract(fi * 0.731);
+    col += gc * smoothstep(rr, rr * 0.30, d) * 1.1;      // hard bright core
+    col += gc * exp(-d * d / (rr * rr * 16.0)) * 0.55;   // soft halo
+  }
+
+  // twinkling stars: sharp points give kaleidoscope folds crisp detail
+  vec2 sg = q * 16.0;
+  vec2 id = floor(sg), gv = fract(sg) - 0.5;
+  float sh = hash(id);
+  if (sh > 0.82) {
+    vec2 off = vec2(hash(id + 7.1), hash(id + 3.7)) - 0.5;
+    float sd = length(gv - off * 0.7);
+    float tw = 0.55 + 0.45 * sin(uTime * (1.5 + sh * 3.0) + sh * 40.0);
+    col += palette(sh * 2.0) * smoothstep(0.10, 0.01, sd) * tw * 0.9;
+  }
+  return col;
+}
+
+// Warp a sample position through one lens. chan = -1/0/+1 selects the colour
+// channel, and every lens treats channels slightly differently → dispersion.
+vec2 applyLens(vec2 p, int i, float chan, inout float boost) {
+  vec4 L = uLens[i];
+  vec2 d = p - L.xy;
+  float rr = length(d);
+  float r = rr / L.z;
+  if (r >= 1.0 || rr < 1e-3) return p;
+  float fade = smoothstep(1.0, 0.72, r);
+  int t = uType[i];
+
+  if (t == 0) {                              // kaleidoscope: mirror-fold the angle
+    float seg = 6.2831853 / uSeg[i];
+    float ang = atan(d.y, d.x) - L.w;
+    ang = mod(ang, seg);
+    ang = min(ang, seg - ang);
+    ang += chan * 0.007;                     // rainbow seams
+    // sample OUTWARD (rad > rr): folds the bright gems around the lens
+    // into the mandala instead of mirroring its own small patch
+    float rad = rr * (1.35 + 0.25 * sin(uTime * 0.4));
+    p = mix(p, L.xy + vec2(cos(ang + L.w), sin(ang + L.w)) * rad, fade);
+    boost += fade * 0.6;
+  } else if (t == 1) {                       // crystal ball: magnify, bend at rim
+    float k = mix(0.45 * (1.0 + 0.06 * chan), 1.0, pow(r, 1.7));
+    p = mix(p, L.xy + d * k, fade);
+    boost += fade * 0.35;
+  } else if (t == 2) {                       // prism swirl: vortex + heavy dispersion
+    float a = (1.0 - r) * (2.3 + 0.12 * chan) + L.w * 0.2;
+    float ca = cos(a), sa = sin(a);
+    p = mix(p, L.xy + mat2(ca, -sa, sa, ca) * d, fade);
+    p += vec2(cos(L.w), sin(L.w)) * chan * L.z * 0.022 * fade;
+    boost += fade * 0.45;
+  } else {                                   // ripple: animated water rings
+    float wv = sin(r * 24.0 - uTime * 3.2 + chan * 0.4) * (1.0 - r);
+    float rad = rr + wv * L.z * 0.05;
+    p = mix(p, L.xy + (d / rr) * rad, fade);
+    boost += fade * 0.3;
+  }
+  return p;
+}
+
+vec2 warpAll(vec2 p, float chan, inout float boost) {
+  for (int i = 0; i < ${MAX_LENSES}; i++) {
+    if (i >= uCount) break;
+    p = applyLens(p, i, chan, boost);        // lenses compose in stack order
+  }
+  return p;
+}
+
+void main() {
+  vec2 fc = vUv * uRes;
+
+  float boost = 0.0, dummy = 0.0;
+  vec2 pG = warpAll(fc, 0.0, boost);
+  vec2 pR = warpAll(fc, -1.0, dummy);
+  vec2 pB = warpAll(fc, 1.0, dummy);
+  vec3 col = vec3(scene(pR).r, scene(pG).g, scene(pB).b);
+
+  // larger-than-life: lens interiors get brighter and more saturated
+  float b = min(boost, 1.6);
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(vec3(lum), col, 1.0 + 0.35 * b);
+  col *= 1.0 + 0.22 * b;
+
+  // glass rims: soft ring, fresnel edge shading, a fixed specular glint
+  for (int i = 0; i < ${MAX_LENSES}; i++) {
+    if (i >= uCount) break;
+    vec4 L = uLens[i];
+    vec2 d = fc - L.xy;
+    float r = length(d) / L.z;
+    if (r > 1.15) continue;
+    float ring = smoothstep(0.055, 0.0, abs(r - 0.97));
+    vec3 tint = palette(float(i) * 0.19 + 0.55);
+    col *= 1.0 - 0.22 * smoothstep(0.72, 1.0, r) * step(r, 1.0);   // edge falloff
+    col += (vec3(0.50) + tint * 0.45) * ring * 0.55;
+    if (uType[i] == 1 && r < 1.0) {          // crystal: inner spectral fresnel ring
+      float fr = smoothstep(0.45, 0.95, r);
+      col += palette(r * 1.5 - uTime * 0.05) * fr * fr * 0.5;
+      col += tint * (1.0 - r) * 0.05;        // faint glass body tint
+    }
+    float ga = atan(d.y, d.x);
+    col += vec3(1.0) * ring * pow(max(cos(ga - 2.35), 0.0), 24.0) * 1.4; // glint
+    col += tint * exp(-pow((r - 1.0) * 9.0, 2.0)) * 0.10;               // outer glow
+  }
+
+  // grade: vignette + gentle tone curve + grain (§4.4)
+  vec2 vq = vUv - 0.5;
+  col *= 1.0 - 0.55 * dot(vq, vq);
+  col = col / (1.0 + col * 0.12);
+  col += (hash(fc + fract(uTime) * 61.7) - 0.5) * 0.022;
+  fragColor = vec4(col, 1.0);
+}
+`;
+
+// ------------------------------------------------------------- GL harness --
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false });
+let w = 0, h = 0, dpr = 1;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+    throw new Error('shader: ' + gl.getShaderInfoLog(s));
+  return s;
+}
+
+let prog = null, U = {};
+if (!gl) {
+  document.getElementById('nogl').style.display = 'grid';
+} else {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+    throw new Error('link: ' + gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  // one full-screen triangle — no quad, no index buffer
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  for (const n of ['uRes', 'uTime', 'uCount', 'uLens', 'uType', 'uSeg'])
+    U[n] = gl.getUniformLocation(prog, n);
+  console.log('SHADER OK');
+}
+
+function fitCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  if (gl) gl.viewport(0, 0, canvas.width, canvas.height);
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+// ------------------------------------------------------------------ sound --
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+}
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0, 2, 4, 7, 9];
+const penta = (base, i) => base * Math.pow(2, (PENTA[i % 5] + 12 * ((i / 5) | 0)) / 12);
+
+// ----------------------------------------------------------------- lenses --
+const TYPES = 4;
+const SEGS = [6, 8, 10, 12, 16];
+const lenses = [];   // {x,y,r, tx,ty,tr, rv, type, seg, rot, born, dying}
+let spawnCount = 0;
+
+function spawnLens(x, y, type) {
+  const l = {
+    x, y, tx: x, ty: y,
+    r: 8, tr: Math.min(w, h) * (0.16 + Math.random() * 0.08), rv: 0,
+    type: type !== undefined ? type : (spawnCount++ % TYPES),
+    seg: SEGS[(Math.random() * SEGS.length) | 0],
+    rot: Math.random() * 6.28, born: performance.now(), dying: false,
+  };
+  lenses.push(l);
+  const n = (Math.random() * 5) | 0;
+  tone(penta(392, n), penta(392, n) * 1.01, 0.15, 0.10);
+  tone(penta(392, n + 3), penta(392, n + 3) * 1.01, 0.20, 0.08, 'sine', 0.08);
+  return l;
+}
+
+function resetLenses() {
+  lenses.length = 0;
+  spawnCount = 0;
+  spawnLens(w * 0.38, h * 0.45, 0).tr = Math.min(w, h) * 0.26;  // kaleidoscope
+  spawnLens(w * 0.70, h * 0.60, 1);                             // crystal ball
+  spawnCount = 2;
+}
+resetLenses();
+
+// ------------------------------------------------------ input (§2.3) ------
+const drags = new Map();   // pointerId -> {lens, dx, dy}
+let lastTapTime = 0, lastTapLens = null;
+
+function lensAt(x, y) {
+  for (let i = lenses.length - 1; i >= 0; i--) {
+    const l = lenses[i];
+    if (!l.dying && (x - l.x) ** 2 + (y - l.y) ** 2 < (l.r * 1.05) ** 2) return l;
+  }
+  return null;
+}
+
+canvas.addEventListener('pointerdown', e => {
+  ensureAudio();
+  canvas.setPointerCapture(e.pointerId);
+  if (e.button === 2) return;
+  const l = lensAt(e.clientX, e.clientY);
+  const now = performance.now();
+  if (l) {
+    // double-tap on a lens (not one just spawned) cycles its type
+    if (now - lastTapTime < 350 && lastTapLens === l && now - l.born > 450) {
+      l.type = (l.type + 1) % TYPES;
+      l.seg = SEGS[(Math.random() * SEGS.length) | 0];
+      l.rv = Math.min(w, h) * 0.5;           // little pulse so the change reads
+      tone(penta(523, l.type * 2), penta(523, l.type * 2) * 1.01, 0.12, 0.10);
+    }
+    lastTapTime = now; lastTapLens = l;
+    drags.set(e.pointerId, { lens: l, dx: l.x - e.clientX, dy: l.y - e.clientY });
+    // raise to top of the stack (lenses compose in order)
+    lenses.splice(lenses.indexOf(l), 1);
+    lenses.push(l);
+  } else {
+    lastTapTime = now; lastTapLens = null;
+    if (lenses.filter(x => !x.dying).length < MAX_LENSES)
+      drags.set(e.pointerId, { lens: spawnLens(e.clientX, e.clientY), dx: 0, dy: 0 });
+  }
+});
+canvas.addEventListener('pointermove', e => {
+  const d = drags.get(e.pointerId);
+  if (d) { d.lens.tx = e.clientX + d.dx; d.lens.ty = e.clientY + d.dy; }
+});
+function endDrag(e) { drags.delete(e.pointerId); }
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const l = lensAt(e.clientX, e.clientY);
+  if (l) {
+    l.dying = true; l.tr = 0; l.rv = 0;
+    for (const [id, d] of drags) if (d.lens === l) drags.delete(id);
+    tone(600, 150, 0.25, 0.12, 'triangle');
+  }
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const l = lensAt(e.clientX, e.clientY) || (lenses.length && lenses[lenses.length - 1]);
+  if (!l || l.dying) return;
+  l.tr = Math.max(50, Math.min(Math.min(w, h) * 0.45, l.tr - e.deltaY * 0.3));
+}, { passive: false });
+
+document.getElementById('resetBtn').addEventListener('click', resetLenses);
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) tone(659, 665, 0.12, 0.10);
+});
+
+// ------------------------------------------------------------- main loop --
+const lensData = new Float32Array(MAX_LENSES * 4);
+const typeData = new Int32Array(MAX_LENSES);
+const segData = new Float32Array(MAX_LENSES);
+const ROT_SPEED = [0.12, 0.05, 0.45, 0.2];   // per type
+
+let time = 0, last = performance.now();
+const countEl = document.getElementById('lensCount');
+let lastCount = -1;
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  time += dt;
+
+  for (let i = lenses.length - 1; i >= 0; i--) {
+    const l = lenses[i];
+    // position: frame-rate-independent exponential ease toward the pointer (§3.2)
+    const k = 1 - Math.exp(-16 * dt);
+    l.x += (l.tx - l.x) * k;
+    l.y += (l.ty - l.y) * k;
+    // radius: underdamped spring — lenses pop in with a wobble
+    const omega = 9;
+    l.rv += (l.tr - l.r) * omega * omega * dt;
+    l.rv *= Math.exp(-1.4 * omega * dt);
+    l.r += l.rv * dt;
+    l.rot += ROT_SPEED[l.type] * dt;
+    if (l.dying && l.r < 6) lenses.splice(i, 1);
+  }
+
+  if (gl) {
+    const n = Math.min(lenses.length, MAX_LENSES);
+    for (let i = 0; i < n; i++) {
+      const l = lenses[i];
+      lensData[i * 4]     = l.x * dpr;
+      lensData[i * 4 + 1] = (h - l.y) * dpr;     // GL origin is bottom-left
+      lensData[i * 4 + 2] = Math.max(l.r, 1) * dpr;
+      lensData[i * 4 + 3] = l.rot;
+      typeData[i] = l.type;
+      segData[i] = l.seg;
+    }
+    gl.uniform2f(U.uRes, canvas.width, canvas.height);
+    gl.uniform1f(U.uTime, time);
+    gl.uniform1i(U.uCount, n);
+    gl.uniform4fv(U.uLens, lensData);
+    gl.uniform1iv(U.uType, typeData);
+    gl.uniform1fv(U.uSeg, segData);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  const alive = lenses.filter(l => !l.dying).length;
+  if (alive !== lastCount) { countEl.textContent = alive; lastCount = alive; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
