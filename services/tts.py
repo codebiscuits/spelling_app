@@ -1,5 +1,5 @@
 import os
-import re
+import hashlib
 import logging
 from datetime import datetime, timezone
 from gtts import gTTS
@@ -10,20 +10,28 @@ AUDIO_DIR = os.getenv("AUDIO_DIR", "static/audio")
 AUDIO_URL_PREFIX = "/static/audio"
 
 
+def _hashed_filename(key: str, prefix: str = "") -> str:
+    """Audio filenames are hashed so the URL in the page source never
+    reveals the word being tested."""
+    return prefix + hashlib.sha256(key.encode()).hexdigest()[:16] + ".mp3"
+
+
 def get_audio_url(word_text: str, db) -> str | None:
     """
     Returns a URL for the word's audio file, generating via gTTS if not cached.
     Returns None on failure.
     """
     word_lower = word_text.lower().strip()
-    safe_name = re.sub(r"[^a-z0-9]", "_", word_lower) + ".mp3"
+    safe_name = _hashed_filename(word_lower)
     file_path = os.path.join(AUDIO_DIR, safe_name)
     audio_url = f"{AUDIO_URL_PREFIX}/{safe_name}"
 
     cached = db.execute(
         "SELECT file_path FROM audio_cache WHERE word_text=?", (word_lower,)
     ).fetchone()
-    if cached and os.path.exists(cached["file_path"]):
+    # Entries whose basename doesn't match are from the old word-named
+    # scheme (which leaked the word in the URL) — regenerate those
+    if cached and os.path.basename(cached["file_path"]) == safe_name and os.path.exists(cached["file_path"]):
         return audio_url
 
     try:
@@ -64,14 +72,14 @@ def get_sentence_audio_url(word_text: str, sentence: str, db) -> str | None:
     """
     word_lower = word_text.lower().strip()
     cache_key = f"__sentence__{word_lower}"
-    safe_name = "sentence_" + re.sub(r"[^a-z0-9]", "_", word_lower) + ".mp3"
+    safe_name = _hashed_filename(cache_key, prefix="sentence_")
     file_path = os.path.join(AUDIO_DIR, safe_name)
     audio_url = f"{AUDIO_URL_PREFIX}/{safe_name}"
 
     cached = db.execute(
         "SELECT file_path FROM audio_cache WHERE word_text=?", (cache_key,)
     ).fetchone()
-    if cached and os.path.exists(cached["file_path"]):
+    if cached and os.path.basename(cached["file_path"]) == safe_name and os.path.exists(cached["file_path"]):
         return audio_url
 
     try:
