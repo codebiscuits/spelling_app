@@ -1,5 +1,16 @@
+import random
+
+import pytest
+
 from services.word_selection import select_words
 from tests.conftest import make_user, make_list, make_words, make_session, record_attempt
+
+
+@pytest.fixture(autouse=True)
+def seeded_rng():
+    """The sampler is random; seed it so the statistical frequency
+    assertions below are deterministic rather than flaky."""
+    random.seed(20260710)
 
 
 def test_returns_empty_for_no_lists(db):
