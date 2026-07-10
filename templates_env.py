@@ -35,6 +35,7 @@ MINI_GAMES = [
     {"file": "smoke.html",         "name": "Smoke",         "description": "Swirling smoke with deflectors"},
     {"file": "circles_2.html",     "name": "Circles 2",     "description": "Colourful circles that react to your mouse"},
     {"file": "ball_pit.html",      "name": "Ball Pit",      "description": "Physics sandbox — spawn, throw and explode balls"},
+    {"file": "jelly.html",         "name": "Jelly Buddies", "description": "Squishy soft-body blobs to poke and fling"},
 ]
 
 

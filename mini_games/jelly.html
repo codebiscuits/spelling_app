@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jelly Buddies</title>
+  <!--
+    Reference implementation for HANDBOOK.md. Implements:
+      §2.1 fixed timestep   §2.2 DPR-aware canvas   §2.3 pointer events + multi-touch
+      §3.1 pressure soft bodies (Verlet ring + area constraint)
+      §3.2 damped springs (spawn pop-in)
+      §4.1 cosine gradient palette   §4.2 pre-rendered glow sprites, additive particles
+      §5   squash (emergent), trauma² screenshake, pentatonic synth sounds (off by default)
+      §6   particle pooling, zero per-frame allocation in the hot loop
+  -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0c0c1e; }
+    canvas { display: block; touch-action: none; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #888; }
+    #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+    #resetBtn, #muteBtn {
+      position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); }
+    #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; line-height: 1; }
+    #resetBtn:hover, #muteBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>🫠 Jelly Buddies</h3>
+  <div class="param"><span class="key">Drag</span><span class="val">Grab &amp; fling</span></div>
+  <div class="param"><span class="key">Click space</span><span class="val">New buddy</span></div>
+  <div class="param"><span class="key">Right Click</span><span class="val">Pop a buddy</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Squish: <span id="squishVal">1.0</span></span></div>
+  <br>
+  <div class="param"><span class="key">Buddies:</span><span class="val" id="blobCount">0</span></div>
+</div>
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
+<button id="resetBtn">&#x21BA; Reset buddies</button>
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0;
+
+// ---- §2.2 DPR-aware canvas: buffer at device resolution, draw in CSS pixels ----
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+
+// ---- Tuning ----
+const N_PTS = 18;            // points per blob ring
+const ITERS = 6;             // constraint relaxation passes per step (§3.1)
+const GRAVITY = 0.30;        // px per step² (fixed step, so this is machine-independent)
+const DAMPING = 0.988;
+const MAX_BLOBS = 10;        // the max is the designed state (§7)
+const FLOOR_PAD = 6;
+let squish = 1.0;            // scroll-adjustable: higher = softer pressure
+
+// ---- §4.1 cosine gradient palette (Iñigo Quilez) — always tasteful, never garish ----
+function cosPalette(t) {
+  const c = [], d = [0.00, 0.25, 0.55];
+  for (let i = 0; i < 3; i++)
+    c.push(0.55 + 0.40 * Math.cos(6.28318 * (0.9 * t + d[i])));
+  return c;
+}
+function rgb(c, mul, add) {
+  return `rgb(${c.map(v => Math.round(Math.min(1, v * mul + add) * 255)).join(',')})`;
+}
+
+// ---- §5 sound: tiny Web Audio synth, pentatonic so random events sound musical.
+//      Off by default (classroom!) — big friendly toggle top-right. ----
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+}
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'triangle';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0, 2, 4, 7, 9];
+const penta = (base, i) => base * Math.pow(2, (PENTA[i % 5] + 12 * ((i / 5) | 0)) / 12);
+
+// ---- §4.2 + §6: pre-rendered glow sprite (shadowBlur per-particle is a perf trap)
+//      and a fixed-size particle pool — zero allocation in the hot loop. ----
+const glow = document.createElement('canvas');
+glow.width = glow.height = 64;
+{
+  const g = glow.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+}
+const POOL = 256;
+const parts = [];
+for (let i = 0; i < POOL; i++) parts.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 8, color: '#fff' });
+let partHead = 0;
+function spawnPart(x, y, vx, vy, size, color, life) {
+  const p = parts[partHead]; partHead = (partHead + 1) % POOL;   // revive, never allocate
+  p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.size = size; p.color = color; p.life = p.max = life;
+}
+
+// ---- §5 screenshake: trauma accumulates on events, shake amplitude = trauma² ----
+let trauma = 0, shakeT = 0;
+
+// ---- §3.1 the soft body: a Verlet ring + distance constraints + pressure ----
+const blobs = [];
+
+function makeBlob(x, y, r) {
+  const c3 = cosPalette(blobs.length * 0.618034);   // golden-ratio hue spacing
+  const b = {
+    r, pts: [],
+    ringRest: 2 * r * Math.sin(Math.PI / N_PTS),
+    bendRest: 2 * r * Math.sin(2 * Math.PI / N_PTS),
+    restArea: Math.PI * r * r,
+    base: rgb(c3, 1, 0), light: rgb(c3, 1, 0.35), dark: rgb(c3, 0.55, 0),
+    s: 0.25, sv: 0,                    // spawn scale, driven by a spring (§3.2)
+    cx: x, cy: y, vx: 0, vy: 0, angle: 0,
+    blinkT: 1 + Math.random() * 4, impactCd: 0, impact: 0,
+  };
+  for (let i = 0; i < N_PTS; i++) {
+    const a = (i / N_PTS) * Math.PI * 2;
+    const px = x + Math.cos(a) * r * b.s, py = y + Math.sin(a) * r * b.s;
+    b.pts.push({ x: px, y: py, px, py, grabbed: false });
+  }
+  blobs.push(b);
+  return b;
+}
+
+function popBlob(b, px, py) {
+  const idx = blobs.indexOf(b);
+  if (idx < 0) return;
+  blobs.splice(idx, 1);
+  for (const p of b.pts) {
+    const dx = p.x - b.cx, dy = p.y - b.cy;
+    const d = Math.hypot(dx, dy) || 1;
+    spawnPart(p.x, p.y, dx / d * (2 + Math.random() * 4) + b.vx, dy / d * (2 + Math.random() * 4) + b.vy,
+              5 + Math.random() * 9, b.light, 0.5 + Math.random() * 0.4);
+  }
+  trauma = Math.min(1, trauma + 0.25);
+  tone(700, 180, 0.25, 0.20, 'square');
+  tone(300, 60, 0.35, 0.15, 'sine', 0.03);
+  for (const [, g] of grabs) if (g.blob === b) grabs.delete(g.id);
+}
+
+function resetBlobs() {
+  blobs.length = 0;
+  for (let i = 0; i < 4; i++) {
+    const r = 42 + Math.random() * 26;
+    makeBlob(w * (0.25 + 0.17 * i), h * 0.25 + Math.random() * h * 0.2, r);
+  }
+}
+resetBlobs();
+
+// ---- §2.3 pointer events: works with mouse, touch, pen; multi-touch via pointerId ----
+const pointers = new Map();   // id -> {x, y, lx, ly, vx, vy}
+const grabs = new Map();      // id -> {id, blob, idx}
+
+function blobAt(x, y) {
+  for (let i = blobs.length - 1; i >= 0; i--) {
+    const b = blobs[i];
+    if ((x - b.cx) ** 2 + (y - b.cy) ** 2 < (b.r * b.s * 1.25) ** 2) return b;
+  }
+  return null;
+}
+
+canvas.addEventListener('pointerdown', e => {
+  ensureAudio();
+  canvas.setPointerCapture(e.pointerId);
+  const pt = { x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, vx: 0, vy: 0 };
+  pointers.set(e.pointerId, pt);
+  if (e.button === 2) return;                       // pops are handled by contextmenu
+  const b = blobAt(pt.x, pt.y);
+  if (b) {
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < b.pts.length; i++) {
+      const d = (b.pts[i].x - pt.x) ** 2 + (b.pts[i].y - pt.y) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    b.pts[best].grabbed = true;
+    grabs.set(e.pointerId, { id: e.pointerId, blob: b, idx: best });
+    tone(penta(330, (Math.random() * 5) | 0), 260, 0.09, 0.10);
+  } else if (blobs.length < MAX_BLOBS) {
+    const nb = makeBlob(pt.x, pt.y, 40 + Math.random() * 28);
+    const n = (Math.random() * 5) | 0;
+    tone(penta(262, n), penta(262, n) * 1.02, 0.10, 0.12, 'sine');
+    tone(penta(262, n + 2), penta(262, n + 2) * 1.02, 0.12, 0.10, 'sine', 0.07);
+    nb.sv = 3;                                      // extra pop-in overshoot
+  }
+});
+canvas.addEventListener('pointermove', e => {
+  const pt = pointers.get(e.pointerId);
+  if (pt) { pt.x = e.clientX; pt.y = e.clientY; }
+});
+function releasePointer(e) {
+  const g = grabs.get(e.pointerId);
+  const pt = pointers.get(e.pointerId);
+  if (g && pt) {
+    const p = g.blob.pts[g.idx];
+    p.grabbed = false;
+    p.px = p.x - pt.vx * 0.9;                       // inherit pointer velocity → fling
+    p.py = p.y - pt.vy * 0.9;
+  }
+  grabs.delete(e.pointerId);
+  pointers.delete(e.pointerId);
+}
+canvas.addEventListener('pointerup', releasePointer);
+canvas.addEventListener('pointercancel', releasePointer);
+canvas.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const b = blobAt(e.clientX, e.clientY);
+  if (b) popBlob(b, e.clientX, e.clientY);
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  squish = Math.max(0.4, Math.min(2.5, squish - e.deltaY * 0.0012));
+}, { passive: false });
+
+document.getElementById('resetBtn').addEventListener('click', resetBlobs);
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) tone(523, 530, 0.1, 0.12, 'sine');
+});
+
+window.addEventListener('resize', () => {
+  fitCanvas();
+  for (const b of blobs) for (const p of b.pts) {
+    p.x = Math.min(p.x, w - 2); p.y = Math.min(p.y, h - FLOOR_PAD);
+    p.px = Math.min(p.px, w - 2); p.py = Math.min(p.py, h - FLOOR_PAD);
+  }
+});
+
+// ---- Physics step (runs at exactly 60 Hz — §2.1) ----
+function step() {
+  // pointer velocities (per step, so fling speed is frame-rate independent)
+  for (const [, pt] of pointers) {
+    pt.vx = pt.x - pt.lx; pt.vy = pt.y - pt.ly;
+    pt.lx = pt.x; pt.ly = pt.y;
+  }
+
+  for (const b of blobs) {
+    // §3.2 spawn pop-in: underdamped spring on scale → juicy overshoot
+    const omega = 9, dt = 1 / 60;
+    b.sv += (1 - b.s) * omega * omega * dt;
+    b.sv *= Math.exp(-1.3 * omega * dt);
+    b.s = Math.min(1.25, b.s + b.sv * dt);
+
+    // integrate (velocity implicit in pos - prevPos)
+    for (const p of b.pts) {
+      if (p.grabbed) continue;
+      const vx = (p.x - p.px) * DAMPING, vy = (p.y - p.py) * DAMPING;
+      p.px = p.x; p.py = p.y;
+      p.x += vx; p.y += vy + GRAVITY;
+    }
+    b.impact = 0;
+  }
+
+  // pin grabbed points to their pointers
+  for (const [, g] of grabs) {
+    const pt = pointers.get(g.id);
+    if (!pt) continue;
+    const p = g.blob.pts[g.idx];
+    p.x = p.px = Math.max(2, Math.min(w - 2, pt.x));
+    p.y = p.py = Math.max(2, Math.min(h - 2, pt.y));
+  }
+
+  const pressureK = 0.055 / squish;
+
+  for (let iter = 0; iter < ITERS; iter++) {
+    for (const b of blobs) {
+      const pts = b.pts, n = pts.length;
+      const ringRest = b.ringRest * b.s, bendRest = b.bendRest * b.s;
+
+      // ring + bending distance constraints (bend = i to i+2, keeps the outline smooth)
+      for (let k = 0; k < 2; k++) {
+        const rest = k === 0 ? ringRest : bendRest, hop = k + 1, stiff = k === 0 ? 0.5 : 0.25;
+        for (let i = 0; i < n; i++) {
+          const a = pts[i], c = pts[(i + hop) % n];
+          const dx = c.x - a.x, dy = c.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 0.001;
+          const diff = (dist - rest) / dist * stiff;
+          if (!a.grabbed) { a.x += dx * diff; a.y += dy * diff; }
+          if (!c.grabbed) { c.x -= dx * diff; c.y -= dy * diff; }
+        }
+      }
+
+      // pressure: compare shoelace area to rest area, push along outward normals
+      let area = 0;
+      for (let i = 0; i < n; i++) {
+        const a = pts[i], c = pts[(i + 1) % n];
+        area += a.x * c.y - c.x * a.y;
+      }
+      area *= 0.5;
+      const target = b.restArea * b.s * b.s;
+      let diff = (target - area) / target;
+      diff = Math.max(-1, Math.min(1, diff));
+      const push = diff * b.r * b.s * pressureK;
+      for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        if (p.grabbed) continue;
+        const prev = pts[(i + n - 1) % n], next = pts[(i + 1) % n];
+        let nx = next.y - prev.y, ny = -(next.x - prev.x);   // outward normal (CCW ring)
+        const nl = Math.sqrt(nx * nx + ny * ny) || 0.001;
+        p.x += nx / nl * push; p.y += ny / nl * push;
+      }
+
+      // recompute centre for collisions
+      let cx = 0, cy = 0;
+      for (const p of pts) { cx += p.x; cy += p.y; }
+      b.cx = cx / n; b.cy = cy / n;
+    }
+
+    // blob–blob: each point is pushed out of the other blob's circle → local dents,
+    // and both sides run the check so it stays roughly symmetric
+    for (let i = 0; i < blobs.length; i++) {
+      for (let j = i + 1; j < blobs.length; j++) {
+        const A = blobs[i], B = blobs[j];
+        const rA = A.r * A.s, rB = B.r * B.s;
+        const dcx = B.cx - A.cx, dcy = B.cy - A.cy;
+        if (dcx * dcx + dcy * dcy > (rA + rB + 12) ** 2) continue;
+        for (const p of A.pts) {
+          if (p.grabbed) continue;
+          const dx = p.x - B.cx, dy = p.y - B.cy;
+          const d = Math.sqrt(dx * dx + dy * dy) || 0.001;
+          if (d < rB) { const f = (rB - d) / d * 0.4; p.x += dx * f; p.y += dy * f; }
+        }
+        for (const p of B.pts) {
+          if (p.grabbed) continue;
+          const dx = p.x - A.cx, dy = p.y - A.cy;
+          const d = Math.sqrt(dx * dx + dy * dy) || 0.001;
+          if (d < rA) { const f = (rA - d) / d * 0.4; p.x += dx * f; p.y += dy * f; }
+        }
+      }
+    }
+
+    // walls & floor, with restitution + friction
+    const floor = h - FLOOR_PAD;
+    for (const b of blobs) {
+      for (const p of b.pts) {
+        if (p.grabbed) continue;
+        if (p.y > floor) {
+          const vy = p.y - p.py, vx = p.x - p.px;
+          if (iter === 0 && vy > b.impact) b.impact = vy;
+          p.y = floor;
+          p.py = p.y + vy * 0.35;          // restitution: small bounce
+          p.px = p.x - vx * 0.55;          // friction: bleed tangential speed
+        }
+        if (p.y < 2) { p.y = 2; p.py = p.y + (p.y - p.py) * 0.35; }
+        if (p.x < 2) { p.x = 2; p.px = p.x + (p.x - p.px) * 0.35; }
+        if (p.x > w - 2) { p.x = w - 2; p.px = p.x + (p.x - p.px) * 0.35; }
+      }
+    }
+  }
+
+  // per-blob bookkeeping: centre velocity, rolling angle, blink, landing juice
+  for (const b of blobs) {
+    let cx = 0, cy = 0;
+    for (const p of b.pts) { cx += p.x; cy += p.y; }
+    cx /= b.pts.length; cy /= b.pts.length;
+    b.vx = cx - b.cx;
+    b.vy = cy - b.cy;
+    b.cx = cx; b.cy = cy;
+    b.angle = Math.atan2(b.pts[0].y - cy, b.pts[0].x - cx);
+
+    b.blinkT -= 1 / 60;
+    if (b.blinkT < -0.13) b.blinkT = 1.5 + Math.random() * 4;
+
+    b.impactCd = Math.max(0, b.impactCd - 1 / 60);
+    if (b.impact > 4.5 && b.impactCd === 0) {
+      b.impactCd = 0.3;
+      const strength = Math.min(1, (b.impact - 4.5) / 8);
+      trauma = Math.min(1, trauma + strength * 0.35);
+      const nP = 4 + (strength * 10) | 0;
+      for (let i = 0; i < nP; i++)
+        spawnPart(b.cx + (Math.random() - 0.5) * b.r * b.s * 1.6, h - FLOOR_PAD - 2,
+                  (Math.random() - 0.5) * 4, -1 - Math.random() * 3 * strength,
+                  3 + Math.random() * 6, b.light, 0.3 + Math.random() * 0.3);
+      tone(520 - b.r * 3, (520 - b.r * 3) * 0.55, 0.12, 0.05 + strength * 0.12);
+    }
+  }
+
+  // particles
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    p.life -= 1 / 60;
+    p.vy += 0.12; p.vx *= 0.98; p.vy *= 0.98;
+    p.x += p.vx; p.y += p.vy;
+  }
+
+  trauma = Math.max(0, trauma - 0.025);
+  shakeT += 1 / 60;
+}
+
+// ---- Rendering ----
+const bokeh = [];
+for (let i = 0; i < 18; i++)
+  bokeh.push({ x: Math.random(), y: Math.random(), r: 20 + Math.random() * 60,
+               spd: 0.00015 + Math.random() * 0.0004, a: 0.02 + Math.random() * 0.04 });
+
+function drawBlobBody(b) {
+  const pts = b.pts, n = pts.length;
+  ctx.beginPath();
+  let mx = (pts[n - 1].x + pts[0].x) / 2, my = (pts[n - 1].y + pts[0].y) / 2;
+  ctx.moveTo(mx, my);
+  for (let i = 0; i < n; i++) {
+    const p = pts[i], q = pts[(i + 1) % n];
+    ctx.quadraticCurveTo(p.x, p.y, (p.x + q.x) / 2, (p.y + q.y) / 2);
+  }
+  ctx.closePath();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, w, h);
+
+  // background: never pure black (§4.1) — subtle radial depth + drifting bokeh
+  const bg = ctx.createRadialGradient(w * 0.5, h * 0.35, 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.8);
+  bg.addColorStop(0, '#1a1433'); bg.addColorStop(1, '#0a0818');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+  for (const k of bokeh) {
+    k.y -= k.spd; if (k.y < -0.1) { k.y = 1.1; k.x = Math.random(); }
+    ctx.globalAlpha = k.a;
+    ctx.drawImage(glow, k.x * w - k.r, k.y * h - k.r, k.r * 2, k.r * 2);
+  }
+  ctx.globalAlpha = 1;
+
+  // §5 screenshake: amplitude = trauma², offset AND rotation, from smooth waves
+  const sh = trauma * trauma;
+  ctx.save();
+  if (sh > 0.001) {
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate((Math.sin(shakeT * 41) + Math.sin(shakeT * 27.7) * 0.6) * 0.012 * sh);
+    ctx.translate(-w / 2 + Math.sin(shakeT * 47.3) * 11 * sh, -h / 2 + Math.sin(shakeT * 38.9) * 11 * sh);
+  }
+
+  // floor glow strip
+  const fg = ctx.createLinearGradient(0, h - 60, 0, h);
+  fg.addColorStop(0, 'rgba(120,110,220,0)'); fg.addColorStop(1, 'rgba(120,110,220,0.10)');
+  ctx.fillStyle = fg; ctx.fillRect(0, h - 60, w, 60);
+
+  for (const b of blobs) {
+    const r = b.r * b.s;
+
+    // grounded contact shadow
+    const shAlpha = Math.max(0, 1 - (h - FLOOR_PAD - b.cy - r) / 160) * 0.35;
+    if (shAlpha > 0.01) {
+      ctx.fillStyle = `rgba(0,0,0,${shAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.ellipse(b.cx, h - FLOOR_PAD + 1, r * 0.85, r * 0.16, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // body: glossy radial gradient — light source fixed top-left, body squashes freely
+    drawBlobBody(b);
+    const g = ctx.createRadialGradient(b.cx - r * 0.30, b.cy - r * 0.35, r * 0.1,
+                                       b.cx, b.cy, r * 1.25);
+    g.addColorStop(0, b.light); g.addColorStop(0.55, b.base); g.addColorStop(1, b.dark);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 2; ctx.stroke();
+
+    // specular highlight (stays screen-aligned: it's the light, not the blob)
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.ellipse(b.cx - r * 0.32, b.cy - r * 0.42, r * 0.26, r * 0.13, -0.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    // face rotates with the blob (b.angle tracks point 0 → buddies visibly roll)
+    const ca = Math.cos(b.angle), sa = Math.sin(b.angle);
+    const rot = (x, y) => [b.cx + x * ca - y * sa, b.cy + x * sa + y * ca];
+    const speed = Math.hypot(b.vx, b.vy);
+
+    // eyes: look at the nearest pointer, else where they're going; blink on a timer
+    let lookX = b.vx, lookY = b.vy, ld = Infinity;
+    for (const [, pt] of pointers) {
+      const d = (pt.x - b.cx) ** 2 + (pt.y - b.cy) ** 2;
+      if (d < ld) { ld = d; lookX = pt.x - b.cx; lookY = pt.y - b.cy; }
+    }
+    const ll = Math.hypot(lookX, lookY) || 1;
+    const blink = b.blinkT < 0 ? 0.12 : 1;
+    const eyeR = r * 0.155;
+    for (const side of [-1, 1]) {
+      const [ex, ey] = rot(side * r * 0.30, -r * 0.18);
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.ellipse(ex, ey, eyeR, eyeR * blink, 0, 0, Math.PI * 2); ctx.fill();
+      if (blink === 1) {
+        ctx.fillStyle = '#1c1c2e';
+        ctx.beginPath();
+        ctx.arc(ex + lookX / ll * eyeR * 0.4, ey + lookY / ll * eyeR * 0.4, eyeR * 0.52, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // mouth: smile at rest, opens into an “o” when moving fast (wheee)
+    const open = Math.min(1, speed * 0.10);
+    const [mx, my] = rot(0, r * 0.22);
+    ctx.strokeStyle = '#1c1c2e'; ctx.fillStyle = '#1c1c2e'; ctx.lineWidth = Math.max(1.5, r * 0.045);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    if (open < 0.3) {
+      ctx.arc(mx, my - r * 0.06, r * 0.22, 0.35, Math.PI - 0.35);
+      ctx.stroke();
+    } else {
+      ctx.ellipse(mx, my, r * 0.10 + open * r * 0.09, r * 0.12 + open * r * 0.14, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // §4.2 additive particles: overlapping glows sum toward white like real light
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    const t = p.life / p.max;
+    ctx.globalAlpha = t * 0.9;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * t, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = t * 0.5;
+    ctx.drawImage(glow, p.x - p.size * 2, p.y - p.size * 2, p.size * 4, p.size * 4);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
+// ---- UI ----
+const squishEl = document.getElementById('squishVal');
+const countEl = document.getElementById('blobCount');
+let lastSquish = -1, lastCount = -1;
+function updateUI() {
+  if (squish !== lastSquish) { squishEl.textContent = squish.toFixed(1); lastSquish = squish; }
+  if (blobs.length !== lastCount) { countEl.textContent = blobs.length; lastCount = blobs.length; }
+}
+
+// ---- §2.1 fixed timestep: physics at exactly 60 steps/sec on every machine ----
+const DT = 1 / 60;
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);   // clamp guards the tab-return spiral
+  last = now;
+  while (acc >= DT) { step(); acc -= DT; }
+  draw();
+  updateUI();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
