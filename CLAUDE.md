@@ -89,6 +89,15 @@ uv run pytest -m e2e       # Playwright browser test (needs chromium installed)
 
 Route tests use the fixtures in `tests/conftest.py` (`client`, `admin_client`, `child_client`) which run the app against a temp database with gTTS mocked. A core invariant covered by `tests/test_spelling_flow.py`: on attempt 1 the word must never appear anywhere in the page source, including audio URLs.
 
+## Mini-games
+
+Standalone single-file HTML canvas toys in `mini_games/`, served as static files. Design standards are codified in `mini_games/HANDBOOK.md` §0 (House standards) and are mandatory for every game:
+
+- **Mouse-first, no touch support** — games are played on a desktop with a mouse, never a touch screen. Every game must give a distinct job to mouse movement, the left button, the right button, and the scroll wheel.
+- **Keyboard controls are optional** — add them only when they make the game more fun (extra parameters the mouse can't carry); never put core interactions on the keyboard.
+- **Controls pane** — every game shows a frosted-glass panel fixed at the top-left listing every control and what it does, plus live state values.
+- **Reset button** — every game has a visible button (bottom-centre pill) that returns the simulation to its initial state without reloading the page.
+
 ## Colour palettes
 
 Seven palettes defined in `templates_env.py` (one per weekday). The active palette is injected into CSS variables via a Fisher-Yates shuffle in `base.html`.

@@ -58,17 +58,6 @@ vertical-align: middle;
 margin-right: 6px;
 border: 1px solid rgba(255,255,255,0.2);
 }
-#controls {
-position: fixed;
-bottom: 16px;
-left: 50%;
-transform: translateX(-50%);
-color: #555;
-font-size: 12px;
-text-align: center;
-pointer-events: none;
-z-index: 10;
-}
 </style>
 </head>
 <body>
@@ -87,7 +76,6 @@ z-index: 10;
 <div class="param"><span class="key">Current:</span><span><span class="color-preview" id="colorPreview"></span><span id="colorVal">#66ccff</span></span></div>
 <div class="param"><span class="key">Balls:</span><span class="val" id="ballCount">0</span></div>
 </div>
-<div id="controls">Scroll to change size · Shift+click to cycle color · Right-click for explosions</div>
 
 <script>
 const canvas = document.getElementById('canvas');

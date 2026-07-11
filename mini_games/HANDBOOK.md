@@ -22,6 +22,7 @@ brilliantly) with the *technique* (how to actually get there).
 
 ## Table of contents
 
+0. [House standards: the rules every game follows](#0-house-standards)
 1. [Philosophy: what makes a toy feel incredible](#1-philosophy)
 2. [Engine bones: the loop, the canvas, the input](#2-engine-bones)
 3. [Physics cookbook](#3-physics-cookbook)
@@ -34,11 +35,49 @@ brilliantly) with the *technique* (how to actually get there).
 
 ---
 
+## 0. House standards
+
+These are the non-negotiable rules for every game in this folder — the
+checklist for new games and the bar existing ones are held to:
+
+1. **Mouse-first, and mouse-only by default.** These games are played on a
+   desktop with a mouse — not on touch screens. Every game must give a
+   distinct, satisfying job to each of the four mouse inputs:
+   - **movement** — steer, aim, stir, attract; the cursor should matter even
+     with no button held,
+   - **left button** — the primary verb: spawn, grab, draw, pour,
+   - **right button** — a second verb, not a context menu: explode, erase,
+     repel, tear,
+   - **scroll wheel** — a continuous parameter: size, count, zoom, symmetry.
+2. **Keyboard is optional seasoning.** Add keys only when they make the game
+   more fun or interesting — when there are more parameters worth playing with
+   than the mouse alone can carry (toggles, clear/reset, pause, mode cycling).
+   Never put the core fun behind a keyboard control.
+3. **The controls pane.** Every game shows a small frosted-glass panel fixed
+   in the **top-left corner** listing every control and what it does, plus
+   live state values where useful (counts, sizes, on/off states). House
+   style: `position: fixed; top: 16px; left: 16px`, dark translucent
+   background, `backdrop-filter: blur()`, rounded corners,
+   `pointer-events: none` so it never eats input.
+4. **No touch support.** Don't spend effort on touch events, multi-touch,
+   gestures, or mobile affordances. Plain mouse events are fine. Any game
+   using the right button must `preventDefault()` the `contextmenu` event
+   (see §2.3).
+5. **A reset button.** Every game has a visible button that instantly returns
+   the simulation to its initial state — exactly as if freshly launched.
+   Games fill up and get crowded; the player must always be able to start
+   over without reloading the page. House style: a pill button fixed at the
+   bottom-centre (`bottom: 24px; left: 50%; transform: translateX(-50%)`),
+   as in `cloth.html` and `sand.html`. A keyboard shortcut may supplement
+   the button, never replace it.
+
+---
+
 ## 1. Philosophy
 
 A great browser toy has three properties, in priority order:
 
-1. **It responds instantly.** The first pointer movement must do something
+1. **It responds instantly.** The first mouse movement must do something
    visible within one frame. No menus, no instructions needed. The cloth sim in
    this folder gets this right: you move the mouse and the cloth ripples.
 2. **It's a simulation, not an animation.** The magic feeling comes from
@@ -110,21 +149,34 @@ a 3× phone screen is 9× the pixels, and per-pixel effects will drown.
 Exception: deliberately low-res styles (pixel art, metaballs) *want* a small
 buffer — see §4.6.
 
-### 2.3 Pointer events, not mouse events
+### 2.3 Mouse input done right
 
-`mousemove`/`mousedown` ignore touch. One substitution makes every toy work on
-tablets — which is where children actually play:
+The house standard (§0) gives every game the full mouse vocabulary: movement,
+both buttons, and the wheel. The wiring that makes all four reliable:
 
 ```js
-canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); /* ... */ });
-canvas.addEventListener('pointermove', e => { /* e.clientX/Y as before */ });
-canvas.addEventListener('pointerup',   e => { /* ... */ });
-// and in CSS:  canvas { touch-action: none; }   — stops scroll/zoom stealing the gesture
+canvas.addEventListener('contextmenu', e => e.preventDefault()); // free up RMB
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) { /* left: primary verb */ }
+  if (e.button === 2) { /* right: second verb */ }
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();                        // stop the page scrolling/zooming
+  size = Math.max(3, Math.min(80, size - Math.sign(e.deltaY) * 2));
+}, { passive: false });
 ```
 
-`e.pointerId` gives you multi-touch for free: keep a `Map` of active pointers
-and suddenly two children can poke the same cloth simultaneously. Multi-touch on
-a physics toy is a *huge* upgrade for very little code.
+Details that matter:
+
+- **Read `e.buttons` (plural) on `mousemove`** to know which buttons are held
+  mid-drag (bit 1 = left, bit 2 = right) — more robust than hand-rolled
+  `mouseDown` booleans, which go stale when the button is released off-canvas.
+- **Listen for `mouseup` on `window`, not the canvas**, so a drag that ends
+  outside the window doesn't leave the game stuck in "dragging".
+- **Normalise wheel deltas** with `Math.sign(e.deltaY)` — the magnitude of
+  `deltaY` varies wildly between mice, trackpads, and browsers.
+- Movement must matter even with no button held (§1): idle cursor motion
+  stirring the simulation is the hook that pulls a child in.
 
 ---
 
@@ -168,7 +220,7 @@ iterations = stiffer material. From these two primitives you can build:
   area, and push each point outward along its normal proportional to the
   deficit. The result is a squishy jelly ball that squashes on landing and
   wobbles — one of the most delightful objects you can put under a child's
-  finger. See "soft body pressure model" (Matyka).
+  cursor. See "soft body pressure model" (Matyka).
 - **Tearing** — already in `cloth.html`: deactivate a constraint when stretched
   past a threshold. Works for ropes and blobs too.
 
@@ -265,7 +317,7 @@ add forces (from pointer drag), advect the velocity field through itself
 (semi-Lagrangian: trace backwards, sample bilinearly), diffuse, and
 project (make the field divergence-free with ~20 Jacobi iterations). Then
 advect a colour/dye field through the velocity field and render it. It is
-unconditionally stable — you cannot blow it up — and dragging your finger
+unconditionally stable — you cannot blow it up — and dragging the mouse
 through swirling ink is mesmerising. This is exactly what the famous
 "WebGL Fluid Simulation" (Pavel Dobryakov) demo does on GPU; a 128×128 CPU
 version in JS runs fine and looks gorgeous rendered soft. Mike Ash's
@@ -343,7 +395,7 @@ for (let i = 1; i < N - 1; i++)
 for (let i = 0; i < N; i++) { v[i] *= 0.99; u[i] += v[i]; }
 ```
 
-Touch it (set a height) and perfect ripples propagate, reflect off edges, and
+Poke it (set a height) and perfect ripples propagate, reflect off edges, and
 interfere. Draw it as a filled polygon with a gradient and you have a pond;
 float verlet objects on it (buoyancy = push up proportional to submerged depth)
 and you have a bath toy. The 2D version on a coarse grid gives you rain-on-a-
@@ -638,8 +690,7 @@ handbook. A checklist for every interaction in your toy:
   oscillator → gain envelope → destination; pitch pops by object size; a
   pentatonic scale (`freq = 220 * 2 ** (scale[i % 5] / 12)`, scale =
   [0,2,4,7,9]) makes *any* random event sequence sound musical instead of
-  noisy — the classic toy-app trick. Add `navigator.vibrate(10)` on mobile
-  taps.
+  noisy — the classic toy-app trick.
 - **Ambient life.** Nothing should be perfectly still, ever. Idle wobble from
   low-amplitude noise, blinking, drifting background parallax. Stillness reads
   as frozen; micro-motion reads as alive.
@@ -691,12 +742,12 @@ audience sharpens some choices:
 
 - **No fail states, no game over.** These are toys, not tests (they get enough
   of those). Reset buttons, yes; punishment, no.
-- **Touch first** (§2.3), targets ≥ 44 px, and every gesture should do
-  something — there is no "wrong" input on a good toy.
-- **Multi-touch is magic** for siblings sharing a tablet.
-- **Instant legibility**: a 6-year-old won't read the controls panel. The toy
-  must teach itself through the first random poke. (Keep the panel for the
-  grown-ups.)
+- **Every input should do something** — there is no "wrong" input on a good
+  toy. The full mouse vocabulary (§0, §2.3) exists so that random mashing
+  always produces a result.
+- **Instant legibility**: a 6-year-old won't read the controls pane (§0). The
+  toy must teach itself through the first random poke. (Keep the pane — it's
+  for the grown-ups, and it's house standard.)
 - **`prefers-reduced-motion`**: check it and tone down shake/strobe effects.
   Avoid full-screen flashing in general (photosensitivity).
 - **Sound off by default** inside an app used in classrooms; a big friendly
@@ -715,7 +766,7 @@ Concrete toys, each pairing techniques from above. Roughly ordered by effort.
 | **Jelly buddies** | Soft-body pressure blobs (§3.1) + squash/stretch + googly eyes + pentatonic pops (§5) | Poking a wobbling creature that reacts is peak child joy; eyes turn physics into character |
 | **Pond** | 1D heightfield water (§3.10) + buoyant verlet ducks + rain particles | Ripples + floating objects = a complete sensory toy in ~150 lines |
 | **Goo lamp 2.0** | Blur+contrast metaballs (§4.3) + real buoyancy/heat convection + OKLCH palette | Upgrade path for the existing lava lamp: blobs that genuinely merge, split, and rise from heat |
-| **Ink garden** | Stable fluids (§3.5a) + dye injection per pointer + domain-warped palette (§4.5) | Finger-painting with living paint; the single most mesmerising sim per line of code |
+| **Ink garden** | Stable fluids (§3.5a) + dye injection per pointer + domain-warped palette (§4.5) | Painting with living paint; the single most mesmerising sim per line of code |
 | **Big dig** | Falling sand with materials (§3.4): sand/water/plant/fire + chunky pixel render (§4.6) | The existing sand game grown into a Noita-like ecosystem toy; emergent stories |
 | **Puppet pets** | Verlet chains (§3.1) + spring follower head (§3.2) + hand-drawn wobble render (§4.7) | Drag a creature that slinks and settles; IK-free but feels like animation |
 | **Firefly field** | Boids with perception cones (§3.6) + glow sprites + trails (§4.2) + synchronised blinking (Kuramoto-style: each firefly nudges its phase toward neighbours) | Emergent synchronisation is genuinely magical to watch happen |
@@ -723,7 +774,7 @@ Concrete toys, each pairing techniques from above. Roughly ordered by effort.
 | **Shadow maze** | Raycast visibility polygon (§4.8) + darkness + hidden glowing collectables | Sight-and-light is an unforgettable effect almost nobody ships |
 | **Particle life zoo** | 4–6 particle species with an asymmetric attraction matrix + spatial hash (§3.3) | Self-organising "cells" crawl, chase, and reproduce from ~30 lines of rules |
 | **Mandala generator** | Kaleidoscope fold (§4.10) applied to *painting*: the pointer draws glowing strokes (§4.2) into a feedback buffer, folded into N mirrored sectors with dispersion fringes; scroll changes the symmetry count | Symmetry makes anyone an artist — every scribble comes out a rose window; the child is generating the content, not just watching it |
-| **Reaction-diffusion painter** | Gray-Scott in a fragment shader with ping-pong buffers (§4.9), pointer seeds | Coral/leopard/fingerprint patterns growing under the finger; the flagship "jump to WebGL" project |
+| **Reaction-diffusion painter** | Gray-Scott in a fragment shader with ping-pong buffers (§4.9), pointer seeds | Coral/leopard/fingerprint patterns growing under the cursor; the flagship "jump to WebGL" project |
 | **Wrecking yard** | Verlet boxes (§3.8) + tearable constraints + trauma screenshake + hit-stop (§5) | Pure demolition catharsis; juice showcase |
 
 ---
