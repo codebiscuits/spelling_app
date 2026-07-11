@@ -18,6 +18,14 @@
     #ui .param { display: flex; justify-content: space-between; gap: 12px; }
     #ui .key { color: #888; }
     #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+    #resetBtn {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      z-index: 10; padding: 10px 28px; font-size: 14px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    #resetBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
   </style>
 </head>
 <body>
@@ -32,6 +40,7 @@
   <div class="param"><span class="key">Food:</span><span class="val" id="foodCount">0</span></div>
   <div class="param"><span class="key">Predators:</span><span class="val" id="predCount">0</span></div>
 </div>
+<button id="resetBtn">&#x21BA; Reset flock</button>
 <script>
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -127,6 +136,15 @@ canvas.addEventListener('wheel', e => {
   maxSpeed = Math.max(1.5, Math.min(8, maxSpeed - e.deltaY * 0.003));
 }, { passive: false });
 window.addEventListener('resize', () => { w = canvas.width = window.innerWidth; h = canvas.height = window.innerHeight; });
+document.getElementById('resetBtn').addEventListener('click', () => {
+  boids.length = 0;
+  for (let i = 0; i < 150; i++) boids.push(new Boid());
+  foods.length = 0;
+  predators.length = 0;
+  maxSpeed = 3.5;
+  ctx.fillStyle = '#050510';
+  ctx.fillRect(0, 0, w, h);
+});
 
 function updateUI() {
   document.getElementById('speedVal').textContent = maxSpeed.toFixed(1);

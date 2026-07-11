@@ -58,6 +58,24 @@ vertical-align: middle;
 margin-right: 6px;
 border: 1px solid rgba(255,255,255,0.2);
 }
+#resetBtn {
+position: fixed;
+bottom: 24px;
+left: 50%;
+transform: translateX(-50%);
+z-index: 10;
+padding: 10px 28px;
+font-size: 14px;
+font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+color: #ccc;
+background: rgba(10, 10, 20, 0.80);
+border: 1px solid rgba(255,255,255,0.15);
+border-radius: 10px;
+cursor: pointer;
+backdrop-filter: blur(10px);
+transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+#resetBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
 </style>
 </head>
 <body>
@@ -76,6 +94,7 @@ border: 1px solid rgba(255,255,255,0.2);
 <div class="param"><span class="key">Current:</span><span><span class="color-preview" id="colorPreview"></span><span id="colorVal">#66ccff</span></span></div>
 <div class="param"><span class="key">Balls:</span><span class="val" id="ballCount">0</span></div>
 </div>
+<button id="resetBtn">&#x21BA; Reset sandbox</button>
 
 <script>
 const canvas = document.getElementById('canvas');
@@ -571,6 +590,23 @@ function spawnDemoBalls() {
         balls.push(new Ball(x, y, vx, vy, r, color));
     }
 }
+
+function resetGame() {
+    balls = [];
+    explosions = [];
+    dragBall = null;
+    mouseDown = false;
+    rightMouseDown = false;
+    spawnSize = 20;
+    colorHue = 190;
+    spawnColor = '#66ccff';
+    gravity = 0.4;
+    paused = false;
+    spawnDemoBalls();
+    updateUI();
+}
+
+document.getElementById('resetBtn').addEventListener('click', resetGame);
 
 spawnDemoBalls();
 updateUI();
