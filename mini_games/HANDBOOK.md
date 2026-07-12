@@ -776,6 +776,7 @@ Concrete toys, each pairing techniques from above. Roughly ordered by effort.
 | **Mandala generator** | Kaleidoscope fold (§4.10) applied to *painting*: the pointer draws glowing strokes (§4.2) into a feedback buffer, folded into N mirrored sectors with dispersion fringes; scroll changes the symmetry count | Symmetry makes anyone an artist — every scribble comes out a rose window; the child is generating the content, not just watching it |
 | **Reaction-diffusion painter** | Gray-Scott in a fragment shader with ping-pong buffers (§4.9), pointer seeds | Coral/leopard/fingerprint patterns growing under the cursor; the flagship "jump to WebGL" project |
 | **Wrecking yard** | Verlet boxes (§3.8) + tearable constraints + trauma screenshake + hit-stop (§5) | Pure demolition catharsis; juice showcase |
+| **Topple tower** | A tower of verlet boxes (§3.8) that stack, lean, and collapse under gravity and each other; scroll adjusts a live parameter (gravity strength, restitution/"bounciness"), left-click a block to explode it into particles (§5) or morph its shape, right-click to give it its own gravitational pull (§3.7) that drags the rest of the tower toward it | Toppling is the toy — every collapse is different; per-block gravity wells turn demolition into orbital sculpture |
 
 ---
 
