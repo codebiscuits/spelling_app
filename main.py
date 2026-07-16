@@ -1,8 +1,8 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Request, Form, HTTPException
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from dotenv import load_dotenv
@@ -10,7 +10,8 @@ from dotenv import load_dotenv
 from database import get_db, init_db
 from auth import verify_password, generate_csrf_token, verify_csrf_token
 from seed.curriculum_words import seed
-from templates_env import templates
+from services.game_rewards import unlocked_files
+from templates_env import templates, MINI_GAMES
 from routers import admin as admin_router
 from routers import child as child_router
 from routers import spelling as spelling_router
@@ -43,11 +44,40 @@ audio_dir = os.getenv("AUDIO_DIR", "static/audio")
 os.makedirs(audio_dir, exist_ok=True)
 app.mount("/static/audio", StaticFiles(directory=audio_dir), name="audio")
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/mini-games", StaticFiles(directory="mini_games"), name="mini_games")
 
 app.include_router(admin_router.router)
 app.include_router(child_router.router)
 app.include_router(spelling_router.router)
+
+
+@app.get("/mini-games/{filename}")
+def serve_game(filename: str, request: Request):
+    """Serve a mini-game file, gating reward-tier games per-child.
+
+    Replaces a plain StaticFiles mount (which would let a logged-in child
+    URL-guess a locked reward game) with a route that checks the catalogue
+    and, for reward-tier games, the child's unlocks.
+    """
+    game = next((g for g in MINI_GAMES if g["file"] == filename), None)
+    if not game:
+        raise HTTPException(404)
+
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(404)
+
+    if game["tier"] == "classic":
+        return FileResponse(os.path.join("mini_games", filename))
+
+    # Reward tier: admin, or a child with the unlock
+    if user.get("is_admin"):
+        return FileResponse(os.path.join("mini_games", filename))
+
+    with get_db() as db:
+        if filename in unlocked_files(user["user_id"], db):
+            return FileResponse(os.path.join("mini_games", filename))
+
+    raise HTTPException(404)
 
 
 # ── Login / Logout ─────────────────────────────────────────────────────────

@@ -46,6 +46,30 @@
 </section>
 
 <section>
+  <h2>Reward Games</h2>
+  <table class="admin-table">
+    <thead><tr><th>#</th><th>Game</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for g in reward_games %}
+      <tr>
+        <td>{{ g.release_order }}</td>
+        <td>{{ g.name }}</td>
+        <td>{{ 'Unlocked' if g.file in unlocked_reward_files else 'Locked' }}</td>
+        <td>
+          <form method="post" action="/admin/children/{{ child.id }}/games/{{ g.file }}/toggle">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-secondary">
+              {{ 'Re-lock' if g.file in unlocked_reward_files else 'Unlock' }}
+            </button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section>
   <h2>Test History</h2>
   {% if sessions %}
   <canvas id="score-chart" width="600" height="200"></canvas>

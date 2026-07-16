@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 
 from database import get_db
 from auth import require_admin, hash_password, generate_csrf_token, verify_csrf_token
-from templates_env import templates, MINI_GAMES
+from templates_env import templates, MINI_GAMES, REWARD_GAMES
+from services.game_rewards import unlocked_files
 
 router = APIRouter(prefix="/admin")
 
@@ -209,11 +210,13 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
                GROUP BY w.id ORDER BY w.word""",
             (child_id,),
         ).fetchall()
+        unlocked_reward_files = unlocked_files(child_id, db)
     csrf = generate_csrf_token(request)
     return templates.TemplateResponse(request, "admin/child_detail.html", {
         "child": child, "sessions": sessions,
         "badges": badges, "unlocked": unlocked, "all_lists": all_lists,
         "word_stats": word_stats, "csrf_token": csrf,
+        "reward_games": REWARD_GAMES, "unlocked_reward_files": unlocked_reward_files,
     })
 
 
@@ -298,6 +301,39 @@ def unlock_list(
             "INSERT OR IGNORE INTO user_list_unlocks (user_id, list_id, unlocked_at) VALUES (?,?,?)",
             (child_id, list_id, now),
         )
+    return RedirectResponse(f"/admin/children/{child_id}", status_code=303)
+
+
+# ── Reward game unlock/re-lock for child (admin override) ──────────────────
+
+@router.post("/children/{child_id}/games/{filename}/toggle")
+def toggle_game_unlock(
+    child_id: int,
+    filename: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    admin=Depends(require_admin),
+):
+    verify_csrf_token(request, csrf_token)
+    if filename not in {g["file"] for g in REWARD_GAMES}:
+        raise HTTPException(404)
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        already = db.execute(
+            "SELECT 1 FROM user_game_unlocks WHERE user_id=? AND game_file=?",
+            (child_id, filename),
+        ).fetchone()
+        if already:
+            db.execute(
+                "DELETE FROM user_game_unlocks WHERE user_id=? AND game_file=?",
+                (child_id, filename),
+            )
+        else:
+            db.execute(
+                """INSERT OR IGNORE INTO user_game_unlocks
+                   (user_id, game_file, earned_at, source) VALUES (?,?,?,?)""",
+                (child_id, filename, now, "admin"),
+            )
     return RedirectResponse(f"/admin/children/{child_id}", status_code=303)
 
 

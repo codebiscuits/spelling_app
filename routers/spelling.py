@@ -6,8 +6,9 @@ from database import get_db
 from auth import require_child
 from services.word_selection import select_words
 from services.gamification import check_and_award
+from services.game_rewards import check_and_unlock, unlocked_files, next_locked, badges_until_next
 from services.tts import get_audio_url, get_sentence_audio_url
-from templates_env import templates, MINI_GAMES
+from templates_env import templates, CLASSIC_GAMES, REWARD_GAMES
 
 router = APIRouter(prefix="/test")
 
@@ -197,16 +198,30 @@ def results(request: Request, user=Depends(require_child)):
             gamification["trophy_awarded"] = gamification["trophy_awarded"] or result["trophy_awarded"]
             gamification["lists_unlocked"].extend(result["lists_unlocked"])
 
+        # Apply the reward-game earning ladder once per session, after all
+        # per-list gamification has been evaluated (at most one unlock).
+        new_game = check_and_unlock(user_id, gamification, db)
+
+        # Mini game reward: unlock when score >= 10/20 (50%)
+        # When adjusting this threshold, update README.md and SETUP.md as well
+        qualifies = session["score"] >= 10
+        games = []
+        mystery = None
+        if qualifies:
+            reward_unlocked = [g for g in REWARD_GAMES if g["file"] in unlocked_files(user_id, db)]
+            games = CLASSIC_GAMES + reward_unlocked
+            locked = next_locked(user_id, db)
+            if locked:
+                mystery = {"hint": badges_until_next(user_id, db)}
+
     # Clear test session state
     request.session.pop("test", None)
-
-    # Mini game reward: unlock when score >= 10/20 (50%)
-    # When adjusting this threshold, update README.md and SETUP.md as well
-    games = MINI_GAMES if (MINI_GAMES and session["score"] >= 10) else []
 
     return templates.TemplateResponse(request, "child/results.html", {
         "session": session,
         "attempts": attempts,
         "gamification": gamification,
         "games": games,
+        "new_game": new_game,
+        "mystery": mystery,
     })

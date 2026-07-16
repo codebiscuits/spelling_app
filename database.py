@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 DB_PATH = os.getenv("DB_PATH", "spelling.db")
 
@@ -78,6 +79,14 @@ CREATE TABLE IF NOT EXISTS audio_cache (
     file_path  TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_game_unlocks (
+    user_id   INTEGER NOT NULL REFERENCES users(id),
+    game_file TEXT NOT NULL,
+    earned_at TEXT NOT NULL,
+    source    TEXT NOT NULL,   -- 'badge' | 'medal' | 'trophy' | 'admin' | 'launch'
+    PRIMARY KEY (user_id, game_file)
+);
 """
 
 
@@ -131,5 +140,26 @@ def init_db():
                 con.commit()
         except Exception:
             pass
+
+        # Launch gift (§1.3): every child with zero user_game_unlocks rows
+        # is gifted the first reward-tier game. Idempotent; re-triggers if
+        # an admin re-locks a child back to zero rows.
+        from templates_env import REWARD_GAMES
+
+        if REWARD_GAMES:
+            first_game_file = REWARD_GAMES[0]["file"]
+            now = datetime.now(timezone.utc).isoformat()
+            childless_ids = con.execute(
+                """SELECT id FROM users
+                   WHERE is_admin=0
+                     AND id NOT IN (SELECT DISTINCT user_id FROM user_game_unlocks)"""
+            ).fetchall()
+            for row in childless_ids:
+                con.execute(
+                    """INSERT OR IGNORE INTO user_game_unlocks
+                       (user_id, game_file, earned_at, source) VALUES (?,?,?,?)""",
+                    (row["id"], first_game_file, now, "launch"),
+                )
+            con.commit()
     finally:
         con.close()

@@ -21,6 +21,13 @@
   {% if gamification.lists_unlocked %}
   <div class="award-banner award-unlock">🌟 New word list{{ 's' if gamification.lists_unlocked|length > 1 else '' }} unlocked!</div>
   {% endif %}
+  {% if new_game %}
+  <div class="award-banner award-unlock">🎁 New game unlocked: {{ new_game.name }}!</div>
+  <div class="new-game-card">
+    <p class="game-desc">{{ new_game.description }}</p>
+    <a href="/child/games/{{ new_game.file }}?score={{ session.score }}" class="btn btn-primary">Play {{ new_game.name }}</a>
+  </div>
+  {% endif %}
 
   <table class="attempts-table">
     <thead>
@@ -48,11 +55,22 @@
     <div class="games-grid">
       {% for game in games %}
       <a href="/child/games/{{ game.file }}?score={{ session.score }}" class="game-card">
+        {% if game.tier == 'reward' %}
+        <div class="game-thumb game-reward-thumb">🎮</div>
+        {% else %}
         <img src="/static/img/game-thumbs/{{ game.file | replace('.html', '.png') }}"
              alt="{{ game.name }}" class="game-thumb">
+        {% endif %}
         <span class="game-name">{{ game.name }}</span>
       </a>
       {% endfor %}
+      {% if mystery %}
+      <div class="game-card game-card-mystery">
+        <div class="game-thumb game-mystery-thumb">?</div>
+        <span class="game-name">Mystery game</span>
+        <span class="game-desc">{{ mystery.hint }} more &#11088; to open!</span>
+      </div>
+      {% endif %}
     </div>
   </div>
   {% endif %}

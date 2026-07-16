@@ -45,6 +45,28 @@
 </section>
 {% endif %}
 
+{% if my_games or mystery %}
+<section>
+  <h2>My Games</h2>
+  <p class="list-name">{{ discovered_count }} of 14 discovered</p>
+  <div class="games-grid">
+    {% for game in my_games %}
+    <a href="/child/games/{{ game.file }}" class="game-card">
+      <div class="game-thumb game-reward-thumb">🎮</div>
+      <span class="game-name">{{ game.name }}</span>
+    </a>
+    {% endfor %}
+    {% if mystery %}
+    <div class="game-card game-card-mystery">
+      <div class="game-thumb game-mystery-thumb">?</div>
+      <span class="game-name">Mystery game</span>
+      <span class="game-desc">{{ mystery.hint }} more &#11088; to open!</span>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
 {% if recent_sessions %}
 <section>
   <h2>Recent Tests</h2>

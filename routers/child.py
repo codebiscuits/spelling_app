@@ -2,7 +2,8 @@ from fastapi import APIRouter, Request, Depends, HTTPException
 
 from database import get_db
 from auth import require_child
-from templates_env import templates, MINI_GAMES
+from services.game_rewards import unlocked_files, next_locked, badges_until_next
+from templates_env import templates, MINI_GAMES, REWARD_GAMES
 
 router = APIRouter(prefix="/child")
 
@@ -85,6 +86,13 @@ def child_dashboard(request: Request, user=Depends(require_child)):
 
     medal_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "medal"}
     trophy_list_ids = {b["list_id"] for b in badges if b["badge_type"] == "trophy"}
+
+    with get_db() as db:
+        unlocked_reward_files = unlocked_files(user_id, db)
+        my_games = [g for g in REWARD_GAMES if g["file"] in unlocked_reward_files]
+        locked = next_locked(user_id, db)
+        mystery = {"hint": badges_until_next(user_id, db)} if locked else None
+
     return templates.TemplateResponse(request, "child/dashboard.html", {
         "child": child,
         "unlocked": unlocked,
@@ -95,6 +103,9 @@ def child_dashboard(request: Request, user=Depends(require_child)):
         "badge_count": badge_count,
         "medals": medals,
         "trophies": trophies,
+        "my_games": my_games,
+        "mystery": mystery,
+        "discovered_count": len(my_games),
     })
 
 
@@ -106,6 +117,10 @@ def play_game(filename: str, request: Request, score: int = 10, user=Depends(req
     if filename not in GAME_FILES:
         raise HTTPException(404)
     game = next(g for g in MINI_GAMES if g["file"] == filename)
+    if game["tier"] == "reward":
+        with get_db() as db:
+            if filename not in unlocked_files(user["user_id"], db):
+                raise HTTPException(404)
     duration = max(60, (min(score, 20) - 10) * 6 + 60)
     return templates.TemplateResponse(request, "child/game.html", {
         "game": game,
