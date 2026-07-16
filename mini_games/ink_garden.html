@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ink Garden</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #0c0c1e; cursor: crosshair; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 220px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+  #ui .key { color: #888; }
+  #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #swatch {
+    display: inline-block; width: 13px; height: 13px; border-radius: 50%;
+    vertical-align: middle; margin-right: 6px; box-shadow: 0 0 8px 1px currentColor;
+  }
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; padding: 10px 28px; font-size: 14px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>&#127801; Ink Garden</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Stir the ink</span></div>
+  <div class="param"><span class="key">Left drag</span><span class="val">Pour dye</span></div>
+  <div class="param"><span class="key">Right drag</span><span class="val">Whirlpool drain</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Cycle dye colour</span></div>
+  <br>
+  <div class="param"><span class="key">Colour</span><span class="val"><span id="swatch"></span><span id="hueVal">0%</span></span></div>
+</div>
+<button id="resetBtn">&#x21BA; Reset garden</button>
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Canvas set-up (DPR-aware, house standard §2) ----------
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  let w = 0, h = 0, dpr = 1;
+
+  const vignette = document.createElement('canvas');
+  const vctx = vignette.getContext('2d');
+
+  function buildVignette() {
+    vignette.width = w; vignette.height = h;
+    const g = vctx.createRadialGradient(
+      w / 2, h / 2, Math.min(w, h) * 0.28,
+      w / 2, h / 2, Math.max(w, h) * 0.72
+    );
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(1, 'rgba(90,90,110,1)');
+    vctx.fillStyle = g;
+    vctx.fillRect(0, 0, w, h);
+  }
+
+  function fitCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildVignette();
+  }
+  window.addEventListener('resize', fitCanvas);
+
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---------- Stable-fluids simulation (Jos Stam, coarse grid) ----------
+  const N = 128;                 // interior cells per side
+  const SIZE = N + 2;            // padded with a boundary ring
+  const CELLS = SIZE * SIZE;
+  const ITER = 20;                // Jacobi projection iterations
+  const IX = (i, j) => i + SIZE * j;
+
+  let vx = new Float32Array(CELLS), vy = new Float32Array(CELLS);
+  let vx0 = new Float32Array(CELLS), vy0 = new Float32Array(CELLS);
+  let dens = new Float32Array(CELLS), dens0 = new Float32Array(CELLS);
+  let hue = new Float32Array(CELLS), hue0 = new Float32Array(CELLS);
+  let p = new Float32Array(CELLS), div = new Float32Array(CELLS);
+
+  function setBnd(b, x) {
+    for (let i = 1; i <= N; i++) {
+      x[IX(0, i)] = b === 1 ? -x[IX(1, i)] : x[IX(1, i)];
+      x[IX(N + 1, i)] = b === 1 ? -x[IX(N, i)] : x[IX(N, i)];
+      x[IX(i, 0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+      x[IX(i, N + 1)] = b === 2 ? -x[IX(i, N)] : x[IX(i, N)];
+    }
+    x[IX(0, 0)] = 0.5 * (x[IX(1, 0)] + x[IX(0, 1)]);
+    x[IX(0, N + 1)] = 0.5 * (x[IX(1, N + 1)] + x[IX(0, N)]);
+    x[IX(N + 1, 0)] = 0.5 * (x[IX(N, 0)] + x[IX(N + 1, 1)]);
+    x[IX(N + 1, N + 1)] = 0.5 * (x[IX(N, N + 1)] + x[IX(N + 1, N)]);
+  }
+
+  function project(u, v, pr, dv) {
+    const hcell = 1 / N;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        dv[IX(i, j)] = -0.5 * hcell * (u[IX(i + 1, j)] - u[IX(i - 1, j)] + v[IX(i, j + 1)] - v[IX(i, j - 1)]);
+        pr[IX(i, j)] = 0;
+      }
+    }
+    setBnd(0, dv); setBnd(0, pr);
+    for (let k = 0; k < ITER; k++) {
+      for (let j = 1; j <= N; j++) {
+        for (let i = 1; i <= N; i++) {
+          pr[IX(i, j)] = (dv[IX(i, j)] + pr[IX(i - 1, j)] + pr[IX(i + 1, j)] + pr[IX(i, j - 1)] + pr[IX(i, j + 1)]) * 0.25;
+        }
+      }
+      setBnd(0, pr);
+    }
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        u[IX(i, j)] -= 0.5 * (pr[IX(i + 1, j)] - pr[IX(i - 1, j)]) / hcell;
+        v[IX(i, j)] -= 0.5 * (pr[IX(i, j + 1)] - pr[IX(i, j - 1)]) / hcell;
+      }
+    }
+    setBnd(1, u); setBnd(2, v);
+  }
+
+  function advect(b, d, d0, u, v, dt) {
+    const dt0 = dt * N;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        let x = i - dt0 * u[IX(i, j)];
+        let y = j - dt0 * v[IX(i, j)];
+        if (x < 0.5) x = 0.5; if (x > N + 0.5) x = N + 0.5;
+        if (y < 0.5) y = 0.5; if (y > N + 0.5) y = N + 0.5;
+        const i0 = Math.floor(x), i1 = i0 + 1, j0 = Math.floor(y), j1 = j0 + 1;
+        const s1 = x - i0, s0 = 1 - s1, t1 = y - j0, t0 = 1 - t1;
+        d[IX(i, j)] = s0 * (t0 * d0[IX(i0, j0)] + t1 * d0[IX(i0, j1)]) +
+                      s1 * (t0 * d0[IX(i1, j0)] + t1 * d0[IX(i1, j1)]);
+      }
+    }
+    setBnd(b, d);
+  }
+
+  const DAMPING = 0.998;   // gentle artificial viscosity (no explicit diffuse step)
+  const DECAY = 0.9993;    // ink fades very slowly so the garden lingers
+
+  function velStep(dt) {
+    project(vx, vy, p, div);
+    vx0.set(vx); vy0.set(vy);
+    advect(1, vx, vx0, vx0, vy0, dt);
+    advect(2, vy, vy0, vx0, vy0, dt);
+    project(vx, vy, p, div);
+    for (let k = 0; k < CELLS; k++) { vx[k] *= DAMPING; vy[k] *= DAMPING; }
+  }
+
+  function dyeStep(dt) {
+    dens0.set(dens); hue0.set(hue);
+    advect(0, dens, dens0, vx, vy, dt);
+    advect(0, hue, hue0, vx, vy, dt);
+    for (let k = 0; k < CELLS; k++) dens[k] *= DECAY;
+  }
+
+  // ---------- Splats: inject forces / dye from pointer state ----------
+  function splatVelocity(gx, gy, fx, fy, radius) {
+    const r2 = radius * radius;
+    const i0 = Math.max(1, Math.floor(gx - radius)), i1 = Math.min(N, Math.ceil(gx + radius));
+    const j0 = Math.max(1, Math.floor(gy - radius)), j1 = Math.min(N, Math.ceil(gy + radius));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - gx, dy = j - gy, d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const wgt = Math.exp(-d2 / (r2 * 0.5));
+        const idx = IX(i, j);
+        vx[idx] += fx * wgt;
+        vy[idx] += fy * wgt;
+      }
+    }
+  }
+
+  function splatDye(gx, gy, amount, radius, hueVal, dt) {
+    const r2 = radius * radius;
+    const i0 = Math.max(1, Math.floor(gx - radius)), i1 = Math.min(N, Math.ceil(gx + radius));
+    const j0 = Math.max(1, Math.floor(gy - radius)), j1 = Math.min(N, Math.ceil(gy + radius));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - gx, dy = j - gy, d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const wgt = Math.exp(-d2 / (r2 * 0.5));
+        const idx = IX(i, j);
+        const add = amount * wgt * dt;
+        dens[idx] = Math.min(1.3, dens[idx] + add);
+        const mixT = Math.min(1, add * 6);
+        hue[idx] += (hueVal - hue[idx]) * mixT;
+      }
+    }
+  }
+
+  function applyPourPush(gx, gy, dt) {
+    const radius = 5, r2 = radius * radius, push = 2.2;
+    const i0 = Math.max(1, Math.floor(gx - radius)), i1 = Math.min(N, Math.ceil(gx + radius));
+    const j0 = Math.max(1, Math.floor(gy - radius)), j1 = Math.min(N, Math.ceil(gy + radius));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - gx, dy = j - gy, d2 = dx * dx + dy * dy;
+        if (d2 > r2 || d2 < 0.01) continue;
+        const len = Math.sqrt(d2);
+        const wgt = Math.exp(-d2 / (r2 * 0.5));
+        const idx = IX(i, j);
+        vx[idx] += (dx / len) * push * wgt * dt;
+        vy[idx] += (dy / len) * push * wgt * dt;
+      }
+    }
+  }
+
+  function applyVortexDrain(gx, gy, dt) {
+    const radius = 9, r2 = radius * radius, vortex = 10, pull = 2, drain = 0.9;
+    const i0 = Math.max(1, Math.floor(gx - radius)), i1 = Math.min(N, Math.ceil(gx + radius));
+    const j0 = Math.max(1, Math.floor(gy - radius)), j1 = Math.min(N, Math.ceil(gy + radius));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - gx, dy = j - gy, d2 = dx * dx + dy * dy;
+        if (d2 > r2 || d2 < 0.01) continue;
+        const len = Math.sqrt(d2);
+        const wgt = Math.exp(-d2 / (r2 * 0.5));
+        const idx = IX(i, j);
+        const tx = -dy / len, ty = dx / len; // tangential (whirlpool spin)
+        vx[idx] += tx * vortex * wgt * dt - (dx / len) * pull * wgt * dt;
+        vy[idx] += ty * vortex * wgt * dt - (dy / len) * pull * wgt * dt;
+        dens[idx] *= (1 - drain * wgt * dt);
+      }
+    }
+  }
+
+  // ---------- Cosine palette (house art rule §4) ----------
+  const PAL_A = [0.5, 0.5, 0.5], PAL_B = [0.5, 0.5, 0.5], PAL_C = [1, 1, 1], PAL_D = [0, 0.33, 0.67];
+  function palette(t) {
+    return [
+      PAL_A[0] + PAL_B[0] * Math.cos(6.28318 * (PAL_C[0] * t + PAL_D[0])),
+      PAL_A[1] + PAL_B[1] * Math.cos(6.28318 * (PAL_C[1] * t + PAL_D[1])),
+      PAL_A[2] + PAL_B[2] * Math.cos(6.28318 * (PAL_C[2] * t + PAL_D[2])),
+    ];
+  }
+
+  // ---------- Pointer state ----------
+  let mouseX = 0, mouseY = 0, haveMouse = false;
+  let leftDown = false, rightDown = false;
+  let currentHue = 0;
+  const STIR_STRENGTH = 0.008, STIR_RADIUS = 6, STIR_MAX = 40; // px clamp per event
+  const POUR_RATE = 14, POUR_RADIUS = 4.5;
+
+  const swatchEl = document.getElementById('swatch');
+  const hueValEl = document.getElementById('hueVal');
+  function updateSwatch() {
+    const rgb = palette(currentHue).map(c => Math.max(0, Math.min(255, Math.round(c * 255))));
+    swatchEl.style.color = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    swatchEl.style.background = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    const pct = Math.round((((currentHue % 1) + 1) % 1) * 100);
+    hueValEl.textContent = pct + '%';
+  }
+
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  canvas.addEventListener('mousemove', e => {
+    const x = e.clientX, y = e.clientY;
+    if (haveMouse) {
+      // clamp per-event deltas so a fast jump stirs the ink, not blasts it off-screen
+      const dx = Math.max(-STIR_MAX, Math.min(STIR_MAX, x - mouseX));
+      const dy = Math.max(-STIR_MAX, Math.min(STIR_MAX, y - mouseY));
+      const gx = 1 + (x / w) * N, gy = 1 + (y / h) * N;
+      splatVelocity(gx, gy, dx * STIR_STRENGTH, dy * STIR_STRENGTH, STIR_RADIUS);
+    }
+    mouseX = x; mouseY = y; haveMouse = true;
+  });
+
+  canvas.addEventListener('mousedown', e => {
+    if (e.button === 0) leftDown = true;
+    if (e.button === 2) rightDown = true;
+  });
+  window.addEventListener('mouseup', e => {
+    if (e.button === 0) leftDown = false;
+    if (e.button === 2) rightDown = false;
+  });
+  window.addEventListener('blur', () => { leftDown = false; rightDown = false; });
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    currentHue += Math.sign(e.deltaY) * 0.05;
+    updateSwatch();
+  }, { passive: false });
+
+  // ---------- Sim -> pixels ----------
+  const simCanvas = document.createElement('canvas');
+  simCanvas.width = N; simCanvas.height = N;
+  const simCtx = simCanvas.getContext('2d');
+  const imgData = simCtx.createImageData(N, N);
+  const pix = imgData.data;
+
+  const BG = [12, 12, 30];
+  let timeAccum = 0;
+  const warpTimeSpeed = reducedMotion ? 0 : 0.6;
+
+  function renderSim() {
+    let p4 = 0;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const idx = IX(i, j);
+        const d = dens[idx];
+        const warp = 0.18 * Math.sin(vx[idx] * 3 - vy[idx] * 3 + timeAccum * warpTimeSpeed);
+        const t = hue[idx] + warp;
+        const rgb = palette(t);
+        const bright = 1 - Math.exp(-d * 2.6); // vivid at low density, soft saturation
+        pix[p4] = BG[0] + (rgb[0] * 255 - BG[0]) * bright;
+        pix[p4 + 1] = BG[1] + (rgb[1] * 255 - BG[1]) * bright;
+        pix[p4 + 2] = BG[2] + (rgb[2] * 255 - BG[2]) * bright;
+        pix[p4 + 3] = 255;
+        p4 += 4;
+      }
+    }
+    simCtx.putImageData(imgData, 0, 0);
+  }
+
+  function draw() {
+    renderSim();
+    // sharp base pass, smoothly upscaled (softness is intentional, house rule §4)
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.filter = 'none';
+    ctx.drawImage(simCanvas, 0, 0, N, N, 0, 0, w, h);
+    // soft bloom
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.filter = 'blur(10px)';
+    ctx.globalAlpha = 0.45;
+    ctx.drawImage(simCanvas, 0, 0, N, N, 0, 0, w, h);
+    ctx.restore();
+    // faint vignette
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = 1;
+    ctx.drawImage(vignette, 0, 0);
+    ctx.restore();
+  }
+
+  // ---------- Fixed-timestep loop (house standard §2) ----------
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+
+  function update(dt) {
+    const gx = 1 + (mouseX / w) * N, gy = 1 + (mouseY / h) * N;
+    if (leftDown) {
+      splatDye(gx, gy, POUR_RATE, POUR_RADIUS, currentHue, dt);
+      applyPourPush(gx, gy, dt);
+    }
+    if (rightDown) {
+      applyVortexDrain(gx, gy, dt);
+    }
+    velStep(dt);
+    dyeStep(dt);
+    timeAccum += dt;
+  }
+
+  function frame(now) {
+    acc += Math.min((now - last) / 1000, 0.1);
+    last = now;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- Seed garden: soft dye blobs so the first stir already swirls ----------
+  function seedBlob(fx, fy, radius, hueVal, amount, spin) {
+    const gx = 1 + fx * N, gy = 1 + fy * N;
+    const r2 = radius * radius;
+    const i0 = Math.max(1, Math.floor(gx - radius)), i1 = Math.min(N, Math.ceil(gx + radius));
+    const j0 = Math.max(1, Math.floor(gy - radius)), j1 = Math.min(N, Math.ceil(gy + radius));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - gx, dy = j - gy, d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const wgt = Math.exp(-d2 / (r2 * 0.35));
+        const idx = IX(i, j);
+        dens[idx] = Math.min(1.3, dens[idx] + amount * wgt);
+        hue[idx] += (hueVal - hue[idx]) * Math.min(1, wgt * 1.5);
+        if (d2 > 0.01) { // gentle built-in swirl so nothing is perfectly still
+          const len = Math.sqrt(d2);
+          vx[idx] += (-dy / len) * spin * wgt;
+          vy[idx] += (dx / len) * spin * wgt;
+        }
+      }
+    }
+  }
+
+  function seedGarden() {
+    seedBlob(0.30, 0.32, 13, 0.00, 1.0,  0.10);
+    seedBlob(0.70, 0.28, 11, 0.18, 0.9, -0.09);
+    seedBlob(0.50, 0.58, 14, 0.38, 1.0,  0.08);
+    seedBlob(0.24, 0.72, 11, 0.60, 0.9, -0.10);
+    seedBlob(0.76, 0.74, 12, 0.80, 1.0,  0.09);
+  }
+
+  // ---------- Reset ----------
+  function reset() {
+    vx.fill(0); vy.fill(0); vx0.fill(0); vy0.fill(0);
+    dens.fill(0); dens0.fill(0); hue.fill(0); hue0.fill(0);
+    p.fill(0); div.fill(0);
+    currentHue = 0; timeAccum = 0;
+    leftDown = false; rightDown = false;
+    haveMouse = false;
+    seedGarden();
+    updateSwatch();
+  }
+  document.getElementById('resetBtn').addEventListener('click', reset);
+
+  // ---------- Boot ----------
+  fitCanvas();
+  reset();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

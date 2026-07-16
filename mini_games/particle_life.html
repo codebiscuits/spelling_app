@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Particle Life Zoo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #06060f; cursor: crosshair;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  canvas { display: block; }
+
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10;
+    pointer-events: none; color: #ddd; font-size: 13px; line-height: 1.7;
+    background: rgba(10, 10, 22, 0.72); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px; padding: 14px 18px; backdrop-filter: blur(10px);
+    min-width: 240px;
+  }
+  #ui h3 { color: #fff; margin-bottom: 8px; font-size: 15px; letter-spacing: 0.4px; }
+  #ui .row { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+  #ui .key { color: #8a8a9a; }
+  #ui .val { color: #7fd8ff; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #ui hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 8px 0; }
+  #ui .swatch {
+    display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+    vertical-align: middle; margin-right: 6px; box-shadow: 0 0 6px currentColor;
+  }
+  #matrixWrap { margin-top: 8px; }
+  #matrixCanvas { display: block; border-radius: 6px; image-rendering: pixelated; }
+  #matrixLabel { color: #8a8a9a; font-size: 11px; margin-bottom: 4px; }
+
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: inherit; color: #ddd; background: rgba(10, 10, 22, 0.80);
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 999px; cursor: pointer;
+    backdrop-filter: blur(10px); transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(50, 40, 90, 0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+
+  @media (prefers-reduced-motion: reduce) {
+    #resetBtn { transition: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h3>&#x1F9EA; Particle Life Zoo</h3>
+  <div class="row"><span class="key">Move</span><span class="val">Curious/shy pull</span></div>
+  <div class="row"><span class="key">Left drag</span><span class="val">Spray species</span></div>
+  <div class="row"><span class="key">Right click</span><span class="val">Shuffle zoo</span></div>
+  <div class="row"><span class="key">Scroll</span><span class="val">Pick species</span></div>
+  <hr>
+  <div class="row">
+    <span class="key"><span class="swatch" id="speciesSwatch"></span>Spraying</span>
+    <span class="val" id="speciesVal">1 / 6</span>
+  </div>
+  <div class="row"><span class="key">Particles</span><span class="val" id="countVal">0</span></div>
+  <div id="matrixWrap">
+    <div id="matrixLabel">Who likes whom (row &#x2192; column)</div>
+    <canvas id="matrixCanvas"></canvas>
+  </div>
+</div>
+
+<button id="resetBtn">&#x21BA; Reset zoo</button>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- canvas & DPR ----------
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let w = 0, h = 0;
+
+  function fitCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildGrid();
+  }
+
+  // ---------- tunables ----------
+  const SPECIES = 6;
+  const MAX_N = 4000;
+  const START_N = 2600;
+  const MAX_R = 62;          // interaction radius (px)
+  const BETA = 0.30;         // fraction of MAX_R that is the hard-repulsion core
+  const MIN_R = MAX_R * BETA;
+  const FORCE_SCALE = 340;   // acceleration scale
+  const FRICTION_RATE = 4.2; // per second velocity decay
+  const MOUSE_RADIUS = 170;
+  const MOUSE_FORCE = 220;
+  const SPRAY_JITTER = 7;
+  const SPRAY_SPEED = 40;
+  const SPRAY_EVERY_N_TICKS = 2;
+
+  // ---------- cosine palette ----------
+  function cosinePalette(t) {
+    const a = [0.55, 0.5, 0.5], b = [0.45, 0.45, 0.45], c = [1.0, 1.0, 0.9], d = [0.0, 0.33, 0.60];
+    return [0, 1, 2].map(i => Math.max(0, Math.min(1, a[i] + b[i] * Math.cos(6.28318 * (c[i] * t + d[i])))));
+  }
+  const speciesRGB = [];      // [r,g,b] 0..255
+  const speciesColor = [];    // 'rgb(...)'
+  for (let i = 0; i < SPECIES; i++) {
+    const rgb = cosinePalette(i / SPECIES).map(x => Math.round(x * 255));
+    speciesRGB.push(rgb);
+    speciesColor.push('rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')');
+  }
+
+  // pre-rendered glow sprites (one per species), drawn once
+  const SPRITE_SIZE = 22;
+  const sprites = speciesRGB.map(rgb => {
+    const sc = document.createElement('canvas');
+    sc.width = SPRITE_SIZE; sc.height = SPRITE_SIZE;
+    const sctx = sc.getContext('2d');
+    const r = SPRITE_SIZE / 2;
+    const g = sctx.createRadialGradient(r, r, 0, r, r, r);
+    g.addColorStop(0, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.95)');
+    g.addColorStop(0.4, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.55)');
+    g.addColorStop(1, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0)');
+    sctx.fillStyle = g;
+    sctx.fillRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    return sc;
+  });
+
+  // ---------- particle data (structure-of-arrays, zero per-frame allocation) ----------
+  const px = new Float32Array(MAX_N);
+  const py = new Float32Array(MAX_N);
+  const vx = new Float32Array(MAX_N);
+  const vy = new Float32Array(MAX_N);
+  const spec = new Uint8Array(MAX_N);
+  let N = 0;
+  let ringCursor = 0; // once N hits MAX_N, new spawns overwrite oldest via this rotating index
+
+  // scratch used only inside the neighbour loop (reused, never reallocated)
+  const cellOf = new Int32Array(MAX_N);
+
+  // asymmetric attraction matrix: matrix[i*SPECIES+j] = how species i feels about species j
+  const matrix = new Float32Array(SPECIES * SPECIES);
+  const mouseAffinity = new Float32Array(SPECIES); // how each species reacts to the cursor
+
+  function randomizeRules() {
+    for (let i = 0; i < SPECIES * SPECIES; i++) matrix[i] = Math.random() * 2 - 1;
+    for (let i = 0; i < SPECIES; i++) mouseAffinity[i] = Math.random() * 2 - 1;
+  }
+
+  function scatterParticles(count) {
+    N = Math.min(count, MAX_N);
+    for (let i = 0; i < N; i++) {
+      px[i] = Math.random() * w;
+      py[i] = Math.random() * h;
+      vx[i] = 0; vy[i] = 0;
+      spec[i] = (Math.random() * SPECIES) | 0;
+    }
+    ringCursor = 0;
+  }
+
+  // ---------- spatial hash grid (counting sort, zero allocation once sized) ----------
+  const cellSize = MAX_R;
+  let gridW = 1, gridH = 1, cellCount = 1;
+  let gridCount = new Int32Array(1);
+  let cellStart = new Int32Array(2);
+  let cellCursor = new Int32Array(1);
+  let cellEntries = new Int32Array(MAX_N);
+
+  function buildGrid() {
+    gridW = Math.max(1, Math.ceil(w / cellSize) + 1);
+    gridH = Math.max(1, Math.ceil(h / cellSize) + 1);
+    cellCount = gridW * gridH;
+    gridCount = new Int32Array(cellCount);
+    cellStart = new Int32Array(cellCount + 1);
+    cellCursor = new Int32Array(cellCount);
+  }
+
+  function rebuildSpatialHash() {
+    gridCount.fill(0);
+    for (let i = 0; i < N; i++) {
+      let cx = (px[i] / cellSize) | 0;
+      let cy = (py[i] / cellSize) | 0;
+      if (cx < 0) cx = 0; else if (cx >= gridW) cx = gridW - 1;
+      if (cy < 0) cy = 0; else if (cy >= gridH) cy = gridH - 1;
+      const cell = cy * gridW + cx;
+      cellOf[i] = cell;
+      gridCount[cell]++;
+    }
+    cellStart[0] = 0;
+    for (let k = 0; k < cellCount; k++) cellStart[k + 1] = cellStart[k] + gridCount[k];
+    for (let k = 0; k < cellCount; k++) cellCursor[k] = cellStart[k];
+    for (let i = 0; i < N; i++) {
+      const cell = cellOf[i];
+      cellEntries[cellCursor[cell]++] = i;
+    }
+  }
+
+  // ---------- force law: repel in the core, attract/repel by matrix in the ring, fade to 0 ----------
+  function forceAt(r, a) {
+    if (r < BETA) return r / BETA - 1;
+    if (r < 1) return a * (1 - Math.abs(2 * r - 1 - BETA) / (1 - BETA));
+    return 0;
+  }
+
+  // ---------- input state ----------
+  const mouse = { x: -9999, y: -9999, inside: false, buttons: 0 };
+  let selectedSpecies = 0;
+  let spawnTickCounter = 0;
+  let flashAlpha = 0;
+
+  canvas.addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.inside = true; mouse.buttons = e.buttons;
+  });
+  canvas.addEventListener('mouseenter', e => { mouse.inside = true; mouse.buttons = e.buttons; });
+  canvas.addEventListener('mouseleave', () => { mouse.inside = false; mouse.buttons = 0; });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('mousedown', e => {
+    mouse.buttons = e.buttons;
+    if (e.button === 2) shuffleZoo();
+  });
+  window.addEventListener('mouseup', e => { mouse.buttons = e.buttons; });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const dir = Math.sign(e.deltaY);
+    selectedSpecies = ((selectedSpecies + dir) % SPECIES + SPECIES) % SPECIES;
+  }, { passive: false });
+
+  function shuffleZoo() {
+    randomizeRules();
+    flashAlpha = 1;
+    drawMatrixPanel();
+  }
+
+  function spawnAt(x, y, species) {
+    let idx;
+    if (N < MAX_N) { idx = N; N++; }
+    else { idx = ringCursor; ringCursor = (ringCursor + 1) % MAX_N; }
+    px[idx] = x + (Math.random() - 0.5) * SPRAY_JITTER;
+    py[idx] = y + (Math.random() - 0.5) * SPRAY_JITTER;
+    const ang = Math.random() * Math.PI * 2;
+    vx[idx] = Math.cos(ang) * SPRAY_SPEED * Math.random();
+    vy[idx] = Math.sin(ang) * SPRAY_SPEED * Math.random();
+    spec[idx] = species;
+  }
+
+  // ---------- fixed-timestep physics ----------
+  function update(dt) {
+    rebuildSpatialHash();
+
+    const frictionFactor = Math.exp(-FRICTION_RATE * dt);
+    const maxR2 = MAX_R * MAX_R;
+    const mouseActive = mouse.inside;
+
+    for (let i = 0; i < N; i++) {
+      let fx = 0, fy = 0;
+      const xi = px[i], yi = py[i], si = spec[i];
+      const cell = cellOf[i];
+      const cx = cell % gridW, cy = (cell / gridW) | 0;
+
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        if (gy < 0 || gy >= gridH) continue;
+        const rowBase = gy * gridW;
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          if (gx < 0 || gx >= gridW) continue;
+          const ncell = rowBase + gx;
+          const start = cellStart[ncell], end = cellStart[ncell + 1];
+          for (let k = start; k < end; k++) {
+            const j = cellEntries[k];
+            if (j === i) continue;
+            const dx = px[j] - xi, dy = py[j] - yi;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > maxR2 || d2 < 1e-8) continue;
+            const d = Math.sqrt(d2);
+            const r = d / MAX_R;
+            const a = matrix[si * SPECIES + spec[j]];
+            const f = forceAt(r, a);
+            const inv = f / d;
+            fx += dx * inv;
+            fy += dy * inv;
+          }
+        }
+      }
+
+      if (mouseActive) {
+        const mdx = mouse.x - xi, mdy = mouse.y - yi;
+        const dm = Math.sqrt(mdx * mdx + mdy * mdy) + 0.001;
+        if (dm < MOUSE_RADIUS) {
+          const influence = mouseAffinity[si] * (1 - dm / MOUSE_RADIUS);
+          fx += (mdx / dm) * influence * MOUSE_FORCE;
+          fy += (mdy / dm) * influence * MOUSE_FORCE;
+        }
+      }
+
+      let nvx = (vx[i] + fx * FORCE_SCALE * dt) * frictionFactor;
+      let nvy = (vy[i] + fy * FORCE_SCALE * dt) * frictionFactor;
+
+      let nx = xi + nvx * dt;
+      let ny = yi + nvy * dt;
+
+      if (nx < 0) { nx = 0; nvx *= -0.5; } else if (nx > w) { nx = w; nvx *= -0.5; }
+      if (ny < 0) { ny = 0; nvy *= -0.5; } else if (ny > h) { ny = h; nvy *= -0.5; }
+
+      vx[i] = nvx; vy[i] = nvy;
+      px[i] = nx; py[i] = ny;
+    }
+
+    // left-button spray, throttled so a held button sprays a gentle stream
+    if (mouse.inside && (mouse.buttons & 1)) {
+      spawnTickCounter++;
+      if (spawnTickCounter >= SPRAY_EVERY_N_TICKS) {
+        spawnTickCounter = 0;
+        spawnAt(mouse.x, mouse.y, selectedSpecies);
+        spawnAt(mouse.x, mouse.y, selectedSpecies);
+      }
+    }
+
+    if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt / 0.35);
+  }
+
+  // ---------- drawing ----------
+  function draw() {
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'rgba(0,0,0,0.10)';
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.globalCompositeOperation = 'lighter';
+    const half = SPRITE_SIZE / 2;
+    for (let i = 0; i < N; i++) {
+      ctx.drawImage(sprites[spec[i]], px[i] - half, py[i] - half, SPRITE_SIZE, SPRITE_SIZE);
+    }
+
+    // cursor ring: shows influence radius and the species about to be sprayed
+    if (mouse.inside) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.beginPath();
+      ctx.arc(mouse.x, mouse.y, 9, 0, Math.PI * 2);
+      ctx.strokeStyle = speciesColor[selectedSpecies];
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(mouse.x, mouse.y, MOUSE_RADIUS, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    if (flashAlpha > 0) {
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = 'rgba(255,255,255,' + (flashAlpha * 0.30) + ')';
+      ctx.fillRect(0, 0, w, h);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---------- controls-pane live state ----------
+  const speciesSwatchEl = document.getElementById('speciesSwatch');
+  const speciesValEl = document.getElementById('speciesVal');
+  const countValEl = document.getElementById('countVal');
+  const matrixCanvas = document.getElementById('matrixCanvas');
+  const mctx = matrixCanvas.getContext('2d');
+  const MCELL = 15;
+  matrixCanvas.width = SPECIES * MCELL;
+  matrixCanvas.height = SPECIES * MCELL;
+  let lastSelected = -1;
+
+  function drawMatrixPanel() {
+    for (let i = 0; i < SPECIES; i++) {
+      for (let j = 0; j < SPECIES; j++) {
+        const v = matrix[i * SPECIES + j];
+        if (v >= 0) {
+          const rgb = speciesRGB[j];
+          mctx.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + (0.15 + v * 0.85) + ')';
+        } else {
+          mctx.fillStyle = 'rgba(255,60,80,' + (0.15 + (-v) * 0.85) + ')';
+        }
+        mctx.fillRect(j * MCELL, i * MCELL, MCELL - 1, MCELL - 1);
+      }
+    }
+    // outline the row of the species currently being sprayed
+    mctx.strokeStyle = '#fff';
+    mctx.lineWidth = 1.5;
+    mctx.strokeRect(0.5, selectedSpecies * MCELL + 0.5, SPECIES * MCELL - 1, MCELL - 2);
+  }
+
+  function updateUI() {
+    speciesSwatchEl.style.color = speciesColor[selectedSpecies];
+    speciesSwatchEl.style.background = speciesColor[selectedSpecies];
+    speciesValEl.textContent = (selectedSpecies + 1) + ' / ' + SPECIES;
+    countValEl.textContent = N;
+    if (selectedSpecies !== lastSelected) {
+      lastSelected = selectedSpecies;
+      drawMatrixPanel();
+    }
+  }
+
+  // ---------- reset (same routine as first launch) ----------
+  function init() {
+    fitCanvas();
+    randomizeRules();
+    scatterParticles(START_N);
+    selectedSpecies = 0;
+    lastSelected = -1;
+    flashAlpha = 0;
+    mouse.buttons = 0;
+    ctx.clearRect(0, 0, w, h);
+    drawMatrixPanel();
+  }
+
+  document.getElementById('resetBtn').addEventListener('click', init);
+  window.addEventListener('resize', fitCanvas);
+
+  // ---------- fixed-timestep loop (house standard) ----------
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+  let running = true;
+
+  function frame(now) {
+    if (running) {
+      acc += Math.min((now - last) / 1000, 0.1);
+      last = now;
+      while (acc >= DT) { update(DT); acc -= DT; }
+      draw();
+      updateUI();
+    } else {
+      last = now;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    running = !document.hidden;
+  });
+
+  init();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Firefly Field — Emergent Synchrony Playground</title>
+    <style>
+        :root {
+            --bg-color: #060a12;
+            --panel-bg: rgba(10, 16, 26, 0.75);
+            --panel-border: rgba(255, 255, 255, 0.1);
+            --accent-green: #a3e635;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            color: var(--text-main);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* Glassmorphic UI overlays */
+        .overlay {
+            position: absolute;
+            z-index: 10;
+            pointer-events: auto;
+        }
+
+        #ui-container {
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 16px;
+            padding: 20px;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+        }
+
+        h1 {
+            font-size: 1.1rem;
+            margin: 0;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--accent-green);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .subtitle {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin: -12px 0 0 0;
+            line-height: 1.3;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .control-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .control-label span.val {
+            color: var(--accent-green);
+        }
+
+        input[type="range"] {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.15);
+            outline: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            cursor: pointer;
+            box-shadow: 0 0 8px var(--accent-green);
+            transition: transform 0.1s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        .btn-row {
+            display: grid;
+            grid-template-cols: 1fr 1fr;
+            gap: 10px;
+        }
+
+        button {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: var(--text-main);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 0.750rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: rgba(255, 255, 255, 0.18);
+            border-color: var(--accent-green);
+        }
+
+        button.active {
+            background: var(--accent-green);
+            color: #000;
+            border-color: var(--accent-green);
+        }
+
+        /* Sound Button Pin */
+        #audio-toggle {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            font-size: 1.25rem;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            z-index: 10;
+        }
+
+        /* Ambient HUD at the bottom for quick status updates */
+        #hud-status {
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(8, 12, 22, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: var(--text-main);
+            font-weight: 500;
+            padding: 10px 24px;
+            border-radius: 30px;
+            pointer-events: none;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            font-size: 0.8rem;
+            letter-spacing: 0.03em;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            transition: opacity 1.2s ease, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+            opacity: 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            max-width: 90vw;
+        }
+
+        #hud-status.visible {
+            opacity: 1;
+            transform: translate(-50%, -10px);
+        }
+
+        #hud-indicator-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            box-shadow: 0 0 10px var(--accent-green);
+            display: inline-block;
+        }
+
+        /* Instructions list styling */
+        .instructions {
+            font-size: 0.70rem;
+            color: var(--text-muted);
+            line-height: 1.4;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            padding-top: 10px;
+            margin: 0;
+        }
+
+        /* Interactive status bars */
+        .harmony-bar-container {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 3px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .harmony-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #84cc16, #a3e635);
+            box-shadow: 0 0 8px #a3e635;
+            transition: width 0.1s ease-out;
+        }
+
+        /* Responsive hiding for small screens */
+        @media(max-width: 480px) {
+            #ui-container {
+                width: calc(100% - 40px);
+                max-height: 40vh;
+                overflow-y: auto;
+                bottom: 20px;
+                top: auto;
+            }
+            #audio-toggle {
+                top: 10px;
+                right: 10px;
+            }
+            #hud-status {
+                display: none; /* Hide ambient HUD on mobile to reduce clutter */
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <audio id="clickSound" style="display: none;"></audio>
+    <button class="overlay" id="audio-toggle" title="Toggle Sound Interface" aria-label="Toggle Sound">
+        🔇
+    </button>
+
+    <div class="overlay" id="ui-container">
+        <h1>Firefly Field <span id="fps" style="font-size: 0.7rem; color: var(--text-muted);">60 FPS</span></h1>
+        <p class="subtitle">An emergent feedback simulation matching boid dynamics with synchronized mathematical phases.</p>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Count</span>
+                <span id="label-count" class="val">1,500</span>
+            </div>
+            <input type="range" id="slider-count" min="100" max="4000" step="50" value="1500">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Sync Coupling (K)</span>
+                <span id="label-coupling" class="val">0.80</span>
+            </div>
+            <input type="range" id="slider-coupling" min="0" max="2" step="0.05" value="0.8">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Sight Angle (2&theta;)</span>
+                <span id="label-sight" class="val">240°</span>
+            </div>
+            <input type="range" id="slider-sight" min="60" max="360" step="15" value="240">
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">
+                <span>Global Harmony Index (R)</span>
+                <span id="label-harmony" class="val">0%</span>
+            </div>
+            <div class="harmony-bar-container">
+                <div class="harmony-bar-fill" id="harmony-fill"></div>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <div class="control-label">Interactive Presets</div>
+            <div class="btn-row">
+                <button id="preset-chaos">Twinkle Chaos</button>
+                <button id="preset-waves">Phase Waves</button>
+                <button id="preset-heartbeat">Heartbeat</button>
+                <button id="preset-vortex">Vortex Field</button>
+            </div>
+        </div>
+
+        <ul class="instructions">
+            <li>👋 <b>Pointer Hover</b>: Stir/swirl nearby fireflies into orbit</li>
+            <li>🔴 <b>Left-Click & Hold</b>: Attract swarm and spawn more</li>
+            <li>🔵 <b>Right-Click & Hold</b>: Disperse and disrupt alignment</li>
+            <li>⚙️ <b>Scroll Wheel</b>: Slide sync coupling strength dynamically</li>
+        </ul>
+    </div>
+
+    <div class="overlay" id="hud-status">
+        <div id="hud-indicator-dot"></div>
+        <span id="hud-text">Synchrony: Active</span>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        // --- 1. SYSTEM SETUP & PHYSICS PERFORMANCE ---
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // High performance allocations limits
+        const MAX_BOIDS = 4000;
+        let boidCount = 1500;
+
+        // Structure of Arrays (SoA) paradigm prevents garbage collection pauses completely
+        const posX = new Float32Array(MAX_BOIDS);
+        const posY = new Float32Array(MAX_BOIDS);
+        const velX = new Float32Array(MAX_BOIDS);
+        const velY = new Float32Array(MAX_BOIDS);
+        const phase = new Float32Array(MAX_BOIDS);
+        const omega = new Float32Array(MAX_BOIDS);
+        const flash = new Float32Array(MAX_BOIDS);
+
+        // Simulation parameters
+        let K = 0.8;                     // Coupling strength
+        let sightAngleDeg = 240;         // Complete sight angle (cone of vision)
+        let cosConeHalfAngle = Math.cos((sightAngleDeg / 2) * Math.PI / 180);
+
+        // Standardized Constants
+        const R_VIEW = 80;               // Maximum vision radius (pixels)
+        const R_VIEW_SQ = R_VIEW * R_VIEW;
+        const R_SEP = 18;                // Unconditional separation envelope
+        const R_SEP_SQ = R_SEP * R_SEP;
+
+        // Physics adjustments
+        let MAX_SPEED = 2.4;
+        let MAX_FORCE = 0.05;
+        const WEIGHT_SEPARATION = 1.8;
+        const WEIGHT_ALIGN = 0.8;
+        const WEIGHT_COHESION = 0.6;
+        const WEIGHT_DRIFT = 0.12;
+
+        // Check for client reduced-motion preferences
+        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (prefersReducedMotion) {
+            MAX_SPEED = 1.2;
+            MAX_FORCE = 0.03;
+        }
+
+        // --- 2. SPATIAL HASH GRID CONSTANTS ---
+        // Linked list structure mapped via Flat Arrays
+        const CELL_SIZE = R_VIEW; 
+        let cols = 0, rows = 0;
+        let head = null;
+        const next = new Int32Array(MAX_BOIDS);
+
+        function resizeDimensions() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            cols = Math.ceil(canvas.width / CELL_SIZE);
+            rows = Math.ceil(canvas.height / CELL_SIZE);
+            head = new Int32Array(cols * rows);
+        }
+        window.addEventListener('resize', resizeDimensions);
+        resizeDimensions();
+
+        // --- 3. AUDIOPHILIC EXPERIENCE ENGINE ---
+        let audioCtx = null;
+        let masterGain = null;
+        let synthDrone = null;
+        let lowpassFilter = null;
+        let soundOn = false;
+
+        function startSoundEngine() {
+            if (audioCtx) return;
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            audioCtx = new AudioContextClass();
+            
+            masterGain = audioCtx.createGain();
+            // Start silent to smoothly transition
+            masterGain.gain.setValueAtTime(0, audioCtx.currentTime);
+            masterGain.connect(audioCtx.destination);
+
+            // Synth pad mimicking deep wind/insect swarm
+            synthDrone = audioCtx.createOscillator();
+            synthDrone.type = 'triangle';
+            synthDrone.frequency.setValueAtTime(55, audioCtx.currentTime); // Low fundamental A1
+            
+            lowpassFilter = audioCtx.createBiquadFilter();
+            lowpassFilter.type = 'lowpass';
+            lowpassFilter.Q.setValueAtTime(4.0, audioCtx.currentTime); // resonant spike
+
+            synthDrone.connect(lowpassFilter);
+            lowpassFilter.connect(masterGain);
+            synthDrone.start();
+
+            // Safe raise to default audio limit
+            masterGain.gain.linearRampToValueAtTime(0.15, audioCtx.currentTime + 3.0);
+        }
+
+        const audioToggleBtn = document.getElementById('audio-toggle');
+        audioToggleBtn.addEventListener('click', () => {
+            soundOn = !soundOn;
+            if (soundOn) {
+                if (!audioCtx) startSoundEngine();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+                audioToggleBtn.innerHTML = '🔊';
+                audioToggleBtn.classList.add('active');
+            } else {
+                if (audioCtx) audioCtx.suspend();
+                audioToggleBtn.innerHTML = '🔇';
+                audioToggleBtn.classList.remove('active');
+            }
+        });
+
+        // Track and rate limit distinct voice synthesizers
+        let lastToneTrigger = 0;
+        function triggerAudibleHeartbeat(pitch, amplitude) {
+            if (!soundOn || !audioCtx || audioCtx.state !== 'running') return;
+            const time = audioCtx.currentTime;
+            if (time - lastToneTrigger < 0.04) return; // Restrict output spikes
+            lastToneTrigger = time;
+
+            const osc = audioCtx.createOscillator();
+            const envelope = audioCtx.createGain();
+            const filter = audioCtx.createBiquadFilter();
+
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(pitch, time);
+
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(pitch * 2.0, time);
+
+            envelope.gain.setValueAtTime(0, time);
+            envelope.gain.linearRampToValueAtTime(amplitude * 0.08, time + 0.01);
+            envelope.gain.exponentialRampToValueAtTime(0.0001, time + 0.7);
+
+            osc.connect(filter);
+            filter.connect(envelope);
+            envelope.connect(masterGain);
+
+            osc.start();
+            osc.stop(time + 0.8);
+        }
+
+        // --- 4. PRE-COMPILING THE RADIAL GLOW SPRITE ---
+        const glowSprite = document.createElement('canvas');
+        glowSprite.width = 64;
+        glowSprite.height = 64;
+        const gCtx = glowSprite.getContext('2d');
+
+        const grad = gCtx.createRadialGradient(32, 32, 1, 32, 32, 32);
+        // Clean high dynamic range colors transition
+        grad.addColorStop(0, 'rgba(255, 255, 255, 1.0)');       // Core
+        grad.addColorStop(0.15, 'rgba(224, 255, 120, 0.95)');   // Golden Lime
+        grad.addColorStop(0.4, 'rgba(100, 240, 50, 0.4)');     // Forest glow ring
+        grad.addColorStop(0.85, 'rgba(30, 200, 10, 0.06)');     // Soft wide halo
+        grad.addColorStop(1.0, 'rgba(0, 0, 0, 0)');             // Bounds
+        gCtx.fillStyle = grad;
+        gCtx.fillRect(0, 0, 64, 64);
+
+        // --- 5. INITIALIZE STATE POPULATION ---
+        function initBoidArrays() {
+            for (let i = 0; i < MAX_BOIDS; i++) {
+                posX[i] = Math.random() * canvas.width;
+                posY[i] = Math.random() * canvas.height;
+                
+                const theta = Math.random() * Math.PI * 2;
+                velX[i] = Math.cos(theta) * (0.8 + Math.random() * 1.5);
+                velY[i] = Math.sin(theta) * (0.8 + Math.random() * 1.5);
+                
+                phase[i] = Math.random() * Math.PI * 2;
+                // Seed natural frequency: ~0.25Hz to 0.45Hz variation
+                omega[i] = 2 * Math.PI * (0.22 + Math.random() * 0.18);
+                flash[i] = 0.0;
+            }
+        }
+        initBoidArrays();
+
+        // --- 6. USER CAPTURED INTERACTIONS ---
+        const mouse = { x: -1000, y: -1000, active: false, downLeft: false, downRight: false };
+        let hudTimer = 0;
+
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+            mouse.active = true;
+        });
+
+        window.addEventListener('mousedown', (e) => {
+            if (e.target.closest('#ui-container') || e.target.closest('#audio-toggle')) return;
+            if (e.button === 0) mouse.downLeft = true;
+            if (e.button === 2) {
+                e.preventDefault();
+                mouse.downRight = true;
+            }
+        });
+
+        window.addEventListener('mouseup', (e) => {
+            if (e.button === 0) mouse.downLeft = false;
+            if (e.button === 2) mouse.downRight = false;
+        });
+
+        window.addEventListener('contextmenu', e => e.preventDefault());
+
+        // Scroll Wheel Controls Coupling Strength with temporary HUD triggers
+        window.addEventListener('wheel', (e) => {
+            if (e.target.closest('#ui-container')) return; // ignore control elements
+            K += e.deltaY < 0 ? 0.05 : -0.05;
+            K = Math.max(0.0, Math.min(2.0, K));
+            
+            // Adjust slider visuals
+            document.getElementById('slider-coupling').value = K;
+            document.getElementById('label-coupling').innerText = K.toFixed(2);
+            
+            triggerHUDNotification();
+        }, { passive: true });
+
+        const hudStatus = document.getElementById('hud-status');
+        const hudText = document.getElementById('hud-text');
+        
+        function triggerHUDNotification() {
+            let desc = "";
+            if (K === 0.0) desc = "Oscillation Desynced. Complete Entropy.";
+            else if (K < 0.4) desc = "Slight Attraction. Weak Wave Formations.";
+            else if (K < 1.0) desc = "Active Synchrony. Coherent Regional Pulses.";
+            else desc = "Extreme Collective Coupling. Homogeneous Global Heartbeat.";
+            
+            hudText.innerHTML = `<b>Coupling State (K = ${K.toFixed(2)})</b>: ${desc}`;
+            hudStatus.classList.add('visible');
+            hudTimer = 180; // keep visible roughly 3 seconds
+        }
+
+        // DOM inputs binding
+        const countSlider = document.getElementById('slider-count');
+        const countLabel = document.getElementById('label-count');
+        countSlider.addEventListener('input', (e) => {
+            boidCount = parseInt(e.target.value);
+            countLabel.innerText = boidCount.toLocaleString();
+        });
+
+        const couplingSlider = document.getElementById('slider-coupling');
+        const couplingLabel = document.getElementById('label-coupling');
+        couplingSlider.addEventListener('input', (e) => {
+            K = parseFloat(e.target.value);
+            couplingLabel.innerText = K.toFixed(2);
+        });
+
+        const sightSlider = document.getElementById('slider-sight');
+        const sightLabel = document.getElementById('label-sight');
+        sightSlider.addEventListener('input', (e) => {
+            sightAngleDeg = parseInt(e.target.value);
+            cosConeHalfAngle = Math.cos((sightAngleDeg / 2) * Math.PI / 180);
+            sightLabel.innerText = `${sightAngleDeg}°`;
+        });
+
+        // Presets Library
+        document.getElementById('preset-chaos').addEventListener('click', () => applyPreset(1200, 0.0, 90));
+        document.getElementById('preset-waves').addEventListener('click', () => applyPreset(1800, 0.45, 230));
+        document.getElementById('preset-heartbeat').addEventListener('click', () => applyPreset(1500, 1.45, 360));
+        document.getElementById('preset-vortex').addEventListener('click', () => applyPreset(2500, 0.7, 180));
+
+        function applyPreset(count, coupling, sight) {
+            boidCount = Math.min(count, MAX_BOIDS);
+            K = coupling;
+            sightAngleDeg = sight;
+            cosConeHalfAngle = Math.cos((sightAngleDeg / 2) * Math.PI / 180);
+
+            countSlider.value = count;
+            countLabel.innerText = count.toLocaleString();
+            couplingSlider.value = coupling;
+            couplingLabel.innerText = coupling.toFixed(2);
+            sightSlider.value = sight;
+            sightLabel.innerText = `${sight}°`;
+
+            triggerHUDNotification();
+        }
+
+        // Dynamic spawning mechanism
+        function spawnInsect(x, y) {
+            if (boidCount >= MAX_BOIDS) return;
+            const index = boidCount;
+            posX[index] = x + (Math.random() - 0.5) * 50;
+            posY[index] = y + (Math.random() - 0.5) * 50;
+            const t = Math.random() * Math.PI * 2;
+            velX[index] = Math.cos(t) * 1.5;
+            velY[index] = Math.sin(t) * 1.5;
+            phase[index] = Math.random() * Math.PI * 2;
+            omega[index] = 2 * Math.PI * (0.22 + Math.random() * 0.18);
+            flash[index] = 1.0;
+            boidCount++;
+            countSlider.value = boidCount;
+            countLabel.innerText = boidCount.toLocaleString();
+        }
+
+        // --- 7. CORE HIGH-PERFORMANCE UPDATER ---
+        let lastFrameTime = performance.now();
+        let fpsCounter = 0;
+        let fpsTimer = 0;
+
+        function runMainLoop() {
+            requestAnimationFrame(runMainLoop);
+
+            const now = performance.now();
+            let dt = (now - lastFrameTime) / 16.666; // Normalize to standard 60hz step
+            lastFrameTime = now;
+
+            // Cap elapsed timing safely to avoid clipping through bounds
+            if (dt > 3.0) dt = 3.0; 
+
+            // Calculate FPS
+            fpsCounter++;
+            fpsTimer += dt * 16.666;
+            if (fpsTimer >= 1000) {
+                document.getElementById('fps').innerText = `${fpsCounter} FPS`;
+                fpsCounter = 0;
+                fpsTimer = 0;
+            }
+
+            // Global order evaluation variables
+            let sumCosine = 0;
+            let sumSine = 0;
+
+            // Clear and populate Spatial Hash List
+            head.fill(-1);
+            for (let i = 0; i < boidCount; i++) {
+                const cx = Math.max(0, Math.min(cols - 1, Math.floor(posX[i] / CELL_SIZE)));
+                const cy = Math.max(0, Math.min(rows - 1, Math.floor(posY[i] / CELL_SIZE)));
+                const cellIndex = cy * cols + cx;
+
+                next[i] = head[cellIndex];
+                head[cellIndex] = i;
+            }
+
+            // Accumulation Vectors for spatial calculations
+            for (let i = 0; i < boidCount; i++) {
+                const px = posX[i];
+                const py = posY[i];
+                const vx = velX[i];
+                const vy = velY[i];
+
+                const speed = Math.sqrt(vx * vx + vy * vy) || 0.1;
+
+                // Direction heading normal values
+                const dxDir = vx / speed;
+                const dyDir = vy / speed;
+
+                let alignX = 0, alignY = 0;
+                let cohereX = 0, cohereY = 0;
+                let separateX = 0, separateY = 0;
+                let phaseCouplingForce = 0;
+
+                let boidIndex = 0;
+                let collisionCount = 0;
+
+                // Obtain grid mapping of current target
+                const cx = Math.floor(px / CELL_SIZE);
+                const cy = Math.floor(py / CELL_SIZE);
+
+                // Run localized 9-cell spatial queries
+                for (let dy = -1; dy <= 1; dy++) {
+                    const ny = cy + dy;
+                    if (ny < 0 || ny >= rows) continue;
+
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const nx = cx + dx;
+                        if (nx < 0 || nx >= cols) continue;
+
+                        const cellIdx = ny * cols + nx;
+                        let j = head[cellIdx];
+
+                        while (j !== -1) {
+                            if (j !== i) {
+                                const dxPos = posX[j] - px;
+                                const dyPos = posY[j] - py;
+                                const distSq = dxPos * dxPos + dyPos * dyPos;
+
+                                if (distSq < R_VIEW_SQ) {
+                                    const dist = Math.sqrt(distSq) || 0.1;
+
+                                    // Direct collision warning (acts in 360 regardless of vision barriers)
+                                    if (distSq < R_SEP_SQ) {
+                                        separateX -= dxPos / dist;
+                                        separateY -= dyPos / dist;
+                                        collisionCount++;
+                                    }
+
+                                    // Standard Sight Cone Verification
+                                    const dotProduct = (dxDir * dxPos + dyDir * dyPos) / dist;
+                                    if (dotProduct >= cosConeHalfAngle) {
+                                        alignX += velX[j];
+                                        alignY += velY[j];
+                                        cohereX += posX[j];
+                                        cohereY += posY[j];
+
+                                        // Kuramoto alignment difference accumulation
+                                        phaseCouplingForce += Math.sin(phase[j] - phase[i]);
+                                        boidIndex++;
+                                    }
+                                }
+                            }
+                            j = next[j];
+                        }
+                    }
+                }
+
+                // --- STEERING PHYSICS MATH COALESCENCE ---
+                let forceX = 0;
+                let forceY = 0;
+
+                if (boidIndex > 0) {
+                    // Alignment (target desired vector minus current velocity vector)
+                    const avgVelX = alignX / boidIndex;
+                    const avgVelY = alignY / boidIndex;
+                    const boidNormal = Math.sqrt(avgVelX * avgVelX + avgVelY * avgVelY) || 0.1;
+                    const targetAlignX = (avgVelX / boidNormal) * MAX_SPEED;
+                    const targetAlignY = (avgVelY / boidNormal) * MAX_SPEED;
+                    
+                    forceX += (targetAlignX - vx) * WEIGHT_ALIGN;
+                    forceY += (targetAlignY - vy) * WEIGHT_ALIGN;
+
+                    // Cohesion (average target location minus coordinates)
+                    const avgPosX = cohereX / boidIndex;
+                    const avgPosY = cohereY / boidIndex;
+                    const desireCohX = avgPosX - px;
+                    const desireCohY = avgPosY - py;
+                    const lenC = Math.sqrt(desireCohX * desireCohX + desireCohY * desireCohY) || 0.1;
+                    const targetCohX = (desireCohX / lenC) * MAX_SPEED;
+                    const targetCohY = (desireCohY / lenC) * MAX_SPEED;
+
+                    forceX += (targetCohX - vx) * WEIGHT_COHESION;
+                    forceY += (targetCohY - vy) * WEIGHT_COHESION;
+                }
+
+                if (collisionCount > 0) {
+                    const lenS = Math.sqrt(separateX * separateX + separateY * separateY) || 0.1;
+                    const targetSepX = (separateX / lenS) * MAX_SPEED;
+                    const targetSepY = (separateY / lenS) * MAX_SPEED;
+
+                    forceX += (targetSepX - vx) * WEIGHT_SEPARATION;
+                    forceY += (targetSepY - vy) * WEIGHT_SEPARATION;
+                }
+
+                // Screen boundaries cushion bounce dynamics
+                const margin = 80;
+                const turnForce = 0.35;
+                if (px < margin) forceX += turnForce * (1.0 - px / margin);
+                if (px > canvas.width - margin) forceX -= turnForce * (1.0 - (canvas.width - px) / margin);
+                if (py < margin) forceY += turnForce * (1.0 - py / margin);
+                if (py > canvas.height - margin) forceY -= turnForce * (1.0 - (canvas.height - py) / margin);
+
+                // Mouse interaction mechanics
+                if (mouse.active) {
+                    const dxMouse = mouse.x - px;
+                    const dyMouse = mouse.y - py;
+                    const distMouse = Math.sqrt(dxMouse * dxMouse + dyMouse * dyMouse) || 0.1;
+
+                    if (distMouse < 220) {
+                        if (mouse.downRight) {
+                            // Radial Shockwave Repulsion & sync phase disruptions
+                            const repelX = -dxMouse / distMouse * MAX_SPEED * 3.5;
+                            const repelY = -dyMouse / distMouse * MAX_SPEED * 3.5;
+                            forceX += (repelX - vx) * 1.8;
+                            forceY += (repelY - vy) * 1.8;
+
+                            if (Math.random() < 0.04) {
+                                phase[i] = Math.random() * Math.PI * 2; // total synchronization breakdown
+                            }
+                        } else if (mouse.downLeft) {
+                            // Pull Swarm Force
+                            const attractX = dxMouse / distMouse * MAX_SPEED * 2.5;
+                            const attractY = dyMouse / distMouse * MAX_SPEED * 2.5;
+                            forceX += (attractX - vx) * 1.5;
+                            forceY += (attractY - vy) * 1.5;
+
+                            // Dynamic spawning logic: generates a continuous flow
+                            if (Math.random() < 0.08) spawnInsect(mouse.x, mouse.y);
+                        } else {
+                            // Idle Stirring Vortex Force
+                            const rotX = -dyMouse / distMouse;
+                            const rotY = dxMouse / distMouse;
+                            const swirlX = (rotX * 0.8 + dxMouse / distMouse * 0.2) * MAX_SPEED;
+                            const swirlY = (rotY * 0.8 + dyMouse / distMouse * 0.2) * MAX_SPEED;
+                            forceX += (swirlX - vx) * 0.45;
+                            forceY += (swirlY - vy) * 0.45;
+                        }
+                    }
+                }
+
+                // Add delicate organic drift
+                const angleRad = (i * 1234.567 + now * 0.002) % (Math.PI * 2);
+                forceX += Math.cos(angleRad) * WEIGHT_DRIFT * MAX_SPEED;
+                forceY += Math.sin(angleRad) * WEIGHT_DRIFT * MAX_SPEED;
+
+                // Clamp physical limits of force application
+                const lenF = Math.sqrt(forceX * forceX + forceY * forceY) || 0.1;
+                if (lenF > MAX_FORCE) {
+                    forceX = (forceX / lenF) * MAX_FORCE;
+                    forceY = (forceY / lenF) * MAX_FORCE;
+                }
+
+                // Apply update step
+                velX[i] += forceX * dt;
+                velY[i] += forceY * dt;
+
+                const nextSpeed = Math.sqrt(velY[i] * velY[i] + velX[i] * velX[i]) || 0.1;
+                if (nextSpeed > MAX_SPEED) {
+                    velY[i] = (velY[i] / nextSpeed) * MAX_SPEED;
+                    velX[i] = (velX[i] / nextSpeed) * MAX_SPEED;
+                } else if (nextSpeed < 0.5) {
+                    velY[i] = (velY[i] / nextSpeed) * 0.5;
+                    velX[i] = (velX[i] / nextSpeed) * 0.5;
+                }
+
+                posX[i] += velX[i] * dt;
+                posY[i] += velY[i] * dt;
+
+                // --- KURAMOTO PHASE TEMPORAL STEP ---
+                let localCouplingInfluence = 0;
+                if (boidIndex > 0) {
+                    localCouplingInfluence = K * (phaseCouplingForce / boidIndex);
+                }
+
+                // Core integration step
+                phase[i] += (omega[i] + localCouplingInfluence) * 0.016 * dt;
+
+                // Boundary Wrapping and flash check
+                if (phase[i] >= Math.PI * 2) {
+                    phase[i] -= Math.PI * 2;
+                    // Trigger visual flash
+                    flash[i] = 1.0; 
+
+                    // Trigger sound pluck based on frequency values
+                    if (boidIndex >= 2) {
+                        const chordFrequency = 329.63 * Math.pow(1.122, Math.floor(Math.random() * 8)); // pentatonic scale: E4 up
+                        triggerAudibleHeartbeat(chordFrequency, 0.3);
+                    }
+                }
+
+                // Accumulate order calculation vectors
+                sumCosine += Math.cos(phase[i]);
+                sumSine += Math.sin(phase[i]);
+            }
+
+            // --- ORDER INDEX PARAMETER (R) AND UI WORK ---
+            const R = boidCount > 0 ? Math.sqrt(sumCosine * sumCosine + sumSine * sumSine) / boidCount : 0;
+            document.getElementById('label-harmony').innerText = `${Math.round(R * 100)}%`;
+            document.getElementById('harmony-fill').style.width = `${R * 100}%`;
+
+            // Adjust ambient synthesizer mapping sound dynamics based on Global Order R
+            if (soundOn && audioCtx && audioCtx.state === 'running') {
+                const globalPhaseAngle = Math.atan2(sumSine, sumCosine);
+                
+                // Lowpass filter oscillates in lockstep with the flash cycles
+                const baseF = 120;
+                const dynamicFreq = baseF + (R * 420) * (0.5 + 0.5 * Math.sin(globalPhaseAngle));
+                lowpassFilter.frequency.setTargetAtTime(dynamicFreq, audioCtx.currentTime, 0.08);
+
+                // Modulate ambient volume envelope to sync with breathing pattern
+                const voiceTargetAmp = 0.12 + (R * 0.18);
+                masterGain.gain.setValueAtTime(voiceTargetAmp, audioCtx.currentTime); 
+            }
+
+            // Decrease general system HUD timer
+            if (hudTimer > 0) {
+                hudTimer -= dt;
+                if (hudTimer <= 0) hudStatus.classList.remove('visible');
+            }
+
+            // --- 8. RENDER LOOP ---
+            // Draw velvety trails
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = 'rgba(6, 12, 22, 0.18)'; // Deep blue-black canvas clear
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Additive blending rendering of high-performance firefly glows
+            ctx.globalCompositeOperation = 'lighter';
+
+            for (let i = 0; i < boidCount; i++) {
+                const intens = flash[i];
+                const px = posX[i];
+                const py = posY[i];
+
+                // Scale up size during trigger flashes
+                const size = 10 + intens * 38;
+
+                // Adjust transparency value: always active hovering glow
+                ctx.globalAlpha = 0.12 + intens * 0.88;
+
+                // Stamp offscreen pre-compiled gradient canvas
+                ctx.drawImage(glowSprite, px - size / 2, py - size / 2, size, size);
+
+                // Exponential flash decay curve
+                flash[i] *= Math.pow(0.92, dt);
+                if (flash[i] < 0.001) flash[i] = 0.0;
+            }
+
+            // Reset transparency values
+            ctx.globalAlpha = 1.0;
+        }
+
+        // --- 9. LAUNCH SIMULATION ---
+        requestAnimationFrame(runMainLoop);
+    </script>
+</body>
+</html>

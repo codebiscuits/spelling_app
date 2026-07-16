@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Firefly Field</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #040810; cursor: default; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #cfe8d8; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(8,14,16,0.72);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .key { color: #8aa; }
+  #ui .val { color: #ffe58a; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; padding: 10px 28px; font-size: 14px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #cfe8d8; background: rgba(8,14,16,0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(40,60,50,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>&#x1F3ee; Firefly Field</h3>
+  <div class="param"><span class="key">Move slow</span><span class="val">Fireflies drift close</span></div>
+  <div class="param"><span class="key">Move fast</span><span class="val">Fireflies scatter</span></div>
+  <div class="param"><span class="key">Hold Left</span><span class="val">Lantern gathers them</span></div>
+  <div class="param"><span class="key">Right Click</span><span class="val">Pulse, desyncs nearby</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Swarm: <span id="countVal">0</span></span></div>
+  <br>
+  <div class="param"><span class="key">Sync:</span><span class="val" id="syncVal">0%</span></div>
+</div>
+<button id="resetBtn">&#x21BA; Reset field</button>
+<script>
+(function () {
+  'use strict';
+  const TWO_PI = Math.PI * 2;
+  const DT = 1 / 60;
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const glow = document.createElement('canvas');
+  const gctx = glow.getContext('2d');
+
+  let w = 0, h = 0, dpr = 1;
+  function fitCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    glow.width = w * dpr; glow.height = h * dpr;
+    glow.style.width = w + 'px'; glow.style.height = h + 'px';
+    gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  fitCanvas();
+  window.addEventListener('resize', fitCanvas);
+
+  // ---------- pre-rendered glow sprites (drawn once, never per-frame gradients) ----------
+  function makeSprite(size, inner, mid, outer) {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    const r = size / 2;
+    const grad = g.createRadialGradient(r, r, 0, r, r, r);
+    grad.addColorStop(0, inner);
+    grad.addColorStop(0.35, mid);
+    grad.addColorStop(1, outer);
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    return c;
+  }
+  const idleSprite = makeSprite(48, 'rgba(210,255,160,0.95)', 'rgba(150,230,120,0.35)', 'rgba(120,200,90,0)');
+  const flashSprite = makeSprite(96, 'rgba(255,250,210,1)', 'rgba(255,225,140,0.55)', 'rgba(255,200,110,0)');
+  const lanternSprite = makeSprite(220, 'rgba(255,225,170,0.9)', 'rgba(255,180,90,0.4)', 'rgba(255,140,60,0)');
+
+  // ---------- twilight meadow backdrop ----------
+  const stars = Array.from({ length: 70 }, () => ({
+    fx: Math.random(), fy: Math.random() * 0.55,
+    r: Math.random() * 1.3 + 0.4, phase: Math.random() * TWO_PI, speed: 0.4 + Math.random() * 0.8
+  }));
+  const moon = { fx: 0.82, fy: 0.16, r: 46 };
+
+  const BLADE_COUNT = 90;
+  const grass = Array.from({ length: BLADE_COUNT }, () => ({
+    fx: Math.random(),
+    baseH: 40 + Math.random() * 70,
+    phase: Math.random() * TWO_PI,
+    swayAmp: 0.06 + Math.random() * 0.10,
+    depth: Math.random(),      // 0 = far/small/dark, 1 = near/tall/lighter
+    bend: 0, bendVel: 0
+  })).sort((a, b) => a.depth - b.depth);
+
+  // ---------- fireflies ----------
+  const DEFAULT_COUNT = 80, MIN_COUNT = 15, MAX_COUNT = 220, COUNT_STEP = 5;
+  const PERCEP_R = 95, PERCEP_R2 = PERCEP_R * PERCEP_R;
+  const SEP_R = 26;
+  const FOV_HALF_COS = Math.cos(100 * Math.PI / 180); // ~200 deg forward cone
+  const maxSpeed = reducedMotion ? 34 : 58, minSpeed = 8;
+  const KURAMOTO_K = 2.6;
+  const BOUNDARY_MARGIN = 70, BOUNDARY_ACCEL = 260;
+  const MOUSE_INFLUENCE_R = 210, MOUSE_SLOW_THRESH = 55;
+  const MOUSE_CURIOUS_ACCEL = 40, MOUSE_SCATTER_ACCEL_MAX = 380;
+  const LANTERN_R = 260, LANTERN_ACCEL = 300;
+
+  let fireflies = [];
+  function makeFirefly(x, y) {
+    const ang = Math.random() * TWO_PI;
+    return {
+      x: x !== undefined ? x : Math.random() * w,
+      y: y !== undefined ? y : Math.random() * h,
+      vx: Math.cos(ang) * 12, vy: Math.sin(ang) * 12,
+      phase: Math.random() * TWO_PI,
+      freq: TWO_PI / (4 + Math.random() * 3), // period 4-7s
+      heat: 0,
+      seed: Math.random() * TWO_PI,
+      warmth: Math.random() // subtle colour-mix seed (green <-> amber)
+    };
+  }
+  function seedField(n) {
+    fireflies = Array.from({ length: n }, () => makeFirefly());
+  }
+  seedField(DEFAULT_COUNT);
+  let targetCount = DEFAULT_COUNT;
+
+  // ---------- pulses (right click) ----------
+  const PULSE_SPEED = 520;
+  let pulses = [];
+
+  // ---------- lantern (left hold) ----------
+  const lantern = { active: false, x: 0, y: 0 };
+
+  // ---------- mouse ----------
+  const mouse = { x: w / 2, y: h / 2 };
+  let lastMouse = { x: w / 2, y: h / 2, t: performance.now() };
+  let cursorSpeed = 0;
+  let lastMoveTime = performance.now();
+
+  canvas.addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY;
+    const now = performance.now();
+    const dt = Math.max(1, now - lastMouse.t) / 1000;
+    const d = Math.hypot(mouse.x - lastMouse.x, mouse.y - lastMouse.y);
+    const inst = d / dt;
+    cursorSpeed = cursorSpeed * 0.75 + inst * 0.25;
+    lastMouse = { x: mouse.x, y: mouse.y, t: now };
+    lastMoveTime = now;
+    if (lantern.active) { lantern.x = mouse.x; lantern.y = mouse.y; }
+  });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('mousedown', e => {
+    if (e.button === 0) { lantern.active = true; lantern.x = mouse.x; lantern.y = mouse.y; }
+    if (e.button === 2) {
+      const diag = Math.hypot(w, h);
+      pulses.push({ x: mouse.x, y: mouse.y, age: 0, maxAge: diag / PULSE_SPEED + 0.2, hit: new Set() });
+    }
+  });
+  window.addEventListener('mouseup', e => { if (e.button === 0) lantern.active = false; });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    targetCount = Math.max(MIN_COUNT, Math.min(MAX_COUNT, targetCount - Math.sign(e.deltaY) * COUNT_STEP));
+    if (fireflies.length < targetCount) {
+      while (fireflies.length < targetCount) fireflies.push(makeFirefly());
+    } else if (fireflies.length > targetCount) {
+      fireflies.length = targetCount;
+    }
+  }, { passive: false });
+
+  // ---------- simulation state ----------
+  let simTime = 0;
+  let syncPercent = 0;
+
+  function updateGrass(dt) {
+    const groundY = h; // ground line
+    for (const b of grass) {
+      const bx = b.fx * w;
+      let push = 0;
+      for (const f of fireflies) {
+        if (f.y < h - 130) continue; // only react when a firefly dips near the ground
+        const dx = f.x - bx;
+        if (Math.abs(dx) > 34) continue;
+          push += (1 - Math.abs(dx) / 34) * (f.vx > 0 ? 1 : -1) * 0.35;
+      }
+      const target = push;
+      b.bendVel += (target - b.bend) * 10 * dt;
+      b.bendVel *= 0.9;
+      b.bend += b.bendVel * dt;
+    }
+  }
+
+  function updatePulses(dt) {
+    for (const p of pulses) {
+      p.age += dt;
+      const ringR = p.age * PULSE_SPEED;
+      for (const f of fireflies) {
+        if (p.hit.has(f)) continue;
+        const d = Math.hypot(f.x - p.x, f.y - p.y);
+        if (d <= ringR) {
+          p.hit.add(f);
+          f.phase = Math.random() * TWO_PI;
+          f.heat = 1;
+          const ang = Math.atan2(f.y - p.y, f.x - p.x);
+          f.vx += Math.cos(ang) * 35;
+          f.vy += Math.sin(ang) * 35;
+        }
+      }
+    }
+    pulses = pulses.filter(p => p.age < p.maxAge);
+  }
+
+  function updateFireflies(dt) {
+    // gentle decay of cursor speed if the mouse has been idle
+    if (performance.now() - lastMoveTime > 100) cursorSpeed *= 0.9;
+
+    const n = fireflies.length;
+    let sumCos = 0, sumSin = 0;
+
+    for (let i = 0; i < n; i++) {
+      const f = fireflies[i];
+      const speed = Math.hypot(f.vx, f.vy) || 1e-4;
+      const hx = f.vx / speed, hy = f.vy / speed;
+
+      let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0, count = 0, phaseSum = 0;
+
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        const o = fireflies[j];
+        const dx = o.x - f.x, dy = o.y - f.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > PERCEP_R2) continue;
+        const d = Math.sqrt(d2) + 1e-6;
+
+        if (d < SEP_R) { sepX -= dx / d; sepY -= dy / d; }
+
+        const dot = (dx / d) * hx + (dy / d) * hy;
+        if (dot < FOV_HALF_COS) continue; // outside forward perception cone
+
+        aliX += o.vx; aliY += o.vy;
+        cohX += o.x; cohY += o.y;
+        phaseSum += Math.sin(o.phase - f.phase);
+        count++;
+      }
+
+      let ax = 0, ay = 0;
+      if (count > 0) {
+        ax += (aliX / count - f.vx) * 1.4;
+        ay += (aliY / count - f.vy) * 1.4;
+        ax += (cohX / count - f.x) * 0.5;
+        ay += (cohY / count - f.y) * 0.5;
+      }
+      ax += sepX * 70;
+      ay += sepY * 70;
+
+      // mouse: curious when slow, scatter when fast
+      const mdx = mouse.x - f.x, mdy = mouse.y - f.y;
+      const md = Math.hypot(mdx, mdy) + 1e-4;
+      if (md < MOUSE_INFLUENCE_R) {
+        const falloff = 1 - md / MOUSE_INFLUENCE_R;
+        if (cursorSpeed < MOUSE_SLOW_THRESH) {
+          ax += (mdx / md) * MOUSE_CURIOUS_ACCEL * falloff;
+          ay += (mdy / md) * MOUSE_CURIOUS_ACCEL * falloff;
+        } else {
+          const s = Math.min(cursorSpeed / 900, 1);
+          ax -= (mdx / md) * MOUSE_SCATTER_ACCEL_MAX * s * falloff;
+          ay -= (mdy / md) * MOUSE_SCATTER_ACCEL_MAX * s * falloff;
+        }
+      }
+
+      // lantern gathering point
+      if (lantern.active) {
+        const ldx = lantern.x - f.x, ldy = lantern.y - f.y;
+        const ld = Math.hypot(ldx, ldy) + 1e-4;
+        if (ld < LANTERN_R) {
+          const falloff = 1 - ld / LANTERN_R;
+          ax += (ldx / ld) * LANTERN_ACCEL * falloff;
+          ay += (ldy / ld) * LANTERN_ACCEL * falloff;
+        }
+      }
+
+      // ambient wobble - keeps flight lively even alone
+      const wobble = Math.sin(simTime * 1.6 + f.seed) * (reducedMotion ? 6 : 16);
+      ax += -hy * wobble; ay += hx * wobble;
+
+      // boundary avoidance (keep the field contained, no wraparound teleporting)
+      if (f.x < BOUNDARY_MARGIN) ax += BOUNDARY_ACCEL * (1 - f.x / BOUNDARY_MARGIN);
+      if (f.x > w - BOUNDARY_MARGIN) ax -= BOUNDARY_ACCEL * (1 - (w - f.x) / BOUNDARY_MARGIN);
+      if (f.y < BOUNDARY_MARGIN) ay += BOUNDARY_ACCEL * (1 - f.y / BOUNDARY_MARGIN);
+      if (f.y > h - BOUNDARY_MARGIN) ay -= BOUNDARY_ACCEL * (1 - (h - f.y) / BOUNDARY_MARGIN);
+
+      f.vx += ax * dt; f.vy += ay * dt;
+      let sp = Math.hypot(f.vx, f.vy);
+      if (sp > maxSpeed) { f.vx = (f.vx / sp) * maxSpeed; f.vy = (f.vy / sp) * maxSpeed; }
+      else if (sp < minSpeed && sp > 1e-4) { f.vx = (f.vx / sp) * minSpeed; f.vy = (f.vy / sp) * minSpeed; }
+
+      f.x += f.vx * dt; f.y += f.vy * dt;
+      f.x = Math.max(0, Math.min(w, f.x));
+      f.y = Math.max(0, Math.min(h, f.y));
+
+      // Kuramoto phase update: own rhythm + pull toward neighbours' phase
+      let rate = f.freq + (count > 0 ? KURAMOTO_K * (phaseSum / count) : 0);
+      rate = Math.max(0.15, Math.min(5, rate));
+      f.phase += rate * dt;
+      if (f.phase >= TWO_PI) { f.phase -= TWO_PI; f.heat = 1; }
+
+      f.heat *= Math.exp(-6 * dt);
+
+      sumCos += Math.cos(f.phase); sumSin += Math.sin(f.phase);
+    }
+
+    syncPercent = n > 0 ? Math.hypot(sumCos, sumSin) / n : 0;
+  }
+
+  function update(dt) {
+    simTime += dt;
+    updatePulses(dt);
+    updateGrass(dt);
+    updateFireflies(dt);
+  }
+
+  // ---------- drawing ----------
+  function drawSky() {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#040814');
+    g.addColorStop(0.55, '#08171c');
+    g.addColorStop(1, '#0d2b28');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  function drawMoon() {
+    const mx = moon.fx * w, my = moon.fy * h;
+    const glowR = moon.r * 3.4;
+    const g = ctx.createRadialGradient(mx, my, 0, mx, my, glowR);
+    g.addColorStop(0, 'rgba(230,240,210,0.35)');
+    g.addColorStop(1, 'rgba(230,240,210,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(mx, my, glowR, 0, TWO_PI); ctx.fill();
+
+    const core = ctx.createRadialGradient(mx - moon.r * 0.3, my - moon.r * 0.3, moon.r * 0.1, mx, my, moon.r);
+    core.addColorStop(0, '#fbfbe8');
+    core.addColorStop(1, '#d8dfc0');
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(mx, my, moon.r, 0, TWO_PI); ctx.fill();
+  }
+
+  function drawStars() {
+    for (const s of stars) {
+      const a = 0.35 + 0.45 * (0.5 + 0.5 * Math.sin(simTime * s.speed + s.phase));
+      ctx.fillStyle = `rgba(230,240,255,${a.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(s.fx * w, s.fy * h, s.r, 0, TWO_PI);
+      ctx.fill();
+    }
+  }
+
+  function drawGrass() {
+    for (const b of grass) {
+      const bx = b.fx * w;
+      const height = b.baseH * (0.6 + b.depth * 0.7);
+      const sway = Math.sin(simTime * (0.7 + b.depth * 0.3) + b.phase) * b.swayAmp + b.bend;
+      const tipX = bx + Math.sin(sway) * height * 0.5;
+      const tipY = h - height;
+      const midX = bx + Math.sin(sway) * height * 0.22;
+      const midY = h - height * 0.45;
+      const shade = 10 + b.depth * 14;
+      ctx.strokeStyle = `rgb(${shade},${shade + 10},${shade + 8})`;
+      ctx.lineWidth = 2 + b.depth * 2.2;
+      ctx.beginPath();
+      ctx.moveTo(bx, h + 2);
+      ctx.quadraticCurveTo(midX, midY, tipX, tipY);
+      ctx.stroke();
+    }
+  }
+
+  function drawPulses() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of pulses) {
+      const r = p.age * PULSE_SPEED;
+      const a = Math.max(0, 1 - p.age / p.maxAge);
+      ctx.strokeStyle = `rgba(255,235,180,${(a * 0.5).toFixed(3)})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, TWO_PI);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawGlowLayer() {
+    // fade previous trail/glow content (destination-out, never a low-alpha fillRect on the main canvas)
+    gctx.globalCompositeOperation = 'destination-out';
+    gctx.fillStyle = 'rgba(0,0,0,0.10)';
+    gctx.fillRect(0, 0, w, h);
+
+    gctx.globalCompositeOperation = 'lighter';
+
+    if (lantern.active) {
+      const pulse = 1 + Math.sin(simTime * 6) * 0.08;
+      const size = 200 * pulse;
+      gctx.drawImage(lanternSprite, lantern.x - size / 2, lantern.y - size / 2, size, size);
+    }
+
+    for (const f of fireflies) {
+      const baseA = 0.4 + 0.15 * Math.sin(simTime * 1.3 + f.seed);
+      const idleSize = 20 + baseA * 10;
+      gctx.globalAlpha = baseA;
+      gctx.drawImage(idleSprite, f.x - idleSize / 2, f.y - idleSize / 2, idleSize, idleSize);
+
+      if (f.heat > 0.02) {
+        const flashSize = 34 + f.heat * 60;
+        gctx.globalAlpha = f.heat;
+        gctx.drawImage(flashSprite, f.x - flashSize / 2, f.y - flashSize / 2, flashSize, flashSize);
+      }
+    }
+    gctx.globalAlpha = 1;
+  }
+
+  function drawFireflyCores() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of fireflies) {
+      const b = 0.5 + f.heat * 0.5;
+      const g = Math.floor(200 + f.warmth * 40);
+      ctx.fillStyle = `rgba(255,${g},${140 + f.heat * 60},${b.toFixed(2)})`;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, 1.6 + f.heat * 1.2, 0, TWO_PI);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function draw() {
+    drawSky();
+    drawMoon();
+    drawStars();
+    drawGrass();
+    drawPulses();
+    drawGlowLayer();
+    ctx.drawImage(glow, 0, 0, w, h);
+    drawFireflyCores();
+  }
+
+  function updateUI() {
+    document.getElementById('countVal').textContent = fireflies.length;
+    document.getElementById('syncVal').textContent = Math.round(syncPercent * 100) + '%';
+  }
+
+  // ---------- reset ----------
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    targetCount = DEFAULT_COUNT;
+    seedField(DEFAULT_COUNT);
+    pulses = [];
+    lantern.active = false;
+    cursorSpeed = 0;
+    simTime = 0;
+    for (const b of grass) { b.bend = 0; b.bendVel = 0; }
+  });
+
+  // ---------- fixed-timestep loop ----------
+  let acc = 0, last = performance.now();
+  function frame(now) {
+    acc += Math.min((now - last) / 1000, 0.1);
+    last = now;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    draw();
+    updateUI();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) last = performance.now();
+  });
+})();
+</script>
+</body>
+</html>

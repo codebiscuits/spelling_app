@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Splash Bath</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { overflow: hidden; background: #0c1420; height: 100%; }
+  body {
+    cursor: crosshair;
+    background: radial-gradient(ellipse at 50% 20%, #16233a 0%, #0c1420 70%);
+  }
+  canvas { display: block; position: absolute; top: 0; left: 0; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #cfe3f7; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10, 16, 28, 0.72);
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 14px; }
+  #ui .key { color: #8fa6c0; }
+  #ui .val { color: #7fd8ff; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #ui .divider { height: 1px; background: rgba(255,255,255,0.10); margin: 6px 0; }
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #cfe3f7; background: rgba(10, 16, 28, 0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(30, 60, 90, 0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div id="ui">
+  <h3>🛁 Splash Bath</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Stir water</span></div>
+  <div class="param"><span class="key">Left hold</span><span class="val">Pour water</span></div>
+  <div class="param"><span class="key">Right hold</span><span class="val">Drain plug</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Brush size</span></div>
+  <div class="param"><span class="key">M key</span><span class="val" id="soundVal">Sound off</span></div>
+  <div class="divider"></div>
+  <div class="param"><span class="key">Brush</span><span class="val" id="brushVal">0</span></div>
+  <div class="param"><span class="key">Water</span><span class="val" id="countVal">0 / 0</span></div>
+</div>
+<button id="resetBtn">&#x21BA; Reset bath</button>
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------------
+  // Canvas setup (DPR-aware, §2)
+  // ---------------------------------------------------------------------
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  // Goo is rendered and blurred at half resolution, then upscaled: the
+  // blur+contrast filter is the most expensive draw call, and its cost
+  // scales with the filtered area. Half res = ~4x cheaper, invisible for
+  // an effect that is blurry by definition.
+  const GOO_DOWN = 2;
+  const goo = document.createElement('canvas');
+  const gctx = goo.getContext('2d');
+  const goo2 = document.createElement('canvas');
+  const g2ctx = goo2.getContext('2d');
+
+  const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let w = 0, h = 0, dpr = 1;
+  let segments = [];
+  let tapPos = { x: 0, y: 0 };
+
+  function fitCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    goo.width = Math.ceil(w / GOO_DOWN); goo.height = Math.ceil(h / GOO_DOWN);
+    gctx.setTransform(1 / GOO_DOWN, 0, 0, 1 / GOO_DOWN, 0, 0);
+    goo2.width = goo.width; goo2.height = goo.height;
+    buildGeometry();
+    initGrid();
+  }
+
+  function buildGeometry() {
+    const tubLeft = w * 0.10, tubRight = w * 0.58, tubBottom = h * 0.86, tubTopLip = h * 0.30;
+    const overflowTop = h * 0.54;
+    const basinLeft = w * 0.66, basinRight = w * 0.93, basinBottom = h * 0.94, basinTop = h * 0.60;
+    segments = [
+      seg(tubLeft, tubTopLip, tubLeft, tubBottom),               // tub left wall
+      seg(tubLeft, tubBottom, tubRight, tubBottom),               // tub floor
+      seg(tubRight, tubBottom, tubRight, overflowTop),            // tub right (overflow lip)
+      seg(basinLeft, basinTop, basinLeft, basinBottom),           // basin left wall
+      seg(basinLeft, basinBottom, basinRight, basinBottom),       // basin floor
+      seg(basinRight, basinBottom, basinRight, basinTop * 0.85),  // basin right wall
+      seg(tubLeft + (tubRight - tubLeft) * 0.16, h * 0.62, tubLeft + (tubRight - tubLeft) * 0.44, h * 0.615), // shelf 1
+      seg(tubLeft + (tubRight - tubLeft) * 0.55, h * 0.73, tubLeft + (tubRight - tubLeft) * 0.82, h * 0.735), // shelf 2
+      seg(0, h * 0.975, w, h * 0.975),                            // floor (catches everything)
+    ];
+    tapPos = { x: tubLeft + (tubRight - tubLeft) * 0.5, y: tubTopLip - h * 0.055 };
+  }
+
+  function seg(x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy || 1;
+    const invLen = 1 / Math.sqrt(len2);
+    return { x1, y1, x2, y2, dx, dy, len2, invLen };
+  }
+
+  window.addEventListener('resize', fitCanvas);
+
+  // ---------------------------------------------------------------------
+  // Particle fluid: Clavet et al. 2005 double-density relaxation
+  // ---------------------------------------------------------------------
+  const MAX_PARTICLES = 2600;
+  const H = 19;          // smoothing radius (css px)
+  const H2 = H * H;
+  const REST_DENSITY = 4.0;
+  const STIFFNESS = 0.55;
+  const NEAR_STIFFNESS = 1.1;
+  const VISC_SIGMA = 0.045;
+  const GRAVITY = 1250;          // px/s^2
+  const WALL_MARGIN = 5.5;       // collision half-thickness (particle radius + wall)
+  const MAX_DISPLACEMENT = H * 0.6;
+  const SPLASH_SPEED2 = 620 * 620;
+  const GLOBAL_DAMPING = 0.9995;
+
+  const px = new Float32Array(MAX_PARTICLES);
+  const py = new Float32Array(MAX_PARTICLES);
+  const oldx = new Float32Array(MAX_PARTICLES);
+  const oldy = new Float32Array(MAX_PARTICLES);
+  const vx = new Float32Array(MAX_PARTICLES);
+  const vy = new Float32Array(MAX_PARTICLES);
+  const rho = new Float32Array(MAX_PARTICLES);
+  const rhoNear = new Float32Array(MAX_PARTICLES);
+  const pres = new Float32Array(MAX_PARTICLES);
+  const presNear = new Float32Array(MAX_PARTICLES);
+  const collided = new Uint8Array(MAX_PARTICLES);
+  let count = 0;
+
+  // Spatial hash grid (flat, counting-sort, zero allocation once sized)
+  let cellSize = H, gridCols = 1, gridRows = 1, numCells = 1;
+  let cellStart = new Int32Array(2);
+  let cellCount = new Int32Array(1);
+  let fillCursor = new Int32Array(1);
+  let particleCell = new Int32Array(MAX_PARTICLES);
+  let sortedIdx = new Int32Array(MAX_PARTICLES);
+
+  function initGrid() {
+    gridCols = Math.max(1, Math.ceil(w / cellSize));
+    gridRows = Math.max(1, Math.ceil(h / cellSize));
+    numCells = gridCols * gridRows;
+    cellStart = new Int32Array(numCells + 1);
+    cellCount = new Int32Array(numCells);
+    fillCursor = new Int32Array(numCells);
+  }
+
+  function cellIndex(x, y) {
+    let cx = (x / cellSize) | 0, cy = (y / cellSize) | 0;
+    if (cx < 0) cx = 0; else if (cx >= gridCols) cx = gridCols - 1;
+    if (cy < 0) cy = 0; else if (cy >= gridRows) cy = gridRows - 1;
+    return cy * gridCols + cx;
+  }
+
+  function buildGrid(n) {
+    cellCount.fill(0);
+    for (let i = 0; i < n; i++) {
+      const c = cellIndex(px[i], py[i]);
+      particleCell[i] = c;
+      cellCount[c]++;
+    }
+    cellStart[0] = 0;
+    for (let c = 0; c < numCells; c++) cellStart[c + 1] = cellStart[c] + cellCount[c];
+    fillCursor.set(cellStart.subarray(0, numCells));
+    for (let i = 0; i < n; i++) {
+      const c = particleCell[i];
+      sortedIdx[fillCursor[c]++] = i;
+    }
+  }
+
+  // The three neighbour passes below share the same pair-visiting skeleton
+  // (every unordered pair i < j within H, via the 9 surrounding cells) but
+  // are written out longhand: a shared forEachPair(callback) is megamorphic
+  // and costs an uninlinable call per pair, which dominates at 2,500
+  // particles.
+
+  function applyViscosity(n, dt) {
+    if (n === 0) return;
+    buildGrid(n);
+    const k0 = dt * VISC_SIGMA * 0.5;
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i];
+      const cx = (xi / cellSize) | 0, cy = (yi / cellSize) | 0;
+      const gx0 = Math.max(0, cx - 1), gx1 = Math.min(gridCols - 1, cx + 1);
+      const gy0 = Math.max(0, cy - 1), gy1 = Math.min(gridRows - 1, cy + 1);
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const rowBase = gy * gridCols;
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const c = rowBase + gx;
+          const end = cellStart[c + 1];
+          for (let k = cellStart[c]; k < end; k++) {
+            const j = sortedIdx[k];
+            if (j <= i) continue;
+            const dx = px[j] - xi, dy = py[j] - yi;
+            const r2 = dx * dx + dy * dy;
+            if (r2 >= H2 || r2 <= 1e-9) continue;
+            const r = Math.sqrt(r2);
+            const nx = dx / r, ny = dy / r;
+            const u = (vx[i] - vx[j]) * nx + (vy[i] - vy[j]) * ny;
+            if (u > 0) {
+              const imp = k0 * (1 - r / H) * u;
+              vx[i] -= nx * imp; vy[i] -= ny * imp;
+              vx[j] += nx * imp; vy[j] += ny * imp;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function computeDensities(n) {
+    rho.fill(1, 0, n);
+    rhoNear.fill(1, 0, n);
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i];
+      const cx = (xi / cellSize) | 0, cy = (yi / cellSize) | 0;
+      const gx0 = Math.max(0, cx - 1), gx1 = Math.min(gridCols - 1, cx + 1);
+      const gy0 = Math.max(0, cy - 1), gy1 = Math.min(gridRows - 1, cy + 1);
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const rowBase = gy * gridCols;
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const c = rowBase + gx;
+          const end = cellStart[c + 1];
+          for (let k = cellStart[c]; k < end; k++) {
+            const j = sortedIdx[k];
+            if (j <= i) continue;
+            const dx = px[j] - xi, dy = py[j] - yi;
+            const r2 = dx * dx + dy * dy;
+            if (r2 >= H2 || r2 <= 1e-9) continue;
+            const q = 1 - Math.sqrt(r2) / H;
+            const d = q * q, dn = d * q;
+            rho[i] += d; rho[j] += d;
+            rhoNear[i] += dn; rhoNear[j] += dn;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      pres[i] = STIFFNESS * (rho[i] - REST_DENSITY);
+      presNear[i] = NEAR_STIFFNESS * rhoNear[i];
+    }
+  }
+
+  function applyRelaxation(n) {
+    for (let i = 0; i < n; i++) {
+      const cx = (px[i] / cellSize) | 0, cy = (py[i] / cellSize) | 0;
+      const gx0 = Math.max(0, cx - 1), gx1 = Math.min(gridCols - 1, cx + 1);
+      const gy0 = Math.max(0, cy - 1), gy1 = Math.min(gridRows - 1, cy + 1);
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const rowBase = gy * gridCols;
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const c = rowBase + gx;
+          const end = cellStart[c + 1];
+          for (let k = cellStart[c]; k < end; k++) {
+            const j = sortedIdx[k];
+            if (j <= i) continue;
+            const dx = px[j] - px[i], dy = py[j] - py[i];
+            const r2 = dx * dx + dy * dy;
+            if (r2 >= H2 || r2 <= 1e-9) continue;
+            const r = Math.sqrt(r2);
+            const q = 1 - r / H;
+            const mag = (pres[i] + pres[j]) * q + (presNear[i] + presNear[j]) * q * q;
+            let dmag = mag * 0.5;
+            if (dmag > MAX_DISPLACEMENT) dmag = MAX_DISPLACEMENT;
+            else if (dmag < -MAX_DISPLACEMENT) dmag = -MAX_DISPLACEMENT;
+            const nx = dx / r, ny = dy / r;
+            px[i] -= nx * dmag; py[i] -= ny * dmag;
+            px[j] += nx * dmag; py[j] += ny * dmag;
+          }
+        }
+      }
+    }
+  }
+
+  // Swept (continuous) collision. Particles at terminal speed move 15-20 px
+  // per step -- far more than WALL_MARGIN -- so a proximity-only test tunnels
+  // straight through thin line colliders, and once a particle is past the
+  // wall the "closest point" normal pushes it out the far side. For each
+  // particle we intersect its old->new path with every segment; on a
+  // crossing it is placed back on the side it came from. A proximity pass
+  // then handles slow resting contact.
+  function resolveCollisions(n, dt) {
+    collided.fill(0, 0, n);
+    const invDt = 1 / dt;
+    for (let i = 0; i < n; i++) {
+      for (let s = 0; s < segments.length; s++) {
+        const sg = segments[s];
+        const ox = oldx[i], oy = oldy[i];
+        const rx = px[i] - ox, ry = py[i] - oy;
+        const sideOld = sg.dx * (oy - sg.y1) - sg.dy * (ox - sg.x1);
+        const sign = sideOld >= 0 ? sg.invLen : -sg.invLen;
+        const nx = -sg.dy * sign, ny = sg.dx * sign; // faces the old side
+        let handled = false;
+
+        // 1) Swept test: did the path old -> new cross the segment?
+        const denom = rx * sg.dy - ry * sg.dx;
+        if (denom !== 0) {
+          const ex = sg.x1 - ox, ey = sg.y1 - oy;
+          const tPath = (ex * sg.dy - ey * sg.dx) / denom;
+          const tSeg = (ex * ry - ey * rx) / denom;
+          if (tPath >= 0 && tPath <= 1 && tSeg >= 0 && tSeg <= 1) {
+            const vn = rx * nx + ry * ny;               // normal displacement (negative = into wall)
+            const tx = rx - vn * nx, ty = ry - vn * ny; // tangential displacement
+            px[i] = ox + rx * tPath + nx * WALL_MARGIN;
+            py[i] = oy + ry * tPath + ny * WALL_MARGIN;
+            // keep some tangential slide, tiny bounce on the normal
+            oldx[i] = px[i] - (tx * 0.6 - vn * nx * 0.15);
+            oldy[i] = py[i] - (ty * 0.6 - vn * ny * 0.15);
+            handled = true;
+            const speed = Math.abs(vn) * invDt;
+            if (!collided[i] && speed * speed > SPLASH_SPEED2) {
+              collided[i] = 1;
+              spawnSplash(px[i], py[i], speed);
+              addTrauma(Math.min(1, speed / 1400));
+            }
+          }
+        }
+
+        // 2) Proximity push for slow / resting contact.
+        if (!handled) {
+          let tt = ((px[i] - sg.x1) * sg.dx + (py[i] - sg.y1) * sg.dy) / sg.len2;
+          if (tt < 0) tt = 0; else if (tt > 1) tt = 1;
+          const ddx = px[i] - (sg.x1 + sg.dx * tt), ddy = py[i] - (sg.y1 + sg.dy * tt);
+          const d2 = ddx * ddx + ddy * ddy;
+          if (d2 < WALL_MARGIN * WALL_MARGIN) {
+            const d = Math.sqrt(d2) || 0.0001;
+            let pnx = ddx / d, pny = ddy / d;
+            // never push a particle out the far side of the wall
+            if (pnx * nx + pny * ny < 0) { pnx = nx; pny = ny; }
+            const push = WALL_MARGIN - d;
+            px[i] += pnx * push; py[i] += pny * push;
+            oldx[i] += pnx * push * 0.65; oldy[i] += pny * push * 0.65; // inelastic damping
+          }
+        }
+      }
+    }
+    // Fallback world bounds so nothing escapes the visible bath.
+    for (let i = 0; i < n; i++) {
+      if (px[i] < 2) { px[i] = 2; oldx[i] = px[i]; }
+      else if (px[i] > w - 2) { px[i] = w - 2; oldx[i] = px[i]; }
+      if (py[i] < 2) { py[i] = 2; oldy[i] = py[i]; }
+      else if (py[i] > h - 2) { py[i] = h - 2; oldy[i] = py[i]; }
+    }
+  }
+
+  function simulate(dt) {
+    const n = count;
+    if (n === 0) return;
+    for (let i = 0; i < n; i++) vy[i] += GRAVITY * dt;
+
+    applyPalmForce(n, dt);
+    if (draining) applyDrainForce(n, dt);
+
+    applyViscosity(n, dt);
+
+    for (let i = 0; i < n; i++) {
+      oldx[i] = px[i]; oldy[i] = py[i];
+      px[i] += vx[i] * dt; py[i] += vy[i] * dt;
+    }
+
+    buildGrid(n);
+    computeDensities(n);
+    applyRelaxation(n);
+
+    resolveCollisions(n, dt);
+
+    const invDt = 1 / dt;
+    const MAX_SPEED = 1500, MAX_SPEED2 = MAX_SPEED * MAX_SPEED;
+    for (let i = 0; i < n; i++) {
+      vx[i] = (px[i] - oldx[i]) * invDt * GLOBAL_DAMPING;
+      vy[i] = (py[i] - oldy[i]) * invDt * GLOBAL_DAMPING;
+      const sp2 = vx[i] * vx[i] + vy[i] * vy[i];
+      if (sp2 > MAX_SPEED2) {
+        const k = MAX_SPEED / Math.sqrt(sp2);
+        vx[i] *= k; vy[i] *= k;
+      }
+    }
+
+    // The bathroom floor has a drain: stray droplets that splash over a rim
+    // and land on the catch floor fizz away as bubbles instead of pooling.
+    const drainY = h * 0.955;
+    for (let i = count - 1; i >= 0; i--) {
+      if (py[i] > drainY && Math.random() < 0.05) {
+        spawnBubble(px[i], py[i]);
+        removeParticle(i);
+      }
+    }
+  }
+
+  // Start with the tub partially filled so the very first mouse movement
+  // has water to slosh (handbook §1: respond instantly).
+  function prefill() {
+    const left = w * 0.10 + 12, right = w * 0.58 - 12;
+    const bottom = h * 0.86 - WALL_MARGIN - 3, top = h * 0.70;
+    const spacing = 11;
+    for (let y = bottom; y > top && count < MAX_PARTICLES; y -= spacing) {
+      for (let x = left; x < right && count < MAX_PARTICLES; x += spacing) {
+        const i = count++;
+        px[i] = x + (Math.random() - 0.5) * 2;
+        py[i] = y + (Math.random() - 0.5) * 2;
+        oldx[i] = px[i]; oldy[i] = py[i];
+        vx[i] = 0; vy[i] = 0;
+        rho[i] = REST_DENSITY; rhoNear[i] = 0;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Mouse (house vocabulary, §0/§2)
+  // ---------------------------------------------------------------------
+  const mouse = { x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0, inside: false };
+  let pouring = false, draining = false;
+  let brushRadius = 55;
+  const BRUSH_MIN = 22, BRUSH_MAX = 150;
+  let pourAccum = 0;
+
+  canvas.addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.inside = true;
+  });
+  canvas.addEventListener('mouseleave', () => { mouse.inside = false; });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('mousedown', e => {
+    ensureAudio();
+    if (e.button === 0) pouring = true;
+    if (e.button === 2) draining = true;
+  });
+  window.addEventListener('mouseup', e => {
+    if (e.button === 0) pouring = false;
+    if (e.button === 2) draining = false;
+  });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    brushRadius = Math.max(BRUSH_MIN, Math.min(BRUSH_MAX, brushRadius - Math.sign(e.deltaY) * 6));
+  }, { passive: false });
+  window.addEventListener('keydown', e => {
+    if (e.key === 'm' || e.key === 'M') toggleSound();
+  });
+
+  function applyPalmForce(n, dt) {
+    if (!mouse.inside) return;
+    const r = brushRadius;
+    const r2 = r * r;
+    const speed = Math.min(900, Math.hypot(mouse.vx, mouse.vy));
+    const strength = (60 + speed * 0.9) * dt;
+    for (let i = 0; i < n; i++) {
+      const dx = px[i] - mouse.x, dy = py[i] - mouse.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < r2 && d2 > 1e-6) {
+        const d = Math.sqrt(d2);
+        const falloff = 1 - d / r;
+        const nx = dx / d, ny = dy / d;
+        vx[i] += nx * falloff * strength;
+        vy[i] += ny * falloff * strength;
+        // a little of the hand's own motion gets carried along (drag)
+        vx[i] += mouse.vx * falloff * 0.06;
+        vy[i] += mouse.vy * falloff * 0.06;
+      }
+    }
+  }
+
+  function applyDrainForce(n, dt) {
+    const r = brushRadius;
+    const r2 = r * r;
+    const pull = 1400 * dt;
+    for (let i = n - 1; i >= 0; i--) {
+      const dx = mouse.x - px[i], dy = mouse.y - py[i];
+      const d2 = dx * dx + dy * dy;
+      if (d2 < r2) {
+        const d = Math.sqrt(d2) || 0.0001;
+        const nx = dx / d, ny = dy / d;
+        const falloff = 1 - d / r;
+        vx[i] += nx * falloff * pull;
+        vy[i] += ny * falloff * pull;
+        if (d < 9) {
+          spawnBubble(px[i], py[i]);
+          removeParticle(i);
+        }
+      }
+    }
+  }
+
+  function removeParticle(i) {
+    const last = count - 1;
+    px[i] = px[last]; py[i] = py[last];
+    oldx[i] = oldx[last]; oldy[i] = oldy[last];
+    vx[i] = vx[last]; vy[i] = vy[last];
+    rho[i] = rho[last]; rhoNear[i] = rhoNear[last];
+    count--;
+  }
+
+  function spawnWater(x, y) {
+    if (count >= MAX_PARTICLES) return;
+    const i = count++;
+    px[i] = x + (Math.random() - 0.5) * 10;
+    py[i] = y + (Math.random() - 0.5) * 6;
+    oldx[i] = px[i]; oldy[i] = py[i];
+    vx[i] = (Math.random() - 0.5) * 50;
+    vy[i] = 30 + Math.random() * 60;
+    rho[i] = REST_DENSITY; rhoNear[i] = 0;
+  }
+
+  // ---------------------------------------------------------------------
+  // Juice: droplet spray, caustic shimmer, trauma shake, gentle sound
+  // ---------------------------------------------------------------------
+  const MAX_SPRAY = 260;
+  const sprX = new Float32Array(MAX_SPRAY), sprY = new Float32Array(MAX_SPRAY);
+  const sprVx = new Float32Array(MAX_SPRAY), sprVy = new Float32Array(MAX_SPRAY);
+  const sprLife = new Float32Array(MAX_SPRAY), sprMaxLife = new Float32Array(MAX_SPRAY);
+  const sprBubble = new Uint8Array(MAX_SPRAY);
+  let sprCount = 0, sprCursor = 0;
+
+  function spawnParticleFx(x, y, vx0, vy0, life, bubble) {
+    const i = sprCursor;
+    sprCursor = (sprCursor + 1) % MAX_SPRAY;
+    if (sprCount < MAX_SPRAY) sprCount++;
+    sprX[i] = x; sprY[i] = y; sprVx[i] = vx0; sprVy[i] = vy0;
+    sprLife[i] = life; sprMaxLife[i] = life; sprBubble[i] = bubble ? 1 : 0;
+  }
+
+  function spawnSplash(x, y, speed) {
+    const n = Math.min(14, 4 + (speed / 140) | 0);
+    for (let k = 0; k < n; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 60 + Math.random() * speed * 0.5;
+      spawnParticleFx(x, y, Math.cos(a) * s, Math.sin(a) * s - 80, 0.35 + Math.random() * 0.3, false);
+    }
+    playSplash(speed);
+  }
+
+  function spawnBubble(x, y) {
+    spawnParticleFx(x, y, (Math.random() - 0.5) * 20, -40 - Math.random() * 30, 0.4, true);
+  }
+
+  function updateFx(dt) {
+    for (let i = 0; i < MAX_SPRAY; i++) {
+      if (sprLife[i] <= 0) continue;
+      sprLife[i] -= dt;
+      sprVy[i] += (sprBubble[i] ? -200 : GRAVITY) * dt;
+      sprX[i] += sprVx[i] * dt; sprY[i] += sprVy[i] * dt;
+    }
+  }
+
+  // Camera trauma shake (§5)
+  let trauma = 0;
+  function addTrauma(v) { trauma = Math.min(1, trauma + v); }
+  function updateTrauma(dt) { trauma = Math.max(0, trauma - dt * 1.8); }
+
+  // Minimal Web Audio "plop", muted by default (§7)
+  let audioCtx = null, soundOn = false;
+  function ensureAudio() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    }
+  }
+  function toggleSound() {
+    soundOn = !soundOn;
+    document.getElementById('soundVal').textContent = soundOn ? 'Sound on' : 'Sound off';
+    if (soundOn) ensureAudio();
+  }
+  const PENTATONIC = [0, 2, 4, 7, 9];
+  function playSplash(speed) {
+    if (!soundOn || !audioCtx) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const note = PENTATONIC[(speed | 0) % PENTATONIC.length];
+    osc.frequency.value = 220 * Math.pow(2, note / 12);
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(Math.min(0.18, speed / 4000), now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(now); osc.stop(now + 0.24);
+  }
+
+  // ---------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------
+  let shakeX = 0, shakeY = 0, shakeR = 0, t = 0;
+
+  function drawBackground() {
+    ctx.fillStyle = '#0c1420';
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  function drawTub() {
+    ctx.strokeStyle = 'rgba(180, 205, 230, 0.55)';
+    ctx.lineWidth = 6;
+    ctx.lineCap = 'round';
+    for (const s of segments) {
+      ctx.beginPath();
+      ctx.moveTo(s.x1, s.y1);
+      ctx.lineTo(s.x2, s.y2);
+      ctx.stroke();
+    }
+    // Tap (decorative)
+    ctx.fillStyle = 'rgba(190, 200, 215, 0.85)';
+    ctx.fillRect(tapPos.x - 6, tapPos.y - 22, 12, 22);
+    ctx.beginPath();
+    ctx.arc(tapPos.x, tapPos.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawWaterGoo() {
+    gctx.clearRect(0, 0, w, h);
+    const n = count;
+    for (let i = 0; i < n; i++) {
+      const depth = Math.min(1, Math.max(0, (py[i] - h * 0.2) / (h * 0.7)));
+      const r = 60 + depth * 40, g = 150 + depth * 40, b = 235 - depth * 30;
+      gctx.beginPath();
+      gctx.arc(px[i], py[i], 7.2, 0, Math.PI * 2);
+      gctx.fillStyle = `rgb(${r | 0},${g | 0},${b | 0})`;
+      gctx.fill();
+    }
+    // blur + contrast at half res, then upscale
+    g2ctx.clearRect(0, 0, goo2.width, goo2.height);
+    g2ctx.filter = `blur(${9 / GOO_DOWN}px) contrast(26)`;
+    g2ctx.drawImage(goo, 0, 0);
+    g2ctx.filter = 'none';
+    ctx.drawImage(goo2, 0, 0, w, h);
+  }
+
+  function drawShimmer() {
+    const n = count;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < n; i += 5) {
+      if (rho[i] > REST_DENSITY * 0.92) continue; // only near the surface / edges
+      const flick = Math.sin(t * 3 + px[i] * 0.06 + py[i] * 0.05) * 0.5 + 0.5;
+      const a = flick * 0.22;
+      if (a < 0.03) continue;
+      ctx.fillStyle = `rgba(210, 240, 255, ${a.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(px[i], py[i], 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawFx() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < MAX_SPRAY; i++) {
+      if (sprLife[i] <= 0) continue;
+      const life = Math.max(0, sprLife[i] / sprMaxLife[i]);
+      if (sprBubble[i]) {
+        ctx.fillStyle = `rgba(200, 230, 255, ${(life * 0.7).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(sprX[i], sprY[i], 2.4, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = `rgba(190, 225, 255, ${(life * 0.9).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(sprX[i], sprY[i], 2.6 * life + 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawCursor() {
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, brushRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = pouring ? 'rgba(140,220,255,0.55)' : draining ? 'rgba(255,170,140,0.55)' : 'rgba(200,220,240,0.28)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = pouring ? '#8fdcff' : draining ? '#ffb08f' : '#cfe3f7';
+    ctx.fill();
+  }
+
+  function draw() {
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+    ctx.rotate(shakeR);
+    drawBackground();
+    drawTub();
+    drawWaterGoo();
+    drawShimmer();
+    drawFx();
+    if (mouse.inside) drawCursor();
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------------
+  // Main loop: fixed timestep (§2)
+  // ---------------------------------------------------------------------
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+
+  function update(dt) {
+    t += dt;
+    const dx = mouse.x - mouse.px, dy = mouse.y - mouse.py;
+    mouse.vx = dx / dt; mouse.vy = dy / dt;
+    mouse.px = mouse.x; mouse.py = mouse.y;
+
+    if (pouring && mouse.inside) {
+      pourAccum += (1 + brushRadius / 22) * dt * 60;
+      while (pourAccum >= 1) { spawnWater(mouse.x, mouse.y); pourAccum -= 1; }
+    }
+
+    simulate(dt);
+    updateFx(dt);
+    updateTrauma(dt);
+
+    if (!REDUCED_MOTION && trauma > 0.001) {
+      const s = trauma * trauma;
+      shakeX = (Math.sin(t * 37.1) + Math.sin(t * 19.7)) * 5 * s;
+      shakeY = (Math.cos(t * 29.3) + Math.sin(t * 13.1)) * 5 * s;
+      shakeR = Math.sin(t * 23.0) * 0.02 * s;
+    } else {
+      shakeX = shakeY = shakeR = 0;
+    }
+
+    document.getElementById('brushVal').textContent = Math.round(brushRadius);
+    document.getElementById('countVal').textContent = count + ' / ' + MAX_PARTICLES;
+  }
+
+  function frame(now) {
+    acc += Math.min((now - last) / 1000, 0.1);
+    last = now;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) last = performance.now();
+  });
+
+  // ---------------------------------------------------------------------
+  // Reset (§0.5)
+  // ---------------------------------------------------------------------
+  function reset() {
+    count = 0;
+    sprCount = 0; sprCursor = 0;
+    sprLife.fill(0);
+    trauma = 0;
+    pourAccum = 0;
+    brushRadius = 55;
+    pouring = false; draining = false;
+    mouse.x = tapPos.x || w / 2; mouse.y = tapPos.y || h * 0.2;
+    mouse.px = mouse.x; mouse.py = mouse.y;
+    prefill();
+  }
+  document.getElementById('resetBtn').addEventListener('click', reset);
+
+  // Tiny introspection hook for automated (Playwright) verification.
+  window.__splashStats = function () {
+    const floorY = h * 0.975;
+    let inTub = 0, belowFloor = 0, maxY = -1e9;
+    for (let i = 0; i < count; i++) {
+      if (py[i] > maxY) maxY = py[i];
+      if (py[i] > floorY + 0.5) belowFloor++;
+      if (px[i] > w * 0.10 && px[i] < w * 0.58 && py[i] > h * 0.30 && py[i] < h * 0.86) inTub++;
+    }
+    return { count, inTub, belowFloor, maxY, floorY };
+  };
+
+  // ---------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------
+  fitCanvas();
+  prefill();
+  mouse.x = tapPos.x; mouse.y = tapPos.y;
+  mouse.px = mouse.x; mouse.py = mouse.y;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Topple Tower</title>
+  <!--
+    Reference: HANDBOOK_SMALL.md. Implements:
+      §0 mouse-first house standards, controls pane, no touch, reset pill
+      §2 fixed timestep, DPR-aware canvas
+      §3 verlet boxes (4 pts + 6 constraints), point-vs-OBB pushout, softened-gravity wells
+      §4 cosine palette, pre-rendered additive glow sprites
+      §5 trauma² screenshake, squash-and-stretch, dust puffs, idle wobble, pentatonic sound (off by default)
+      §7 no fail states — collapsing is the toy
+  -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0a0818; }
+    canvas { display: block; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #888; }
+    #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+    #resetBtn, #muteBtn {
+      position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); border-radius: 999px; }
+    #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; line-height: 1; }
+    #resetBtn:hover, #muteBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>🧱 Topple Tower</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Gentle push field</span></div>
+  <div class="param"><span class="key">Left Click</span><span class="val">Explode a block</span></div>
+  <div class="param"><span class="key">Right Click</span><span class="val">Toggle gravity well</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Gravity: <span id="gravityVal">0.0</span></span></div>
+  <div class="param"><span class="key">Shift+Scroll</span><span class="val">Bounce: <span id="restVal">0.0</span></span></div>
+  <br>
+  <div class="param"><span class="key">Blocks:</span><span class="val" id="blockVal">0</span></div>
+  <div class="param"><span class="key">Wells:</span><span class="val" id="wellVal">0</span></div>
+</div>
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
+<button id="resetBtn">&#x21BA; Reset tower</button>
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0, groundY = 0;
+const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---- §2 DPR-aware canvas ----
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  groundY = h - 50;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+
+// ---- Tuning ----
+const DT = 1 / 60;
+const BOX_W = 62, BOX_H = 32;
+const DAMPING = 0.985;
+const SLEEP_V = 0.4, SLEEP_FRAMES = 40;   // stacks sleep like a real engine: frozen until disturbed
+const ITERS = 8;                 // constraint + collision relaxation passes per step
+const WALL_MARGIN = 18;
+const WELL_G = 3200, WELL_EPS2 = 900, MAX_EXTRA_ACCEL = 3.2;
+const PUSH_RADIUS = 110, PUSH_STRENGTH = 0.10;   // gentle: teeters the tower, never blasts it
+const WOBBLE_PX = REDUCED ? 0 : 0.7;             // idle wobble is render-only, never a physics force
+const BOUNCE_VN = 1.5;           // contacts slower than this are fully inelastic so stacks settle
+const IMPACT_VN = 3.0;
+const TRAUMA_DECAY = 1.6;
+let gravity = 0.30;
+let restitution = 0.30;
+let time = 0;
+
+
+function clampNum(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// ---- §4 cosine gradient palette (Iñigo Quilez, "sunset" preset) ----
+// lifted base + reduced amplitude so no block ever dips to near-black and
+// reads as a hole against the dark background
+function paletteTriple(t) {
+  const d = [0.30, 0.20, 0.20];
+  const out = [];
+  for (let i = 0; i < 3; i++) out.push(Math.round(255 * clampNum(0.62 + 0.32 * Math.cos(6.28318 * (t + d[i])), 0, 1)));
+  return out.join(',');
+}
+
+// ---- §4 pre-rendered additive glow sprites — never per-particle shadowBlur ----
+const SPRITE_N = 8;
+const sprites = [];
+function makeSprite(triple) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+  const g = cv.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, `rgba(${triple},1)`);
+  grad.addColorStop(0.4, `rgba(${triple},0.5)`);
+  grad.addColorStop(1, `rgba(${triple},0)`);
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  return cv;
+}
+for (let i = 0; i < SPRITE_N; i++) sprites.push(makeSprite(paletteTriple(i / (SPRITE_N - 1))));
+const DUST_SPRITE = SPRITE_N;
+sprites.push(makeSprite('225,220,210'));
+
+// ---- particle pool: fixed size, revive-never-allocate (§6) ----
+const POOL = 500;
+const parts = [];
+for (let i = 0; i < POOL; i++) parts.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 6, spriteIdx: 0, alphaMul: 1 });
+let partHead = 0;
+function spawnPart(x, y, vx, vy, size, spriteIdx, life, alphaMul) {
+  const p = parts[partHead]; partHead = (partHead + 1) % POOL;
+  p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.size = size; p.spriteIdx = spriteIdx;
+  p.life = p.max = life; p.alphaMul = alphaMul === undefined ? 1 : alphaMul;
+}
+function spawnDust(x, y) {
+  const n = 5 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < n; i++) {
+    const ang = Math.random() * Math.PI * 2, spd = 0.3 + Math.random() * 1.2;
+    spawnPart(x + (Math.random() - 0.5) * 12, y - 2, Math.cos(ang) * spd,
+              -Math.abs(Math.sin(ang) * spd) - 0.3, 6 + Math.random() * 8, DUST_SPRITE,
+              0.35 + Math.random() * 0.3, 0.55);
+  }
+}
+
+// ---- §5 sound: tiny Web Audio synth, pentatonic, off by default (classroom!) ----
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+}
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'triangle';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0, 2, 4, 7, 9];
+const penta = (base, i) => base * Math.pow(2, PENTA[i % 5] / 12);
+let soundCooldown = 0;
+
+// ---- trauma² screenshake ----
+let trauma = 0;
+
+// ---- the tower: an array of verlet boxes ----
+const boxes = [];
+
+function makeBox(cx, cy, angle, bw, bh, t) {
+  const hw = bw / 2, hh = bh / 2;
+  const local = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+  const pts = local.map(([ox, oy]) => {
+    const rx = ox * Math.cos(angle) - oy * Math.sin(angle);
+    const ry = ox * Math.sin(angle) + oy * Math.cos(angle);
+    const x = cx + rx, y = cy + ry;
+    return { x, y, px: x, py: y, seed: Math.random() * 1000, impactCooldown: 0 };
+  });
+  const diag = Math.hypot(bw, bh);
+  return {
+    pts,
+    constraints: [[0, 1, bw], [1, 2, bh], [2, 3, bw], [3, 0, bh], [0, 2, diag], [1, 3, diag]],
+    bw, bh,
+    isWell: false, wellSeed: Math.random() * 10,
+    dead: false, squashY: 1,
+    asleep: false, sleep: 0,
+    color: `rgb(${paletteTriple(t)})`,
+    spriteIdx: Math.min(SPRITE_N - 1, Math.floor(t * SPRITE_N)),
+  };
+}
+
+function buildTower() {
+  boxes.length = 0;
+  const n = 12 + Math.floor(Math.random() * 9);   // 12–20 blocks
+  const baseX = w / 2;
+  // a tilted box is vertically taller than BOX_H — space rows by the true
+  // rotated extent so no two blocks spawn interpenetrating (spawn overlap
+  // detonates the pushout solver)
+  const extH = a => (BOX_W / 2) * Math.abs(Math.sin(a)) + (BOX_H / 2) * Math.cos(a);
+  let drift = 0, ang = 0, prevTop = groundY;
+  for (let i = 0; i < n; i++) {
+    drift = clampNum(drift + (Math.random() - 0.5) * 3, -14, 14);
+    ang = clampNum(ang + (Math.random() - 0.5) * 0.008, -0.05, 0.05);
+    const cy = prevTop - extH(ang);                 // exact resting contact, no overlap
+    prevTop = cy - extH(ang);
+    const t = n > 1 ? i / (n - 1) : 0;
+    boxes.push(makeBox(baseX + drift, cy, ang, BOX_W, BOX_H, t));
+  }
+  // every block spawns asleep, already in resting contact: the tower stands by
+  // construction (§7 — toppling is the toy, so it must never topple itself);
+  // physics only runs on blocks the player wakes, and survivors re-sleep
+  for (const box of boxes) {
+    box.asleep = true; box.sleep = SLEEP_FRAMES;
+  }
+  trauma = 0;
+  for (const p of parts) p.life = 0;
+}
+
+function wakeBox(box) { box.asleep = false; box.sleep = 0; }
+
+// ---- box geometry helpers ----
+function boxCenter(box) {
+  const p = box.pts;
+  return { cx: (p[0].x + p[1].x + p[2].x + p[3].x) / 4, cy: (p[0].y + p[1].y + p[2].y + p[3].y) / 4 };
+}
+function getOBB(box) {
+  const p = box.pts;
+  const cx = (p[0].x + p[1].x + p[2].x + p[3].x) / 4;
+  const cy = (p[0].y + p[1].y + p[2].y + p[3].y) / 4;
+  let axX = p[1].x - p[0].x, axY = p[1].y - p[0].y;
+  const axLen = Math.hypot(axX, axY) || 1; axX /= axLen; axY /= axLen;
+  let ayX = p[3].x - p[0].x, ayY = p[3].y - p[0].y;
+  const ayLen = Math.hypot(ayX, ayY) || 1; ayX /= ayLen; ayY /= ayLen;
+  const halfW = (Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y) + Math.hypot(p[2].x - p[3].x, p[2].y - p[3].y)) / 4;
+  const halfH = (Math.hypot(p[2].x - p[1].x, p[2].y - p[1].y) + Math.hypot(p[0].x - p[3].x, p[0].y - p[3].y)) / 4;
+  return { cx, cy, axX, axY, ayX, ayY, halfW, halfH };
+}
+function solveBoxConstraints(box) {
+  const p = box.pts;
+  for (const [i, j, rest] of box.constraints) {
+    const a = p[i], b = p[j];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 0.0001;
+    const diff = (dist - rest) / dist * 0.5;
+    a.x += dx * diff; a.y += dy * diff;
+    b.x -= dx * diff; b.y -= dy * diff;
+  }
+}
+
+// ---- §3 point-vs-OBB pushout (box-box collision) ----
+// The pushout axis comes from the *centre-to-centre* offset, not per-point
+// min-penetration: stacked boxes always resolve vertically, neighbours
+// horizontally. Per-point min-pen flips sideways once stack-weight
+// penetration exceeds the corner offset and squirts blocks out of the tower.
+function resolveBoxBox(a, b, iter) {
+  const obb = getOBB(b);
+  const ac = boxCenter(a);
+  const reach = Math.hypot(a.bw, a.bh) + Math.hypot(b.bw, b.bh);
+  const ox = ac.cx - obb.cx, oy = ac.cy - obb.cy;
+  if (ox * ox + oy * oy > reach * reach) return;
+  const lax = ox * obb.axX + oy * obb.axY;   // a's centre in b's local frame
+  const lay = ox * obb.ayX + oy * obb.ayY;
+  const useX = Math.abs(lax) / obb.halfW > Math.abs(lay) / obb.halfH;
+  let nx, ny;
+  if (useX) { const s = lax < 0 ? -1 : 1; nx = obb.axX * s; ny = obb.axY * s; }
+  else { const s = lay < 0 ? -1 : 1; nx = obb.ayX * s; ny = obb.ayY * s; }
+  // shock bias: give most of the correction to the UPPER box, so the ground's
+  // support propagates up a tall stack instead of the stack compressing into
+  // itself and squirting blocks out sideways. A sleeping b is a static collider
+  // (full correction to the point) until a hard hit wakes it.
+  const wPt = b.asleep ? 1 : (obb.cy > ac.cy ? 0.85 : 0.15);
+  const wB = (1 - wPt) * 0.25;
+  for (const pt of a.pts) {
+    if (pt.impactCooldown > 0) pt.impactCooldown--;
+    const dx = pt.x - obb.cx, dy = pt.y - obb.cy;
+    const lx = dx * obb.axX + dy * obb.axY;
+    const ly = dx * obb.ayX + dy * obb.ayY;
+    if (Math.abs(lx) < obb.halfW && Math.abs(ly) < obb.halfH) {
+      // depth along the chosen face, clamped so deep transient overlap can't
+      // convert into a launch (pushout below injects velocity by design)
+      let pen = useX ? obb.halfW - Math.sign(lax || 1) * lx : obb.halfH - Math.sign(lay || 1) * ly;
+      pen = clampNum(pen, 0, 6);
+      if (pen <= 0) continue;
+      // b's velocity (mean of its points) — impulses must use RELATIVE velocity,
+      // or a stack falling as one bounces off itself and popcorns apart
+      let bvx = 0, bvy = 0;
+      for (const c of b.pts) { bvx += c.x - c.px; bvy += c.y - c.py; }
+      bvx *= 0.25; bvy *= 0.25;
+      const rvx = (pt.x - pt.px) - bvx, rvy = (pt.y - pt.py) - bvy;
+      const vn = rvx * nx + rvy * ny;
+      if (b.asleep && (pen > 0.8 || vn < -1.2)) wakeBox(b);   // hard hit wakes a sleeper
+      // classic verlet pushout: move x only, so the correction doubles as the
+      // separating velocity that balances gravity in a resting stack
+      pt.x += nx * pen * wPt; pt.y += ny * pen * wPt;
+      if (wB > 0) for (const c of b.pts) { c.x -= nx * pen * wB; c.y -= ny * pen * wB; }
+      if (vn < 0) {
+        // extra bounce only on real impacts (relative speed above threshold)
+        if (-vn > BOUNCE_VN) {
+          const jn = restitution * vn;
+          pt.px += nx * jn * 0.5; pt.py += ny * jn * 0.5;
+          if (!b.asleep) for (const c of b.pts) { c.px -= nx * jn * 0.125; c.py -= ny * jn * 0.125; }
+        }
+        // tangential friction: bleed sideways slip so blocks don't skate off each other
+        const vt = rvx * -ny + rvy * nx;
+        pt.px += -ny * vt * 0.3; pt.py += nx * vt * 0.3;
+      }
+      if (iter === 0 && pt.impactCooldown <= 0 && Math.abs(vn) > IMPACT_VN) {
+        spawnDust(pt.x, pt.y);
+        trauma = Math.min(1, trauma + Math.min(0.3, Math.abs(vn) * 0.02));
+        pt.impactCooldown = 12;
+        maybeThump(Math.abs(vn));
+      }
+    }
+  }
+}
+
+function resolveGround(iter) {
+  for (const box of boxes) {
+    if (box.dead) continue;
+    for (const p of box.pts) {
+      if (p.y > groundY) {
+        const vy = p.y - p.py, vx = p.x - p.px;
+        p.y = groundY;
+        p.py = vy > BOUNCE_VN ? p.y + vy * restitution : p.y;   // slow contact = no bounce
+        p.px = p.x - vx * 0.55;
+        if (iter === 0 && p.impactCooldown <= 0 && vy > IMPACT_VN) {
+          spawnDust(p.x, groundY);
+          trauma = Math.min(1, trauma + Math.min(0.4, vy * 0.025));
+          p.impactCooldown = 14;
+          maybeThump(vy);
+        }
+      }
+      if (p.x < WALL_MARGIN) { const vx = p.x - p.px; p.x = WALL_MARGIN; p.px = p.x + vx * restitution; }
+      if (p.x > w - WALL_MARGIN) { const vx = p.x - p.px; p.x = w - WALL_MARGIN; p.px = p.x + vx * restitution; }
+    }
+  }
+}
+
+function maybeThump(speed) {
+  if (soundCooldown > 0) return;
+  soundCooldown = 0.09;
+  const f = 200 - clampNum(speed, 0, 20) * 4;
+  tone(f, f * 0.6, 0.1, Math.min(0.12, speed * 0.01), 'sine');
+}
+
+// ---- explode a block into a pooled particle burst ----
+function explodeBox(box) {
+  const { cx, cy } = boxCenter(box);
+  let avgVx = 0, avgVy = 0;
+  for (const pt of box.pts) { avgVx += (pt.x - pt.px); avgVy += (pt.y - pt.py); }
+  avgVx /= 4; avgVy /= 4;
+  const n = 18 + Math.floor(Math.random() * 8);
+  for (let i = 0; i < n; i++) {
+    const u = (Math.random() * 2 - 1) * box.bw / 2, v = (Math.random() * 2 - 1) * box.bh / 2;
+    const ang = Math.random() * Math.PI * 2, spd = 1.5 + Math.random() * 4.5;
+    spawnPart(cx + u, cy + v, Math.cos(ang) * spd + avgVx * 0.4, Math.sin(ang) * spd + avgVy * 0.4 - 1,
+              3 + Math.random() * 5, box.spriteIdx, 0.5 + Math.random() * 0.5, 1);
+  }
+  box.dead = true;
+  box.isWell = false;
+  for (const other of boxes) if (!other.dead) wakeBox(other);   // everything above tumbles
+  trauma = Math.min(1, trauma + 0.55);
+  const n5 = (Math.random() * 5) | 0;
+  tone(penta(320, n5), 90, 0.3, 0.18, 'square');
+  tone(penta(150, n5), 40, 0.35, 0.14, 'sine', 0.03);
+}
+
+function findBoxAt(x, y) {
+  let best = null, bestD = Infinity;
+  for (const box of boxes) {
+    if (box.dead) continue;
+    const obb = getOBB(box);
+    const dx = x - obb.cx, dy = y - obb.cy;
+    const lx = dx * obb.axX + dy * obb.axY, ly = dx * obb.ayX + dy * obb.ayY;
+    if (Math.abs(lx) <= obb.halfW && Math.abs(ly) <= obb.halfH) {
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = box; }
+    }
+  }
+  return best;
+}
+
+// ---- §0 mouse wiring: movement / left / right / scroll each get a distinct job ----
+const mouse = { x: -9999, y: -9999, active: false };
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.active = true; });
+canvas.addEventListener('mouseleave', () => { mouse.active = false; });
+canvas.addEventListener('mousedown', e => {
+  ensureAudio();
+  const box = findBoxAt(e.clientX, e.clientY);
+  if (e.button === 0) {
+    if (box) explodeBox(box);
+  } else if (e.button === 2) {
+    if (box) {
+      box.isWell = !box.isWell;
+      tone(box.isWell ? 660 : 330, box.isWell ? 880 : 220, 0.12, 0.10, 'sine');
+    }
+  }
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const dir = Math.sign(e.deltaY);
+  if (e.shiftKey) restitution = clampNum(restitution - dir * 0.03, 0, 0.9);
+  else gravity = clampNum(gravity - dir * 0.02, 0.05, 1.2);
+}, { passive: false });
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  buildTower();
+  trauma = 0;
+  for (const p of parts) p.life = 0;
+});
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) tone(523, 530, 0.1, 0.12, 'sine');
+});
+window.addEventListener('resize', () => {
+  fitCanvas();
+  for (const box of boxes) for (const p of box.pts) {
+    p.x = Math.min(p.x, w - 2); p.y = Math.min(p.y, groundY);
+    p.px = Math.min(p.px, w - 2); p.py = Math.min(p.py, groundY);
+  }
+});
+
+// ---- particles integrate ----
+function updateParticles(dt) {
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    p.vy += 0.14; p.vx *= 0.985; p.vy *= 0.985;
+    p.x += p.vx; p.y += p.vy;
+  }
+}
+
+// ---- physics step ----
+function update(dt) {
+  time += dt;
+  soundCooldown = Math.max(0, soundCooldown - dt);
+
+  const wells = [];
+  for (const box of boxes) {
+    if (box.dead || !box.isWell) continue;
+    const { cx, cy } = boxCenter(box);
+    wells.push({ cx, cy, box });
+  }
+
+  for (const box of boxes) {
+    if (box.dead) continue;
+    // wake conditions: any gravity well pulls everything; the cursor's push
+    // field wakes blocks it reaches (idle mousing teeters the tower)
+    if (box.asleep) {
+      if (wells.length > 0) wakeBox(box);
+      else if (mouse.active) {
+        const c = boxCenter(box);
+        const reach = PUSH_RADIUS + Math.hypot(box.bw, box.bh) * 0.5;
+        if ((c.cx - mouse.x) ** 2 + (c.cy - mouse.y) ** 2 < reach * reach) wakeBox(box);
+      }
+      if (box.asleep) continue;             // frozen: no gravity, no integration
+    }
+    for (const p of box.pts) {
+      let ax = 0, ay = 0;
+      for (const well of wells) {
+        if (well.box === box) continue;
+        const dx = well.cx - p.x, dy = well.cy - p.y;
+        const d2 = dx * dx + dy * dy + WELL_EPS2;
+        const f = WELL_G / d2;
+        ax += dx * f; ay += dy * f;
+      }
+      if (mouse.active) {
+        const dx = p.x - mouse.x, dy = p.y - mouse.y;
+        const d = Math.hypot(dx, dy);
+        if (d < PUSH_RADIUS && d > 0.001) {
+          const f = (1 - d / PUSH_RADIUS) * PUSH_STRENGTH;
+          ax += dx / d * f; ay += dy / d * f;
+        }
+      }
+      const exMag = Math.hypot(ax, ay);
+      if (exMag > MAX_EXTRA_ACCEL) { const s = MAX_EXTRA_ACCEL / exMag; ax *= s; ay *= s; }
+
+      const vx = (p.x - p.px) * DAMPING, vy = (p.y - p.py) * DAMPING;
+      p.px = p.x; p.py = p.y;
+      p.x += vx + ax;
+      p.y += vy + gravity + ay;
+    }
+  }
+
+  // shock-propagation order: lowest boxes first, so ground support flows up
+  // the stack within a single iteration instead of needing one pass per joint
+  const live = [];
+  for (const box of boxes) if (!box.dead) live.push(box);
+  live.sort((p, q) => boxCenter(q).cy - boxCenter(p).cy);
+
+  for (let iter = 0; iter < ITERS; iter++) {
+    for (const box of live) if (!box.asleep) solveBoxConstraints(box);
+    resolveGround(iter);                    // support the base first
+    for (const a of live) {
+      if (a.asleep) continue;               // sleeping points never move themselves
+      for (const b of live) {
+        if (b === a) continue;
+        resolveBoxBox(a, b, iter);          // sleeping b still collides, and wakes on hard hits
+      }
+    }
+  }
+  resolveGround(ITERS);                     // final clamp, no juice (iter !== 0)
+
+  // sleep bookkeeping + squash-and-stretch
+  for (const box of boxes) {
+    if (box.dead || box.asleep) continue;
+    let vySum = 0, vMax = 0;
+    for (const p of box.pts) {
+      vySum += (p.y - p.py);
+      vMax = Math.max(vMax, Math.abs(p.x - p.px) + Math.abs(p.y - p.py));
+    }
+    const targetSquash = 1 + clampNum(vySum / 4 * 0.02, -0.28, 0.28);
+    box.squashY += (targetSquash - box.squashY) * 0.35;
+    if (vMax < SLEEP_V) {
+      if (++box.sleep >= SLEEP_FRAMES) {
+        box.asleep = true;
+        for (const p of box.pts) { p.px = p.x; p.py = p.y; }
+        box.squashY = 1;
+      }
+    } else box.sleep = 0;
+  }
+
+  updateParticles(dt);
+  trauma = Math.max(0, trauma - TRAUMA_DECAY * dt);
+}
+
+// ---- rendering ----
+function drawBox(box) {
+  const p = box.pts;
+  const cx = (p[0].x + p[1].x + p[2].x + p[3].x) / 4, cy = (p[0].y + p[1].y + p[2].y + p[3].y) / 4;
+  let axX = p[1].x - p[0].x, axY = p[1].y - p[0].y;
+  const axLen = Math.hypot(axX, axY) || 1; axX /= axLen; axY /= axLen;
+  let ayX = p[3].x - p[0].x, ayY = p[3].y - p[0].y;
+  const ayLen = Math.hypot(ayX, ayY) || 1; ayX /= ayLen; ayY /= ayLen;
+
+  // idle wobble is purely visual (§5 ambient life) — it never feeds back into physics
+  const wobX = Math.sin(time * 1.1 + box.wellSeed * 2.7) * WOBBLE_PX;
+  const wobY = Math.cos(time * 0.9 + box.wellSeed * 1.9) * WOBBLE_PX * 0.5;
+
+  const scaleY = box.squashY, scaleX = 1 / scaleY;
+  const corners = p.map(pt => {
+    const dx = pt.x - cx, dy = pt.y - cy;
+    let lx = (dx * axX + dy * axY) * scaleX;
+    let ly = (dx * ayX + dy * ayY) * scaleY;
+    return { x: cx + lx * axX + ly * ayX + wobX, y: cy + lx * axY + ly * ayY + wobY };
+  });
+
+  ctx.beginPath();
+  ctx.moveTo(corners[0].x, corners[0].y);
+  for (let i = 1; i < 4; i++) ctx.lineTo(corners[i].x, corners[i].y);
+  ctx.closePath();
+  ctx.fillStyle = box.color;
+  ctx.fill();
+
+  if (box.isWell) {
+    const glow = 0.5 + 0.5 * Math.sin(time * 3 + box.wellSeed);
+    ctx.strokeStyle = `rgba(255,255,255,${(0.45 + 0.4 * glow).toFixed(2)})`;
+    ctx.lineWidth = 3 + 2 * glow;
+    ctx.stroke();
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.22 + 0.22 * glow;
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, box.bw * (0.65 + 0.25 * glow), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  } else {
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, w, h);
+  const bg = ctx.createRadialGradient(w * 0.5, h * 0.4, 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.8);
+  bg.addColorStop(0, '#181430'); bg.addColorStop(1, '#0a0818');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+
+  ctx.save();
+  const sh = trauma * trauma;
+  if (sh > 0.0008 && !REDUCED) {
+    const nx = Math.sin(time * 41) + Math.sin(time * 27.7) * 0.6;
+    const ny = Math.sin(time * 38.9) + Math.sin(time * 19.3) * 0.5;
+    const rot = Math.sin(time * 23.1) * 0.05 * sh;
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(rot);
+    ctx.translate(-w / 2 + nx * 14 * sh, -h / 2 + ny * 14 * sh);
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  ctx.fillRect(0, groundY, w, h - groundY);
+  ctx.strokeStyle = 'rgba(140,160,255,0.28)';
+  ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(w, groundY); ctx.stroke();
+
+  for (const box of boxes) if (!box.dead) drawBox(box);
+
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    const t = Math.max(0, p.life / p.max);
+    const s = p.size * (0.4 + 0.6 * t);
+    ctx.globalAlpha = t * p.alphaMul;
+    ctx.drawImage(sprites[p.spriteIdx], p.x - s, p.y - s, s * 2, s * 2);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+}
+
+// ---- UI ----
+const gravityEl = document.getElementById('gravityVal');
+const restEl = document.getElementById('restVal');
+const blockEl = document.getElementById('blockVal');
+const wellEl = document.getElementById('wellVal');
+function updateUI() {
+  gravityEl.textContent = gravity.toFixed(2);
+  restEl.textContent = restitution.toFixed(2);
+  let active = 0, wells = 0;
+  for (const box of boxes) if (!box.dead) { active++; if (box.isWell) wells++; }
+  blockEl.textContent = active;
+  wellEl.textContent = wells;
+}
+
+// ---- build the first tower (here, after every declaration update() touches) ----
+buildTower();
+
+// ---- §2 fixed timestep ----
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  draw();
+  updateUI();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.addEventListener('visibilitychange', () => { last = performance.now(); acc = 0; });
+</script>
+</body>
+</html>

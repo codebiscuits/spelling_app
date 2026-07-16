@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Wrecking Yard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { overflow: hidden; background: #14181f; }
+  body { cursor: default; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    background: rgba(10, 10, 20, 0.75); border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px; padding: 14px 18px; backdrop-filter: blur(10px);
+    color: #ccc; font-size: 13px; line-height: 1.7; min-width: 236px;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .k { color: #888; white-space: nowrap; }
+  #ui .v { color: #f5a25d; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 10;
+    padding: 10px 28px; font-size: 14px; font-family: inherit;
+    color: #ccc; background: rgba(10, 10, 20, 0.80); border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(40, 40, 80, 0.90); color: #fff; border-color: rgba(255, 255, 255, 0.30); }
+  #muteBtn {
+    position: fixed; top: 16px; right: 16px; z-index: 10; width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(10, 10, 20, 0.80); border: 1px solid rgba(255, 255, 255, 0.15); color: #ccc;
+    font-size: 19px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #muteBtn:hover { background: rgba(40, 40, 80, 0.90); color: #fff; border-color: rgba(255, 255, 255, 0.30); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>&#x1F3D7;&#xFE0F; Wrecking Yard</h3>
+  <div class="row"><span class="k">Move mouse</span><span class="v">Swing the ball</span></div>
+  <div class="row"><span class="k">Left drag</span><span class="v">Grab &amp; fling a block</span></div>
+  <div class="row"><span class="k">Right click</span><span class="v">Blast an explosion</span></div>
+  <div class="row"><span class="k">Scroll</span><span class="v">Ball mass <span id="massVal">2.2</span></span></div>
+  <div class="row"><span class="k">Blocks intact</span><span class="v"><span id="standingVal">0</span>/<span id="totalVal">0</span></span></div>
+  <div class="row"><span class="k">Sound</span><span class="v"><span id="soundVal">Off</span></span></div>
+</div>
+<button id="muteBtn" title="Toggle sound">&#x1F507;</button>
+<button id="resetBtn">&#x21BA; Rebuild Yard</button>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // Canvas + fixed timestep (Handbook §2)
+  // ---------------------------------------------------------------------
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let w = 0, h = 0, dpr = 1;
+
+  function fitCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  const REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  // ---------------------------------------------------------------------
+  // Utility
+  // ---------------------------------------------------------------------
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function mixHex(c1, c2, t) {
+    const p1 = parseInt(c1.slice(1), 16), p2 = parseInt(c2.slice(1), 16);
+    const r = Math.round(lerp((p1 >> 16) & 255, (p2 >> 16) & 255, t));
+    const g = Math.round(lerp((p1 >> 8) & 255, (p2 >> 8) & 255, t));
+    const b = Math.round(lerp(p1 & 255, p2 & 255, t));
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+  function shade(pair, t) { return mixHex(pair[0], pair[1], clamp(t, 0, 1)); }
+
+  const PALETTE = {
+    brick: ['#b0503b', '#7a3527'],
+    concrete: ['#9297a0', '#5c6067'],
+    wood: ['#8a5a34', '#5e3a1e'],
+    glass: ['#5f8ea8', '#3a5f73']
+  };
+
+  // ---------------------------------------------------------------------
+  // World state
+  // ---------------------------------------------------------------------
+  const GRAVITY = 0.55;
+  const DAMP = 0.992;
+  const ITERS = 8;
+  const POINT_R = 5;
+  const SEAM_MIN_BREAK = 24;
+  const EDGE_MIN_BREAK = 10;
+
+  const DEFAULT_BALL_MASS = 2.2;
+  const BALL_MASS_MIN = 0.8, BALL_MASS_MAX = 6.0;
+  const BALL_BASE_RADIUS = 16;
+  const ROPE_SEGS = 7, SEG_LEN = 26;
+  const ANCHOR_OMEGA = 11;
+
+  let points = [];
+  let constraints = [];
+  let boxes = [];
+  let ropePoints = [];
+  let anchor = null, ball = null;
+  let groundY = 0;
+  let ballMass = DEFAULT_BALL_MASS;
+  let anchorVX = 0, anchorVY = 0;
+
+  const mouse = { x: 0, y: 0 };
+  let dragBox = null, dragOffsets = null;
+
+  let trauma = 0;
+  let hitStopTimer = 0;
+  let impactCooldown = 0;
+  let noiseTime = 0;
+  let ambientTimer = 1;
+
+  let audioEnabled = false;
+  let actx = null;
+
+  function makePoint(x, y, inv) {
+    return { x: x, y: y, px: x, py: y, inv: inv === undefined ? 1 : inv };
+  }
+
+  function makeConstraint(p1, p2, breakFactor, isSeam, restOverride) {
+    const rest = restOverride != null ? restOverride : Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const floor = isSeam ? SEAM_MIN_BREAK : EDGE_MIN_BREAK;
+    const breakLimit = Math.max(rest * breakFactor, rest + floor, floor);
+    const c = { p1: p1, p2: p2, rest: rest, breakLimit: breakLimit, isSeam: !!isSeam, active: true };
+    constraints.push(c);
+    return c;
+  }
+
+  function seam(pA, pB) { return makeConstraint(pA, pB, 1.35, true); }
+
+  function makeBox(cx, cy, size, color) {
+    const hs = size / 2;
+    const tl = makePoint(cx - hs, cy - hs);
+    const tr = makePoint(cx + hs, cy - hs);
+    const br = makePoint(cx + hs, cy + hs);
+    const bl = makePoint(cx - hs, cy + hs);
+    points.push(tl, tr, br, bl);
+    const cTop = makeConstraint(tl, tr, 2.0, false);
+    const cRight = makeConstraint(tr, br, 2.0, false);
+    const cBottom = makeConstraint(br, bl, 2.0, false);
+    const cLeft = makeConstraint(bl, tl, 2.0, false);
+    const cD1 = makeConstraint(tl, br, 1.9, false);
+    const cD2 = makeConstraint(tr, bl, 1.9, false);
+    const box = { points: [tl, tr, br, bl], color: color, size: size, cons: [cTop, cRight, cBottom, cLeft, cD1, cD2] };
+    boxes.push(box);
+    return box;
+  }
+
+  // ---------------------------------------------------------------------
+  // Yard construction
+  // ---------------------------------------------------------------------
+  function buildYard(randomize) {
+    points = []; constraints = []; boxes = [];
+    dragBox = null; dragOffsets = null;
+    trauma = 0; hitStopTimer = 0; impactCooldown = 0; ambientTimer = 1;
+    for (let i = 0; i < particles.length; i++) particles[i].active = false;
+
+    groundY = h * 0.86;
+    const jitter = (v, amt) => randomize ? v + (Math.random() * 2 - 1) * amt : v;
+
+    // --- Tower: tall brick stack ---
+    (function () {
+      const size = jitter(36, 4);
+      const count = randomize ? 5 + Math.floor(Math.random() * 3) : 6;
+      const cx = jitter(w * 0.14, 12);
+      let prevTL = null, prevTR = null;
+      let y = groundY - size / 2;
+      for (let i = 0; i < count; i++) {
+        const box = makeBox(cx, y, size, shade(PALETTE.brick, i / count));
+        if (prevTL) { seam(prevTL, box.points[3]); seam(prevTR, box.points[2]); }
+        prevTL = box.points[0]; prevTR = box.points[1];
+        y -= size;
+      }
+    })();
+
+    // --- Two concrete piers holding up a timber bridge ---
+    (function () {
+      const size = jitter(34, 3);
+      const pierCount = randomize ? 2 + Math.floor(Math.random() * 2) : 3;
+      const pierAx = jitter(w * 0.42, 10);
+      const pierBx = jitter(w * 0.64, 10);
+
+      function buildPier(cx) {
+        let prevTL = null, prevTR = null, y = groundY - size / 2, top = null;
+        for (let i = 0; i < pierCount; i++) {
+          const box = makeBox(cx, y, size, shade(PALETTE.concrete, i / pierCount));
+          if (prevTL) { seam(prevTL, box.points[3]); seam(prevTR, box.points[2]); }
+          prevTL = box.points[0]; prevTR = box.points[1];
+          top = box;
+          y -= size;
+        }
+        return top;
+      }
+
+      const pierA = buildPier(pierAx);
+      const pierB = buildPier(pierBx);
+      const topY = pierA.points[0].y + size / 2;
+      const span = pierBx - pierAx;
+      const bridgeCount = Math.max(3, Math.round(span / size));
+      const step = span / bridgeCount;
+      const boxW = Math.min(size, step * 0.98);
+      let last = null;
+      for (let i = 0; i < bridgeCount; i++) {
+        const cx = pierAx + step * (i + 0.5);
+        const box = makeBox(cx, topY, boxW, shade(PALETTE.wood, i / bridgeCount));
+        if (i === 0) { seam(pierA.points[1], box.points[0]); seam(pierA.points[2], box.points[3]); }
+        else { seam(last.points[1], box.points[0]); seam(last.points[2], box.points[3]); }
+        last = box;
+      }
+      seam(last.points[1], pierB.points[0]);
+      seam(last.points[2], pierB.points[3]);
+    })();
+
+    // --- Glassy wall ---
+    (function () {
+      const size = jitter(30, 3);
+      const cols = randomize ? 2 + Math.floor(Math.random() * 3) : 3;
+      const rows = randomize ? 3 + Math.floor(Math.random() * 3) : 4;
+      const originX = jitter(w * 0.82, 10) - (cols * size) / 2;
+      const rowBoxes = [];
+      for (let r = 0; r < rows; r++) {
+        const thisRow = [];
+        const y = groundY - size / 2 - r * size;
+        for (let cIdx = 0; cIdx < cols; cIdx++) {
+          const x = originX + cIdx * size + size / 2;
+          const box = makeBox(x, y, size, shade(PALETTE.glass, r / rows));
+          if (cIdx > 0) {
+            seam(thisRow[cIdx - 1].points[1], box.points[0]);
+            seam(thisRow[cIdx - 1].points[2], box.points[3]);
+          }
+          if (r > 0) {
+            seam(rowBoxes[r - 1][cIdx].points[0], box.points[3]);
+            seam(rowBoxes[r - 1][cIdx].points[1], box.points[2]);
+          }
+          thisRow.push(box);
+        }
+        rowBoxes.push(thisRow);
+      }
+    })();
+
+    // --- Wrecking ball on a rope, hanging from the cursor ---
+    ballMass = DEFAULT_BALL_MASS;
+    anchor = makePoint(w * 0.5, h * 0.12, 0);
+    anchorVX = 0; anchorVY = 0;
+    ropePoints = [anchor];
+    let prev = anchor;
+    for (let i = 1; i <= ROPE_SEGS; i++) {
+      const isLast = i === ROPE_SEGS;
+      const p = makePoint(anchor.x, anchor.y + i * SEG_LEN, isLast ? 1 / ballMass : 1);
+      points.push(p);
+      makeConstraint(prev, p, Infinity, false, SEG_LEN);
+      ropePoints.push(p);
+      prev = p;
+    }
+    ball = prev;
+    ball.radius = BALL_BASE_RADIUS + (ballMass - 1) * 6;
+    ball.squash = 1;
+  }
+
+  // ---------------------------------------------------------------------
+  // Physics step
+  // ---------------------------------------------------------------------
+  function updateAnchor(dt) {
+    anchorVX += (mouse.x - anchor.x) * ANCHOR_OMEGA * ANCHOR_OMEGA * dt;
+    anchorVY += (mouse.y - anchor.y) * ANCHOR_OMEGA * ANCHOR_OMEGA * dt;
+    const decay = Math.exp(-2 * ANCHOR_OMEGA * dt);
+    anchorVX *= decay; anchorVY *= decay;
+    anchor.x += anchorVX * dt;
+    anchor.y += anchorVY * dt;
+  }
+
+  function integratePoints() {
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (p.inv === 0) continue;
+      const vx = (p.x - p.px) * DAMP;
+      const vy = (p.y - p.py) * DAMP;
+      p.px = p.x; p.py = p.y;
+      p.x += vx;
+      p.y += vy + GRAVITY;
+    }
+  }
+
+  function applyDrag() {
+    if (!dragBox) return;
+    for (let i = 0; i < 4; i++) {
+      const p = dragBox.points[i];
+      const tx = mouse.x + dragOffsets[i].dx;
+      const ty = mouse.y + dragOffsets[i].dy;
+      p.x += (tx - p.x) * 0.5;
+      p.y += (ty - p.y) * 0.5;
+    }
+  }
+
+  function onSeamBreak(x, y) {
+    spawnDebrisBurst(x, y, REDUCED_MOTION ? 1 : 3);
+    addTrauma(0.03);
+  }
+
+  function resolveConstraint(c) {
+    if (!c.active) return;
+    const a = c.p1, b = c.p2;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 0.0001;
+    if (dist > c.breakLimit) {
+      c.active = false;
+      if (c.isSeam) onSeamBreak((a.x + b.x) / 2, (a.y + b.y) / 2);
+      return;
+    }
+    const invSum = a.inv + b.inv;
+    if (invSum <= 0) return;
+    const diff = (dist - c.rest) / dist;
+    const corrA = diff * (a.inv / invSum);
+    const corrB = diff * (b.inv / invSum);
+    a.x += dx * corrA; a.y += dy * corrA;
+    b.x -= dx * corrB; b.y -= dy * corrB;
+  }
+
+  function clampPoint(p, radius) {
+    const limitY = groundY - radius;
+    if (p.y > limitY) {
+      p.y = limitY;
+      const vx = p.x - p.px;
+      p.px = p.x - vx * 0.85;
+      p.py = p.y;
+    }
+    if (p.x < radius) { p.x = radius; p.px = p.x - (p.x - p.px) * 0.3; }
+    if (p.x > w - radius) { p.x = w - radius; p.px = p.x - (p.x - p.px) * 0.3; }
+  }
+
+  let impactSpeedAccum = 0;
+  function registerImpact(speed, x, y) {
+    addTrauma(Math.min(0.5, speed * 0.01));
+    if (impactCooldown > 0) return;
+    const BIG = 6;
+    if (speed > BIG) {
+      impactCooldown = 0.1;
+      triggerHitStop(clamp(speed * 4, 40, 80) * (REDUCED_MOTION ? 0.3 : 1));
+      spawnDebrisBurst(x, y, clamp(Math.round(speed * 1.1), 6, REDUCED_MOTION ? 10 : 22));
+      ball.squash = Math.max(0.55, ball.squash - speed * 0.02);
+      playThud(speed);
+    }
+  }
+
+  function ballCollideBoxes() {
+    const rr = ball.radius;
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const pts = boxes[bi].points;
+      for (let i = 0; i < 4; i++) {
+        const p = pts[i];
+        const dx = p.x - ball.x, dy = p.y - ball.y;
+        const d = Math.hypot(dx, dy) || 0.0001;
+        const minD = rr + POINT_R;
+        if (d < minD) {
+          const nx = dx / d, ny = dy / d;
+          const overlap = minD - d;
+          const invSum = ball.inv + p.inv;
+          if (invSum <= 0) continue;
+          const moveBall = overlap * (ball.inv / invSum);
+          const moveP = overlap * (p.inv / invSum);
+          ball.x -= nx * moveBall; ball.y -= ny * moveBall;
+          p.x += nx * moveP; p.y += ny * moveP;
+          const ballVX = ball.x - ball.px, ballVY = ball.y - ball.py;
+          const speed = Math.hypot(ballVX, ballVY);
+          p.px -= nx * speed * 0.55;
+          p.py -= ny * speed * 0.55;
+          registerImpact(speed, (p.x + ball.x) / 2, (p.y + ball.y) / 2);
+        }
+      }
+    }
+  }
+
+  function updateBallSquash(dt) {
+    ball.squash += (1 - ball.squash) * (1 - Math.exp(-10 * dt));
+  }
+
+  function update(dt) {
+    updateAnchor(dt);
+    integratePoints();
+    applyDrag();
+    for (let iter = 0; iter < ITERS; iter++) {
+      for (let i = 0; i < constraints.length; i++) resolveConstraint(constraints[i]);
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        if (p.inv > 0) clampPoint(p, p === ball ? ball.radius : POINT_R);
+      }
+      ballCollideBoxes();
+    }
+    updateParticles(dt);
+    updateBallSquash(dt);
+    trauma = Math.max(0, trauma - dt * 1.3);
+    impactCooldown = Math.max(0, impactCooldown - dt);
+    noiseTime += dt;
+
+    ambientTimer -= dt;
+    if (ambientTimer <= 0) {
+      ambientTimer = 1.2 + Math.random() * 1.5;
+      spawnParticle(Math.random() * w, groundY - Math.random() * 30,
+        Math.random() * 20 - 10, -10 - Math.random() * 10,
+        2 + Math.random(), 2 + Math.random() * 3, dustSprite, 0.35);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Explosion (right click)
+  // ---------------------------------------------------------------------
+  function explode(x, y) {
+    const RADIUS = 150, FORCE = 30;
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (p.inv <= 0) continue;
+      const dx = p.x - x, dy = p.y - y, d = Math.hypot(dx, dy) || 0.001;
+      if (d < RADIUS) {
+        const f = (1 - d / RADIUS) * FORCE;
+        p.x += (dx / d) * f;
+        p.y += (dy / d) * f - f * 0.3;
+      }
+    }
+    for (let i = 0; i < constraints.length; i++) {
+      const c = constraints[i];
+      if (!c.active || !c.isSeam) continue;
+      const mx = (c.p1.x + c.p2.x) / 2, my = (c.p1.y + c.p2.y) / 2;
+      if (Math.hypot(mx - x, my - y) < RADIUS * 0.75) c.active = false;
+    }
+    addTrauma(0.65);
+    triggerHitStop((REDUCED_MOTION ? 25 : 70));
+    spawnDebrisBurst(x, y, REDUCED_MOTION ? 10 : 26);
+    playThud(35);
+  }
+
+  // ---------------------------------------------------------------------
+  // Screenshake + hit-stop (Handbook §5)
+  // ---------------------------------------------------------------------
+  function addTrauma(t) { trauma = Math.min(1, trauma + t); }
+  function triggerHitStop(ms) { hitStopTimer = Math.max(hitStopTimer, ms / 1000); }
+
+  function shakeTransform() {
+    const s = trauma * trauma * (REDUCED_MOTION ? 0.15 : 1);
+    const t = noiseTime;
+    const ox = (Math.sin(t * 37.1) * 0.5 + Math.sin(t * 19.7 + 1.3) * 0.5) * 18 * s;
+    const oy = (Math.sin(t * 29.3 + 2.1) * 0.5 + Math.sin(t * 13.1 + 0.7) * 0.5) * 18 * s;
+    const rot = (Math.sin(t * 17.3 + 0.5) * 0.5 + Math.sin(t * 8.9 + 2.2) * 0.5) * 0.06 * s;
+    return { ox: ox, oy: oy, rot: rot };
+  }
+
+  // ---------------------------------------------------------------------
+  // Particles (Handbook §4/§5 - pool, 'lighter' blend, pre-rendered sprites)
+  // ---------------------------------------------------------------------
+  const MAX_PARTICLES = 260;
+  const particles = [];
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    particles.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 4, sprite: null, alphaMul: 1, active: false });
+  }
+  let pIdx = 0;
+  function spawnParticle(x, y, vx, vy, life, size, sprite, alphaMul) {
+    const p = particles[pIdx];
+    pIdx = (pIdx + 1) % MAX_PARTICLES;
+    p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.life = life; p.maxLife = life;
+    p.size = size; p.sprite = sprite; p.alphaMul = alphaMul === undefined ? 1 : alphaMul; p.active = true;
+  }
+  function spawnDebrisBurst(x, y, n) {
+    for (let i = 0; i < n; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 40 + Math.random() * 160;
+      spawnParticle(x, y, Math.cos(ang) * spd, Math.sin(ang) * spd - 60,
+        0.35 + Math.random() * 0.45, 3 + Math.random() * 6,
+        Math.random() < 0.65 ? dustSprite : sparkSprite, 1);
+    }
+  }
+  function updateParticles(dt) {
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (!p.active) continue;
+      p.vy += 500 * dt;
+      p.vx *= 0.985;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.life -= dt;
+      if (p.y > groundY + 10 && p.vy > 0) { p.vy *= -0.3; p.vx *= 0.6; }
+      if (p.life <= 0) p.active = false;
+    }
+  }
+  function drawParticles() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (!p.active) continue;
+      const a = clamp(p.life / p.maxLife, 0, 1) * p.alphaMul;
+      ctx.globalAlpha = a;
+      const s = p.size * 2;
+      ctx.drawImage(p.sprite, p.x - s / 2, p.y - s / 2, s, s);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  let dustSprite, sparkSprite;
+  function makeSprite(inner, outer) {
+    const s = 64;
+    const off = document.createElement('canvas');
+    off.width = s; off.height = s;
+    const octx = off.getContext('2d');
+    const g = octx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    g.addColorStop(0, inner); g.addColorStop(1, outer);
+    octx.fillStyle = g;
+    octx.beginPath(); octx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2); octx.fill();
+    return off;
+  }
+  function initSprites() {
+    dustSprite = makeSprite('rgba(214,196,168,0.95)', 'rgba(214,196,168,0)');
+    sparkSprite = makeSprite('rgba(255,214,120,1)', 'rgba(255,130,40,0)');
+  }
+
+  // ---------------------------------------------------------------------
+  // Sound (Handbook §5 - off by default, pentatonic thuds)
+  // ---------------------------------------------------------------------
+  function ensureAudio() {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+  }
+  function playThud(speed) {
+    if (!audioEnabled) return;
+    ensureAudio();
+    const now = actx.currentTime;
+    const steps = [0, 2, 4, 7, 9];
+    const idx = Math.floor(Math.random() * steps.length);
+    const freq = 62 * Math.pow(2, steps[idx] / 12);
+    const osc = actx.createOscillator();
+    const gain = actx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(28, freq * 0.55), now + 0.28);
+    const vol = clamp(0.08 + speed * 0.01, 0.08, 0.55);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(vol, now + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.36);
+    osc.connect(gain).connect(actx.destination);
+    osc.start(now); osc.stop(now + 0.4);
+  }
+
+  // ---------------------------------------------------------------------
+  // Drawing
+  // ---------------------------------------------------------------------
+  function drawBackground() {
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#1b2436'); g.addColorStop(0.7, '#2c3446'); g.addColorStop(1, '#3c3220');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+    const gg = ctx.createLinearGradient(0, groundY, 0, h);
+    gg.addColorStop(0, '#5a4632'); gg.addColorStop(1, '#241c12');
+    ctx.fillStyle = gg;
+    ctx.fillRect(0, groundY, w, h - groundY);
+    ctx.fillStyle = 'rgba(90,140,60,0.55)';
+    ctx.fillRect(0, groundY - 4, w, 6);
+  }
+
+  function drawBoxes() {
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const box = boxes[bi];
+      const tl = box.points[0], tr = box.points[1], br = box.points[2], bl = box.points[3];
+      ctx.beginPath();
+      ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y); ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y);
+      ctx.closePath();
+      ctx.fillStyle = box.color;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+      ctx.beginPath(); ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y); ctx.stroke();
+      let anyBroken = false;
+      for (let i = 0; i < box.cons.length; i++) {
+        const c = box.cons[i];
+        if (!c.active) {
+          anyBroken = true;
+          ctx.strokeStyle = 'rgba(15,8,4,0.65)';
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(c.p1.x, c.p1.y); ctx.lineTo(c.p2.x, c.p2.y); ctx.stroke();
+        }
+      }
+      if (anyBroken) {
+        ctx.fillStyle = 'rgba(0,0,0,0.12)';
+        ctx.beginPath();
+        ctx.moveTo(tl.x, tl.y); ctx.lineTo(tr.x, tr.y); ctx.lineTo(br.x, br.y); ctx.lineTo(bl.x, bl.y);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+
+  function drawRopeAndBall() {
+    ctx.strokeStyle = '#54565c';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(ropePoints[0].x, ropePoints[0].y);
+    for (let i = 1; i < ropePoints.length; i++) ctx.lineTo(ropePoints[i].x, ropePoints[i].y);
+    ctx.stroke();
+    ctx.fillStyle = '#3a3b40';
+    for (let i = 0; i < ropePoints.length - 1; i++) {
+      ctx.beginPath(); ctx.arc(ropePoints[i].x, ropePoints[i].y, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(anchor.x, anchor.y, 6, 0, Math.PI * 2); ctx.stroke();
+
+    const vx = ball.x - ball.px, vy = ball.y - ball.py;
+    const speed = Math.hypot(vx, vy);
+    const angle = speed > 0.5 ? Math.atan2(vy, vx) : 0;
+    const stretch = 1 + Math.min(0.3, speed * 0.015);
+    ctx.save();
+    ctx.translate(ball.x, ball.y);
+    ctx.rotate(angle);
+    ctx.scale(stretch, ball.squash / stretch);
+    const grad = ctx.createRadialGradient(-ball.radius * 0.3, -ball.radius * 0.3, ball.radius * 0.1, 0, 0, ball.radius);
+    grad.addColorStop(0, '#9096a0'); grad.addColorStop(0.6, '#4a4e57'); grad.addColorStop(1, '#202128');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(0, 0, ball.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.restore();
+  }
+
+  function draw() {
+    const sh = shakeTransform();
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(sh.rot);
+    ctx.translate(-w / 2 + sh.ox, -h / 2 + sh.oy);
+    drawBackground();
+    drawBoxes();
+    drawRopeAndBall();
+    drawParticles();
+    ctx.restore();
+  }
+
+  // ---------------------------------------------------------------------
+  // UI text
+  // ---------------------------------------------------------------------
+  const massValEl = document.getElementById('massVal');
+  const standingValEl = document.getElementById('standingVal');
+  const totalValEl = document.getElementById('totalVal');
+  const soundValEl = document.getElementById('soundVal');
+  function updateUIText() {
+    massValEl.textContent = ballMass.toFixed(1);
+    let standing = 0;
+    for (let i = 0; i < boxes.length; i++) {
+      const cons = boxes[i].cons;
+      let ok = true;
+      for (let j = 0; j < cons.length; j++) if (!cons[j].active) { ok = false; break; }
+      if (ok) standing++;
+    }
+    standingValEl.textContent = standing;
+    totalValEl.textContent = boxes.length;
+    soundValEl.textContent = audioEnabled ? 'On' : 'Off';
+  }
+
+  // ---------------------------------------------------------------------
+  // Input (Handbook §2 mouse wiring)
+  // ---------------------------------------------------------------------
+  function findNearestBox(x, y, maxDist) {
+    let best = null, bestD = maxDist * maxDist;
+    for (let i = 0; i < boxes.length; i++) {
+      const pts = boxes[i].points;
+      const cx = (pts[0].x + pts[2].x) / 2, cy = (pts[0].y + pts[2].y) / 2;
+      const d = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+      if (d < bestD) { bestD = d; best = boxes[i]; }
+    }
+    return best;
+  }
+
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+  window.addEventListener('mousemove', function (e) {
+    mouse.x = e.clientX; mouse.y = e.clientY;
+  });
+
+  canvas.addEventListener('mousedown', function (e) {
+    if (e.button === 0) {
+      const box = findNearestBox(mouse.x, mouse.y, 80);
+      if (box) {
+        dragBox = box;
+        dragOffsets = box.points.map(function (p) { return { dx: p.x - mouse.x, dy: p.y - mouse.y }; });
+      }
+    } else if (e.button === 2) {
+      explode(mouse.x, mouse.y);
+    }
+  });
+
+  window.addEventListener('mouseup', function (e) {
+    if (e.button === 0) { dragBox = null; dragOffsets = null; }
+  });
+
+  canvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    ballMass = clamp(ballMass - Math.sign(e.deltaY) * 0.2, BALL_MASS_MIN, BALL_MASS_MAX);
+    ball.inv = 1 / ballMass;
+    ball.radius = BALL_BASE_RADIUS + (ballMass - 1) * 6;
+  }, { passive: false });
+
+  window.addEventListener('resize', function () { fitCanvas(); buildYard(false); });
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) last = performance.now();
+  });
+
+  const muteBtn = document.getElementById('muteBtn');
+  muteBtn.addEventListener('click', function () {
+    audioEnabled = !audioEnabled;
+    muteBtn.textContent = audioEnabled ? '🔊' : '🔇';
+    if (audioEnabled) ensureAudio();
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', function () {
+    buildYard(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------------
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+  function frame(now) {
+    const frameDt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (hitStopTimer > 0) {
+      hitStopTimer -= frameDt;
+      draw();
+      updateUIText();
+      requestAnimationFrame(frame);
+      return;
+    }
+    acc += frameDt;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    draw();
+    updateUIText();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------
+  fitCanvas();
+  initSprites();
+  buildYard(false);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

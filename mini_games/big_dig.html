@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Big Dig</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0812; }
+  canvas { position: fixed; inset: 0; display: block; }
+  #sim { image-rendering: pixelated; image-rendering: -moz-crisp-edges; z-index: 1; cursor: none; }
+  #fx { z-index: 2; pointer-events: none; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .key { color: #888; }
+  #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #ui hr { border: none; border-top: 1px solid rgba(255,255,255,0.12); margin: 8px 0; }
+  #ui .swatch {
+    display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+    margin-right: 6px; vertical-align: middle;
+  }
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+</style>
+</head>
+<body>
+<canvas id="sim"></canvas>
+<canvas id="fx"></canvas>
+<div id="ui">
+  <h3>&#9935; Big Dig</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Aim + stir grains</span></div>
+  <div class="param"><span class="key">Left drag</span><span class="val">Pour material</span></div>
+  <div class="param"><span class="key">Right drag</span><span class="val">Dig / erase</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Cycle material</span></div>
+  <div class="param"><span class="key">1&ndash;7</span><span class="val">Jump to material</span></div>
+  <div class="param"><span class="key">[ / ]</span><span class="val">Brush size</span></div>
+  <hr>
+  <div class="param"><span class="key">Material</span><span class="val"><span class="swatch" id="matSwatch"></span><span id="matVal">Sand</span></span></div>
+  <div class="param"><span class="key">Brush size</span><span class="val" id="sizeVal">5</span></div>
+</div>
+<button id="resetBtn">&#8630; Reset dig site</button>
+<script>
+(function () {
+  'use strict';
+
+  // ---------- materials ----------
+  const EMPTY = 0, WALL = 1, SAND = 2, WATER = 3, PLANT = 4, FIRE = 5, OIL = 6, STEAM = 7;
+
+  const MATERIALS = [
+    { id: SAND,  name: 'Sand',  color: [216, 178, 111] },
+    { id: WATER, name: 'Water', color: [59, 120, 207] },
+    { id: WALL,  name: 'Wall',  color: [125, 116, 108] },
+    { id: PLANT, name: 'Plant', color: [70, 168, 74] },
+    { id: FIRE,  name: 'Fire',  color: [255, 111, 45] },
+    { id: OIL,   name: 'Oil',   color: [54, 40, 34] },
+    { id: STEAM, name: 'Steam', color: [214, 214, 224] },
+  ];
+
+  const BASE_R = new Int16Array(8), BASE_G = new Int16Array(8), BASE_B = new Int16Array(8);
+  function setPalette(id, r, g, b) { BASE_R[id] = r; BASE_G[id] = g; BASE_B[id] = b; }
+  MATERIALS.forEach(m => setPalette(m.id, m.color[0], m.color[1], m.color[2]));
+
+  function rndInt(min, max) { return (Math.random() * (max - min + 1) + min) | 0; }
+  function clamp8(x) { return x < 0 ? 0 : x > 255 ? 255 : x; }
+
+  // ---------- canvases ----------
+  const sim = document.getElementById('sim');
+  const simCtx = sim.getContext('2d', { alpha: false });
+  const fx = document.getElementById('fx');
+  const fxCtx = fx.getContext('2d');
+
+  const CELL = 4; // ~1 cell per 4 CSS px
+  let w = 0, h = 0, COLS = 0, ROWS = 0;
+  let grid, variant, life, updated, imageData;
+  let bgR, bgG, bgB;
+
+  function idx(c, r) { return r * COLS + c; }
+
+  function buildBgGradient() {
+    bgR = new Uint8ClampedArray(ROWS);
+    bgG = new Uint8ClampedArray(ROWS);
+    bgB = new Uint8ClampedArray(ROWS);
+    const top = [20, 24, 40], bottom = [9, 7, 14];
+    const denom = ROWS - 1 || 1;
+    for (let r = 0; r < ROWS; r++) {
+      const t = r / denom;
+      bgR[r] = top[0] + (bottom[0] - top[0]) * t;
+      bgG[r] = top[1] + (bottom[1] - top[1]) * t;
+      bgB[r] = top[2] + (bottom[2] - top[2]) * t;
+    }
+  }
+
+  function fitCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+
+    COLS = Math.max(20, Math.floor(w / CELL));
+    ROWS = Math.max(20, Math.floor(h / CELL));
+
+    // low-res sim canvas: the backing store IS the cell grid, CSS upscales it
+    sim.width = COLS; sim.height = ROWS;
+    sim.style.width = w + 'px'; sim.style.height = h + 'px';
+    simCtx.imageSmoothingEnabled = false;
+
+    // full-res fx overlay canvas, DPR-aware for a crisp brush ring
+    fx.width = Math.round(w * dpr); fx.height = Math.round(h * dpr);
+    fx.style.width = w + 'px'; fx.style.height = h + 'px';
+    fxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    grid = new Uint8Array(COLS * ROWS);
+    variant = new Int8Array(COLS * ROWS);
+    life = new Uint16Array(COLS * ROWS);
+    updated = new Uint8Array(COLS * ROWS);
+    imageData = simCtx.createImageData(COLS, ROWS);
+
+    buildBgGradient();
+    buildTerrain();
+  }
+
+  // ---------- terrain ----------
+  function buildTerrain() {
+    grid.fill(EMPTY); variant.fill(0); life.fill(0);
+
+    const bedrockTop = ROWS - 3;
+    const groundTop = Math.floor(ROWS * 0.5);
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const i = idx(c, r);
+        if (r >= bedrockTop) { grid[i] = WALL; variant[i] = rndInt(-14, 14); continue; }
+        const surface = groundTop + Math.round(Math.sin(c * 0.06) * 2.5);
+        if (r >= surface) { grid[i] = SAND; variant[i] = rndInt(-16, 16); }
+      }
+    }
+
+    // a pool of water carved into the sand
+    const poolCx = Math.floor(COLS * 0.28);
+    const poolTop = groundTop - 2;
+    const poolW = Math.max(10, Math.floor(COLS * 0.16));
+    const poolDepth = Math.max(6, Math.floor(ROWS * 0.10));
+    const halfW = Math.floor(poolW / 2);
+    for (let r = poolTop; r < poolTop + poolDepth; r++) {
+      if (r < 0 || r >= bedrockTop) continue;
+      for (let c = poolCx - halfW; c < poolCx + halfW; c++) {
+        if (c < 0 || c >= COLS) continue;
+        const i = idx(c, r);
+        grid[i] = WATER; variant[i] = rndInt(-10, 10);
+      }
+    }
+
+    // a wall vein beneath the pool
+    const veinY = poolTop + poolDepth + 3;
+    for (let c = poolCx - halfW - 4; c < poolCx + halfW + 4; c++) {
+      if (c < 0 || c >= COLS) continue;
+      for (let r = veinY; r < veinY + 2; r++) {
+        if (r < 0 || r >= bedrockTop) continue;
+        const i = idx(c, r); grid[i] = WALL; variant[i] = rndInt(-10, 10);
+      }
+    }
+
+    // plant seeds right at the pool's edges, touching the water
+    for (let r = poolTop; r < poolTop + 3 && r < bedrockTop; r++) {
+      if (r < 0) continue;
+      const leftC = poolCx - halfW - 1, rightC = poolCx + halfW;
+      for (const c of [leftC, leftC - 1, rightC, rightC + 1]) {
+        if (c < 0 || c >= COLS) continue;
+        const i = idx(c, r);
+        if (grid[i] === EMPTY) { grid[i] = PLANT; variant[i] = rndInt(-8, 8); }
+      }
+    }
+
+    // a hidden pocket of oil buried in the sand, waiting to be dug into
+    const oilCx = Math.floor(COLS * 0.72), oilCy = groundTop + Math.max(8, Math.floor(ROWS * 0.08));
+    const oilR = Math.max(4, Math.floor(COLS * 0.02));
+    for (let dr = -oilR; dr <= oilR; dr++) {
+      for (let dc = -oilR; dc <= oilR; dc++) {
+        if (dc * dc + dr * dr > oilR * oilR) continue;
+        const c = oilCx + dc, r = oilCy + dr;
+        if (c < 0 || c >= COLS || r < 0 || r >= bedrockTop) continue;
+        const i = idx(c, r);
+        if (grid[i] === SAND) { grid[i] = OIL; variant[i] = rndInt(-8, 8); }
+      }
+    }
+  }
+
+  // ---------- cell moves ----------
+  function moveCell(src, dst) {
+    grid[dst] = grid[src]; variant[dst] = variant[src]; life[dst] = life[src];
+    grid[src] = EMPTY; variant[src] = 0; life[src] = 0;
+    updated[dst] = 1;
+  }
+  function swapCells(a, b) {
+    const gm = grid[a], vm = variant[a], lm = life[a];
+    grid[a] = grid[b]; variant[a] = variant[b]; life[a] = life[b];
+    grid[b] = gm; variant[b] = vm; life[b] = lm;
+    updated[a] = 1; updated[b] = 1;
+  }
+  function cellAdjacentToWater(c, r) {
+    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+    for (const [dx, dy] of dirs) {
+      const nc = c + dx, nr = r + dy;
+      if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
+      if (grid[idx(nc, nr)] === WATER) return true;
+    }
+    return false;
+  }
+
+  // ---------- per-material update rules ----------
+  function updateSand(col, row, i) {
+    if (row + 1 < ROWS) {
+      const below = idx(col, row + 1);
+      const bm = grid[below];
+      if (bm === EMPTY) { moveCell(i, below); return; }
+      if (bm === WATER || bm === OIL || bm === STEAM) { swapCells(i, below); return; }
+    }
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    for (const d of [dir, -dir]) {
+      const nc = col + d;
+      if (nc < 0 || nc >= COLS || row + 1 >= ROWS) continue;
+      const ni = idx(nc, row + 1);
+      const nm = grid[ni];
+      if (nm === EMPTY) { moveCell(i, ni); return; }
+      if (nm === WATER || nm === OIL || nm === STEAM) { swapCells(i, ni); return; }
+    }
+  }
+
+  function updateWater(col, row, i) {
+    if (row + 1 < ROWS) {
+      const below = idx(col, row + 1);
+      const bm = grid[below];
+      if (bm === EMPTY) { moveCell(i, below); return; }
+      if (bm === OIL || bm === STEAM) { swapCells(i, below); return; }
+    }
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    for (const d of [dir, -dir]) {
+      const nc = col + d;
+      if (nc < 0 || nc >= COLS || row + 1 >= ROWS) continue;
+      const ni = idx(nc, row + 1);
+      const nm = grid[ni];
+      if (nm === EMPTY) { moveCell(i, ni); return; }
+      if (nm === OIL || nm === STEAM) { swapCells(i, ni); return; }
+    }
+    for (const d of [dir, -dir]) {
+      const nc = col + d;
+      if (nc < 0 || nc >= COLS) continue;
+      const ni = idx(nc, row);
+      if (grid[ni] === EMPTY) { moveCell(i, ni); return; }
+    }
+  }
+
+  function updateOil(col, row, i) {
+    if (row + 1 < ROWS) {
+      const below = idx(col, row + 1);
+      const bm = grid[below];
+      if (bm === EMPTY) { moveCell(i, below); return; }
+      if (bm === STEAM) { swapCells(i, below); return; }
+    }
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    for (const d of [dir, -dir]) {
+      const nc = col + d;
+      if (nc < 0 || nc >= COLS || row + 1 >= ROWS) continue;
+      const ni = idx(nc, row + 1);
+      if (grid[ni] === EMPTY) { moveCell(i, ni); return; }
+    }
+    for (const d of [dir, -dir]) {
+      const nc = col + d;
+      if (nc < 0 || nc >= COLS) continue;
+      const ni = idx(nc, row);
+      if (grid[ni] === EMPTY) { moveCell(i, ni); return; }
+    }
+  }
+
+  function updateSteam(col, row, i) {
+    life[i]--;
+    if (life[i] <= 0) {
+      grid[i] = WATER; variant[i] = rndInt(-10, 10); life[i] = 0; updated[i] = 1; return;
+    }
+    if (row - 1 >= 0) {
+      const above = idx(col, row - 1);
+      const am = grid[above];
+      if (am === EMPTY) { moveCell(i, above); return; }
+      if ((am === WATER || am === OIL) && Math.random() < 0.3) { swapCells(i, above); return; }
+    }
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    for (const d of [dir, -dir]) {
+      const nc = col + d;
+      if (nc < 0 || nc >= COLS || row - 1 < 0) continue;
+      const ni = idx(nc, row - 1);
+      if (grid[ni] === EMPTY) { moveCell(i, ni); return; }
+    }
+    for (const d of [dir, -dir]) {
+      const nc = col + d;
+      if (nc < 0 || nc >= COLS) continue;
+      const ni = idx(nc, row);
+      if (grid[ni] === EMPTY) { moveCell(i, ni); return; }
+    }
+    updated[i] = 1;
+  }
+
+  const FIRE_NEIGHBORS = [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]];
+  function updateFire(col, row, i) {
+    life[i]--;
+    if (life[i] <= 0) { grid[i] = EMPTY; variant[i] = 0; life[i] = 0; updated[i] = 1; return; }
+
+    for (const [dx, dy] of FIRE_NEIGHBORS) {
+      const nc = col + dx, nr = row + dy;
+      if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) continue;
+      const ni = idx(nc, nr);
+      if (updated[ni]) continue;
+      const nm = grid[ni];
+      if ((nm === PLANT || nm === OIL) && Math.random() < 0.12) {
+        grid[ni] = FIRE; life[ni] = 30 + rndInt(0, 30); variant[ni] = rndInt(-10, 10);
+        updated[ni] = 1;
+      } else if (nm === WATER && Math.random() < 0.2) {
+        life[i] = Math.min(life[i], 3);
+      }
+    }
+
+    if (Math.random() < 0.5 && row - 1 >= 0) {
+      const above = idx(col, row - 1);
+      if (grid[above] === EMPTY) { moveCell(i, above); return; }
+    }
+    updated[i] = 1;
+  }
+
+  const PLANT_NEIGHBORS = [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]];
+  function updatePlant(col, row, i) {
+    if (Math.random() < 0.02) {
+      const [dx, dy] = PLANT_NEIGHBORS[rndInt(0, 7)];
+      const nc = col + dx, nr = row + dy;
+      if (nc >= 0 && nc < COLS && nr >= 0 && nr < ROWS) {
+        const ni = idx(nc, nr);
+        const nm = grid[ni];
+        if (nm === WATER && Math.random() < 0.5) {
+          grid[ni] = PLANT; variant[ni] = rndInt(-10, 10); updated[ni] = 1;
+        } else if (nm === EMPTY && cellAdjacentToWater(nc, nr)) {
+          grid[ni] = PLANT; variant[ni] = rndInt(-10, 10); updated[ni] = 1;
+        }
+      }
+    }
+    updated[i] = 1;
+  }
+
+  function simulate() {
+    updated.fill(0);
+    for (let row = ROWS - 1; row >= 0; row--) {
+      const leftFirst = Math.random() < 0.5;
+      for (let ci = 0; ci < COLS; ci++) {
+        const col = leftFirst ? ci : COLS - 1 - ci;
+        const i = idx(col, row);
+        if (updated[i]) continue;
+        switch (grid[i]) {
+          case SAND: updateSand(col, row, i); break;
+          case WATER: updateWater(col, row, i); break;
+          case OIL: updateOil(col, row, i); break;
+          case STEAM: updateSteam(col, row, i); break;
+          case FIRE: updateFire(col, row, i); break;
+          case PLANT: updatePlant(col, row, i); break;
+          default: break; // EMPTY, WALL: static
+        }
+      }
+    }
+  }
+
+  // ---------- input state ----------
+  const mouse = { x: 0, y: 0 };
+  let mouseOver = false;
+  let buttons = 0;
+  let selectedIndex = 0;
+  let brushRadius = 5;
+
+  function matUI() {
+    const m = MATERIALS[selectedIndex];
+    document.getElementById('matVal').textContent = m.name;
+    const sw = document.getElementById('matSwatch');
+    sw.style.background = `rgb(${m.color[0]},${m.color[1]},${m.color[2]})`;
+  }
+  function sizeUI() {
+    document.getElementById('sizeVal').textContent = brushRadius;
+  }
+
+  function gridPos() {
+    const gc = Math.floor((mouse.x / w) * COLS);
+    const gr = Math.floor((mouse.y / h) * ROWS);
+    return [gc, gr];
+  }
+
+  function forBrush(cb) {
+    const [gc, gr] = gridPos();
+    const r = brushRadius;
+    for (let dr = -r; dr <= r; dr++) {
+      for (let dc = -r; dc <= r; dc++) {
+        if (dc * dc + dr * dr > r * r) continue;
+        const c = gc + dc, row = gr + dr;
+        if (c < 0 || c >= COLS || row < 0 || row >= ROWS) continue;
+        cb(idx(c, row));
+      }
+    }
+  }
+
+  function disturb() {
+    forBrush(i => {
+      const m = grid[i];
+      if ((m === SAND || m === WATER || m === OIL || m === STEAM) && Math.random() < 0.06) {
+        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        const [ddx, ddy] = dirs[rndInt(0, 3)];
+        const c = i % COLS, r = (i / COLS) | 0;
+        const nc = c + ddx, nr = r + ddy;
+        if (nc < 0 || nc >= COLS || nr < 0 || nr >= ROWS) return;
+        const ni = idx(nc, nr);
+        if (grid[ni] === EMPTY) moveCell(i, ni);
+      }
+    });
+  }
+
+  function pourAt() {
+    const mat = MATERIALS[selectedIndex];
+    forBrush(i => {
+      if (grid[i] === EMPTY && Math.random() < 0.6) {
+        grid[i] = mat.id;
+        variant[i] = rndInt(-12, 12);
+        if (mat.id === FIRE) life[i] = 30 + rndInt(0, 30);
+        else if (mat.id === STEAM) life[i] = 150 + rndInt(0, 80);
+        else life[i] = 0;
+      }
+    });
+  }
+
+  function digAt() {
+    forBrush(i => {
+      if (grid[i] !== EMPTY && Math.random() < 0.8) {
+        grid[i] = EMPTY; variant[i] = 0; life[i] = 0;
+      }
+    });
+  }
+
+  // ---------- render ----------
+  function render() {
+    const data = imageData.data;
+    let p = 0;
+    for (let r = 0; r < ROWS; r++) {
+      const bgr = bgR[r], bgg = bgG[r], bgb = bgB[r];
+      const rowBase = r * COLS;
+      for (let c = 0; c < COLS; c++) {
+        const i = rowBase + c;
+        const m = grid[i];
+        if (m === EMPTY) {
+          data[p] = bgr; data[p + 1] = bgg; data[p + 2] = bgb;
+        } else {
+          const v = variant[i];
+          data[p] = clamp8(BASE_R[m] + v);
+          data[p + 1] = clamp8(BASE_G[m] + v);
+          data[p + 2] = clamp8(BASE_B[m] + v);
+        }
+        data[p + 3] = 255;
+        p += 4;
+      }
+    }
+    simCtx.putImageData(imageData, 0, 0);
+
+    // crisp overlay: brush ring
+    fxCtx.clearRect(0, 0, w, h);
+    if (mouseOver) {
+      const mat = MATERIALS[selectedIndex];
+      const radiusPx = brushRadius * (w / COLS);
+      fxCtx.beginPath();
+      fxCtx.arc(mouse.x, mouse.y, radiusPx, 0, Math.PI * 2);
+      const digging = (buttons & 2) !== 0;
+      fxCtx.strokeStyle = digging
+        ? 'rgba(255,255,255,0.75)'
+        : `rgba(${mat.color[0]},${mat.color[1]},${mat.color[2]},0.85)`;
+      fxCtx.lineWidth = 2;
+      fxCtx.stroke();
+      fxCtx.beginPath();
+      fxCtx.arc(mouse.x, mouse.y, 2, 0, Math.PI * 2);
+      fxCtx.fillStyle = fxCtx.strokeStyle;
+      fxCtx.fill();
+    }
+  }
+
+  // ---------- fixed timestep loop ----------
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+
+  function update() {
+    if (mouseOver) {
+      disturb();
+      if (buttons & 1) pourAt();
+      if (buttons & 2) digAt();
+    }
+    simulate();
+  }
+
+  function frame(now) {
+    acc += Math.min((now - last) / 1000, 0.1);
+    last = now;
+    let iterations = 0;
+    while (acc >= DT && iterations < 6) { update(); acc -= DT; iterations++; }
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- input wiring ----------
+  sim.addEventListener('contextmenu', e => e.preventDefault());
+  fx.addEventListener('contextmenu', e => e.preventDefault());
+
+  window.addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY;
+    mouseOver = mouse.x >= 0 && mouse.x <= w && mouse.y >= 0 && mouse.y <= h;
+    buttons = e.buttons;
+  });
+  window.addEventListener('mousedown', e => { buttons = e.buttons; });
+  window.addEventListener('mouseup', e => { buttons = e.buttons; });
+  document.addEventListener('mouseleave', () => { mouseOver = false; });
+  document.addEventListener('mouseenter', e => { buttons = e.buttons; });
+
+  window.addEventListener('wheel', e => {
+    e.preventDefault();
+    selectedIndex = (selectedIndex + Math.sign(e.deltaY) + MATERIALS.length) % MATERIALS.length;
+    matUI();
+  }, { passive: false });
+
+  window.addEventListener('keydown', e => {
+    if (e.key >= '1' && e.key <= '7') {
+      selectedIndex = (+e.key - 1) % MATERIALS.length;
+      matUI();
+    } else if (e.key === '[') {
+      brushRadius = Math.max(1, brushRadius - 1); sizeUI();
+    } else if (e.key === ']') {
+      brushRadius = Math.min(24, brushRadius + 1); sizeUI();
+    }
+  });
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(fitCanvas, 150);
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    buildTerrain();
+    selectedIndex = 0; brushRadius = 5;
+    matUI(); sizeUI();
+  });
+
+  // ---------- boot ----------
+  fitCanvas();
+  matUI(); sizeUI();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pond</title>
+  <!--
+    Implements HANDBOOK_SMALL.md:
+      §2   fixed timestep, DPR-aware canvas
+      §3   1D heightfield water (tension + damping) + verlet buoyant ducks
+      §4   cosine/curated palette, additive glow particles, never pure black
+      §5   ripple interference (free from the linear heightfield), squash &
+           stretch on ducks, splash particles, ambient life (blinking ducks,
+           dragonflies, sun-glitter shimmer), pentatonic sound (off by default)
+      §7   no fail state, sound muted by default
+  -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0c1620; }
+    canvas { display: block; touch-action: none; cursor: none; }
+    #ui {
+      position: fixed; top: 16px; left: 16px; color: #cfe6e0; font-size: 13px;
+      pointer-events: none; z-index: 10; background: rgba(8,20,26,0.72);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+      padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+      min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+    #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+    #ui .key { color: #85a8a0; }
+    #ui .val { color: #7fe0d8; font-weight: 600; font-variant-numeric: tabular-nums; }
+    #resetBtn, #muteBtn {
+      position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #cfe6e0; background: rgba(8,20,26,0.80); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+    }
+    #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); }
+    #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; line-height: 1; }
+    #resetBtn:hover, #muteBtn:hover { background: rgba(30,60,60,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>🦆 Pond</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Drag a ripple</span></div>
+  <div class="param"><span class="key">Left hold</span><span class="val">Pour rain</span></div>
+  <div class="param"><span class="key">Right click</span><span class="val">Drop a duck</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Storm: <span id="stormVal">0.5</span></span></div>
+  <br>
+  <div class="param"><span class="key">Ducks:</span><span class="val" id="duckCount">0/6</span></div>
+</div>
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
+<button id="resetBtn">&#x21BA; Reset pond</button>
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0, baseY = 0;
+
+// ---- §2 DPR-aware canvas ----
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  baseY = h * 0.56;
+}
+
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---- §4 cosine palette (Iñigo Quilez) — never a raw HSL rainbow ----
+function cosPalette(t, d) {
+  const c = [];
+  for (let i = 0; i < 3; i++) c.push(0.5 + 0.42 * Math.cos(6.28318 * (0.85 * t + d[i])));
+  return c;
+}
+function rgb(c, mul, add) {
+  return `rgb(${c.map(v => Math.round(Math.min(1, Math.max(0, v * mul + add)) * 255)).join(',')})`;
+}
+const DUCK_D = [0.05, 0.15, 0.55]; // stays warm yellow/orange, never rainbows
+
+// ==================== WATER HEIGHTFIELD (§3) ====================
+const SPACING = 6;
+let N = 0, u = null, v = null; // height offset & velocity per column
+const TENSION = 0.28, DAMPING = 0.986, SPREAD = 0.028; // spread lets ripples travel sideways
+
+function initWater() {
+  N = Math.max(24, Math.floor(w / SPACING) + 2);
+  u = new Float32Array(N);
+  v = new Float32Array(N);
+}
+
+function colX(i) { return i * (w / (N - 1)); }
+function colOf(x) { return Math.max(0, Math.min(N - 1, x / (w / (N - 1)))); }
+
+// interpolated surface height (world y) at an arbitrary x
+function waterY(x) {
+  const f = colOf(x), i = f | 0, t = f - i;
+  const a = u[i], b = u[Math.min(N - 1, i + 1)];
+  return baseY + a + (b - a) * t;
+}
+function slopeAt(x) {
+  const d = 6;
+  return (waterY(x + d) - waterY(x - d)) / (2 * d);
+}
+function poke(x, strength, radius) {
+  radius = radius || 3;
+  const ci = Math.round(colOf(x));
+  for (let o = -radius; o <= radius; o++) {
+    const idx = ci + o;
+    if (idx < 0 || idx >= N) continue;
+    const wgt = 1 - Math.abs(o) / (radius + 1);
+    v[idx] += strength * wgt;
+  }
+}
+
+function stepWater() {
+  // §3 heightfield recipe: accelerate toward the average of neighbours, damp
+  for (let i = 1; i < N - 1; i++) {
+    v[i] += ((u[i - 1] + u[i + 1]) * 0.5 - u[i]) * TENSION;
+  }
+  // reflecting boundaries so waves bounce off the banks instead of vanishing
+  v[0] += (u[1] - u[0]) * TENSION;
+  v[N - 1] += (u[N - 2] - u[N - 1]) * TENSION;
+  for (let i = 0; i < N; i++) { v[i] *= DAMPING; u[i] += v[i]; }
+  // sideways spread pass — lets narrow pokes broaden into travelling ripples
+  for (let i = 1; i < N - 1; i++) {
+    const l = (u[i - 1] - u[i]) * SPREAD, r = (u[i + 1] - u[i]) * SPREAD;
+    v[i - 1] -= l; v[i] += l;
+    v[i + 1] -= r; v[i] += r;
+  }
+}
+
+// ==================== SOUND (§5, off by default) ====================
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+}
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0, 2, 4, 7, 9];
+const penta = (base, i) => base * Math.pow(2, (PENTA[i % 5] + 12 * ((i / 5) | 0)) / 12);
+let plopI = 0;
+
+// ==================== GLOW SPRITE + PARTICLE POOL (§4/§6) ====================
+const glow = document.createElement('canvas');
+glow.width = glow.height = 64;
+{
+  const g = glow.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+}
+const POOL = 240;
+const parts = [];
+for (let i = 0; i < POOL; i++) parts.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 6, color: '#fff' });
+let partHead = 0;
+function spawnPart(x, y, vx, vy, size, color, life) {
+  const p = parts[partHead]; partHead = (partHead + 1) % POOL;
+  p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.size = size; p.color = color; p.life = p.max = life;
+}
+
+// expanding splash rings — cheap decorative VFX layered on top of the real ripple
+const rings = [];
+function spawnRing(x, y, r0, maxR, color) {
+  rings.push({ x, y, r: r0, maxR, alpha: 0.55, color });
+}
+
+// ==================== RAINDROPS ====================
+const RAIN_POOL = 160;
+const drops = [];
+for (let i = 0; i < RAIN_POOL; i++) drops.push({ active: false, x: 0, y: 0, vy: 0, size: 4 });
+let dropHead = 0;
+function spawnDrop(x, size) {
+  const d = drops[dropHead]; dropHead = (dropHead + 1) % RAIN_POOL;
+  d.active = true; d.x = x; d.y = -10; d.vy = 60 + Math.random() * 40; d.size = size;
+}
+
+// ==================== DUCKS (verlet buoyancy, §3) ====================
+const MAX_DUCKS = 6;
+// per-step (not per-second) constants, matching the fixed-timestep verlet
+// convention used throughout — see jelly.html's GRAVITY/DAMPING for the pattern.
+const GRAVITY = 0.5, BUOY_K = 0.06, VDAMP = 0.95;
+const duckPalette = [
+  { light: rgb(cosPalette(0.0, DUCK_D), 1, 0.30), base: rgb(cosPalette(0.0, DUCK_D), 1, 0), dark: rgb(cosPalette(0.0, DUCK_D), 0.6, 0) },
+  { light: rgb(cosPalette(0.35, DUCK_D), 1, 0.30), base: rgb(cosPalette(0.35, DUCK_D), 1, 0), dark: rgb(cosPalette(0.35, DUCK_D), 0.6, 0) },
+  { light: rgb(cosPalette(0.7, DUCK_D), 1, 0.30), base: rgb(cosPalette(0.7, DUCK_D), 1, 0), dark: rgb(cosPalette(0.7, DUCK_D), 0.6, 0) },
+];
+const ducks = [];
+function makeDuck(x) {
+  const col = duckPalette[ducks.length % duckPalette.length];
+  ducks.push({
+    x, y: baseY - 45, py: baseY - 45, vx: (Math.random() - 0.5) * 6,
+    angle: 0, drift: Math.random() < 0.5 ? -1 : 1,
+    blinkT: 1 + Math.random() * 4, wasSubmerged: false, r: 15 + Math.random() * 3,
+    color: col, bob: 0,
+  });
+}
+function resetDucks() {
+  ducks.length = 0;
+  makeDuck(w * 0.4);
+  makeDuck(w * 0.6);
+}
+
+// ==================== DRAGONFLIES (ambient life, §5) ====================
+const dragonflies = [];
+for (let i = 0; i < 3; i++) {
+  const c = cosPalette(0.2 + i * 0.3, [0.5, 0.2, 0.0]);
+  dragonflies.push({
+    phase: Math.random() * 10, speed: 0.15 + Math.random() * 0.1,
+    ampX: 0.2 + Math.random() * 0.15, ampY: 40 + Math.random() * 30,
+    baseYFrac: 0.18 + Math.random() * 0.18, wingT: Math.random() * 10,
+    color: rgb(c, 1, 0.15), dipCd: 2 + Math.random() * 3,
+  });
+}
+
+// ==================== STATE ====================
+let stormIntensity = 0.5;   // scroll-adjustable continuous parameter
+let pouring = false;
+let spawnAcc = 0;
+let mouseX = w / 2, mouseY = h / 2, hasMouse = false;
+let prevMouseX = mouseX, prevMouseY = mouseY;
+
+function resetAll() {
+  initWater();
+  resetDucks();
+  drops.forEach(d => d.active = false);
+  parts.forEach(p => p.life = 0);
+  rings.length = 0;
+  stormIntensity = 0.5;
+  pouring = false;
+  spawnAcc = 0;
+}
+
+// ==================== INPUT (house vocabulary) ====================
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousemove', e => {
+  mouseX = e.clientX; mouseY = e.clientY; hasMouse = true;
+});
+canvas.addEventListener('mouseleave', () => { hasMouse = false; });
+
+canvas.addEventListener('mousedown', e => {
+  ensureAudio();
+  if (e.button === 0) {
+    pouring = true;
+  } else if (e.button === 2) {
+    if (ducks.length < MAX_DUCKS) {
+      makeDuck(Math.max(20, Math.min(w - 20, e.clientX)));
+      const n = plopI++;
+      tone(penta(300, n), penta(300, n) * 0.85, 0.18, 0.14, 'triangle');
+    }
+  }
+});
+window.addEventListener('mouseup', e => { if (e.button === 0) pouring = false; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  stormIntensity = Math.max(0.15, Math.min(1, stormIntensity - Math.sign(e.deltaY) * 0.05));
+}, { passive: false });
+
+document.getElementById('resetBtn').addEventListener('click', resetAll);
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) tone(523, 530, 0.1, 0.12, 'sine');
+});
+
+window.addEventListener('resize', () => { fitCanvas(); initWater(); });
+
+// ==================== PHYSICS STEP (fixed 60Hz, §2) ====================
+const DT = 1 / 60;
+
+function step() {
+  // --- finger-drag ripples: movement is the one job that always matters,
+  //     even with no button held (house standard #1) ---
+  if (hasMouse) {
+    const dx = mouseX - prevMouseX, dy = mouseY - prevMouseY;
+    const speed = Math.hypot(dx, dy);
+    const surf = waterY(mouseX);
+    if (mouseY > surf - 14 && speed > 0.5) {
+      poke(mouseX, Math.max(-14, Math.min(14, (dy * 0.5 + speed * 0.35))), 4);
+    }
+  }
+  prevMouseX = mouseX; prevMouseY = mouseY;
+
+  // --- pouring rain ---
+  if (pouring) {
+    spawnAcc += stormIntensity * 26 * DT;
+    while (spawnAcc >= 1) {
+      spawnAcc -= 1;
+      spawnDrop(mouseX + (Math.random() - 0.5) * 40, 3 + stormIntensity * 4 + Math.random() * 2);
+    }
+  }
+
+  // --- raindrops fall & splash ---
+  for (const d of drops) {
+    if (!d.active) continue;
+    d.vy += 140 * DT;
+    d.y += d.vy * DT;
+    const surf = waterY(d.x);
+    if (d.y >= surf) {
+      poke(d.x, -Math.min(16, d.vy * 0.05 * (d.size / 4)), 2);
+      const n = 3 + (d.size | 0);
+      for (let i = 0; i < n; i++) {
+        const a = Math.PI + Math.random() * Math.PI;
+        spawnPart(d.x, surf, Math.cos(a) * (20 + Math.random() * 40), Math.sin(a) * (30 + Math.random() * 40) - 10,
+                   1.5 + Math.random() * 2, 'rgba(220,245,255,0.9)', 0.35 + Math.random() * 0.2);
+      }
+      spawnRing(d.x, surf, 2, 10 + d.size * 2, 'rgba(210,240,250,');
+      if (Math.random() < 0.35) tone(penta(900, plopI++), penta(500, plopI), 0.08, 0.03, 'sine');
+      d.active = false;
+    }
+    if (d.y > h + 20) d.active = false;
+  }
+
+  // --- dragonflies: lazy wandering, occasional low dip pokes the water ---
+  for (const f of dragonflies) {
+    f.phase += f.speed * DT;
+    f.wingT += DT;
+    f.dipCd -= DT;
+    const cy = h * f.baseYFrac + Math.sin(f.phase * 1.3) * f.ampY;
+    if (f.dipCd < 0 && cy > baseY - 60) {
+      f.dipCd = 3 + Math.random() * 4;
+      const fx = w * (0.5 + Math.sin(f.phase) * f.ampX);
+      poke(fx, -3, 2);
+    }
+  }
+
+  // --- ducks: verlet vertical motion + buoyancy, slope-driven tilt ---
+  for (const d of ducks) {
+    const vy = (d.y - d.py) * VDAMP;
+    d.py = d.y;
+    const surf = waterY(d.x);
+    const submerged = Math.min(40, (d.y + d.r * 0.6) - surf);
+    const buoy = submerged > 0 ? submerged * BUOY_K : 0;
+    d.y += vy + GRAVITY - buoy;
+
+    // splash when crossing into the water with enough downward speed (landing or a big wave)
+    if (submerged > 0 && !d.wasSubmerged && vy > 3) {
+      const strength = Math.min(1, (vy - 3) / 10);
+      poke(d.x, -4 - strength * 14, 5);
+      for (let i = 0; i < 6 + (strength * 10 | 0); i++) {
+        const a = Math.PI + Math.random() * Math.PI;
+        spawnPart(d.x, surf, Math.cos(a) * (30 + Math.random() * 50), Math.sin(a) * (30 + Math.random() * 60) - 20,
+                   2 + Math.random() * 3, d.color.light, 0.3 + Math.random() * 0.3);
+      }
+      spawnRing(d.x, surf, 4, 22 + strength * 30, 'rgba(255,255,255,');
+      tone(220 - d.r * 2, 90, 0.22, 0.06 + strength * 0.10, 'sine');
+    }
+    d.wasSubmerged = submerged > 0;
+    d.bob = vy;
+
+    // gentle horizontal wander, nudged by local slope (drifts downhill a touch)
+    d.vx += (Math.random() - 0.5) * 8 * DT + slopeAt(d.x) * -18 * DT;
+    d.vx *= 0.985;
+    d.vx = Math.max(-14, Math.min(14, d.vx));
+    d.x += d.vx;
+    if (d.x < 24) { d.x = 24; d.vx = Math.abs(d.vx); }
+    if (d.x > w - 24) { d.x = w - 24; d.vx = -Math.abs(d.vx); }
+
+    // tilt smoothly toward the local wave slope
+    const target = Math.atan(slopeAt(d.x));
+    d.angle += (target - d.angle) * 0.12;
+
+    d.blinkT -= DT;
+    if (d.blinkT < -0.12) d.blinkT = 1.5 + Math.random() * 4;
+  }
+
+  // --- particles ---
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    p.life -= DT;
+    p.vy += 120 * DT; p.vx *= 0.99; p.vy *= 0.99;
+    p.x += p.vx * DT; p.y += p.vy * DT;
+  }
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i];
+    r.r += (r.maxR - r.r) * 0.12 + 0.4;
+    r.alpha *= 0.90;
+    if (r.alpha < 0.01 || r.r >= r.maxR) rings.splice(i, 1);
+  }
+
+  stepWater();
+}
+
+// ==================== RENDER ====================
+let shimmerT = 0;
+
+function drawSky() {
+  const sky = ctx.createLinearGradient(0, 0, 0, baseY + 20);
+  sky.addColorStop(0, '#1c3a52');
+  sky.addColorStop(0.55, '#3f7390');
+  sky.addColorStop(1, '#a9d7d6');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, w, baseY + 20);
+
+  // sun with a soft additive glow — never pure black background anywhere
+  const sunX = w * 0.76, sunY = h * 0.16;
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.9;
+  ctx.drawImage(glow, sunX - 90, sunY - 90, 180, 180);
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#fff6d8';
+  ctx.beginPath(); ctx.arc(sunX, sunY, 22, 0, Math.PI * 2); ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  return sunX;
+}
+
+function drawDragonflies() {
+  for (const f of dragonflies) {
+    const x = w * (0.5 + Math.sin(f.phase) * f.ampX);
+    const y = h * f.baseYFrac + Math.sin(f.phase * 1.3) * f.ampY;
+    const wing = Math.sin(f.wingT * (reducedMotion ? 8 : 26)) * 0.5 + 0.5;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(Math.sin(f.phase * 1.3) * 0.3);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.beginPath();
+    ctx.ellipse(-6, -2, 9, 2.6 + wing * 2, 0.3, 0, Math.PI * 2);
+    ctx.ellipse(6, -2, 9, 2.6 + wing * 2, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = f.color;
+    ctx.beginPath(); ctx.ellipse(0, 0, 3, 9, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, -8, 2.4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawReeds() {
+  ctx.fillStyle = 'rgba(20,55,45,0.55)';
+  for (let i = 0; i < 9; i++) {
+    const x = (i / 8) * w + Math.sin(i * 13.1) * 30;
+    const sway = Math.sin(shimmerT * 0.8 + i) * 6;
+    const bh = 46 + (i % 3) * 14;
+    ctx.beginPath();
+    ctx.moveTo(x, baseY + 4);
+    ctx.quadraticCurveTo(x + sway, baseY - bh * 0.6, x + sway * 1.4, baseY - bh);
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(20,55,45,0.5)'; ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(x + sway * 1.4, baseY - bh - 6, 3.5, 8, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawPond(sunX) {
+  ctx.beginPath();
+  ctx.moveTo(0, baseY + u[0]);
+  for (let i = 0; i < N; i++) ctx.lineTo(colX(i), baseY + u[i]);
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+
+  const g = ctx.createLinearGradient(0, baseY - 10, 0, h);
+  g.addColorStop(0, '#2f97a8');
+  g.addColorStop(0.35, '#146b82');
+  g.addColorStop(1, '#04303e');
+  ctx.save();
+  ctx.fillStyle = g; ctx.fill();
+
+  // clip to the pond for surface-only shimmer & reflection dressing
+  ctx.clip();
+
+  // faint mirrored sky tint near the surface = cheap reflection
+  const refl = ctx.createLinearGradient(0, baseY - 10, 0, baseY + 90);
+  refl.addColorStop(0, 'rgba(169,215,214,0.35)');
+  refl.addColorStop(1, 'rgba(169,215,214,0)');
+  ctx.fillStyle = refl; ctx.fillRect(0, baseY - 10, w, 100);
+
+  // sun-glitter: sparkling highlights near crests, denser under the sun
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < N; i += 2) {
+    const x = colX(i);
+    const slope = i > 0 && i < N - 1 ? (u[i + 1] - u[i - 1]) * 0.5 : 0;
+    const crest = Math.max(0, 1 - Math.abs(slope) * 3);
+    const distToSun = Math.abs(x - sunX) / (w * 0.5);
+    const sunBoost = Math.max(0, 1 - distToSun * 1.6);
+    const twinkle = 0.5 + 0.5 * Math.sin(shimmerT * 4 + i * 0.7);
+    const bright = crest * (0.15 + sunBoost * 0.85) * twinkle;
+    if (bright > 0.08) {
+      ctx.globalAlpha = Math.min(0.85, bright);
+      ctx.fillStyle = sunBoost > 0.3 ? '#fff6d0' : '#bdeef0';
+      const y = baseY + u[i];
+      ctx.beginPath(); ctx.ellipse(x, y, 5 + sunBoost * 4, 1.6, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.restore();
+
+  // outline the surface crisply on top
+  ctx.beginPath();
+  ctx.moveTo(0, baseY + u[0]);
+  for (let i = 0; i < N; i++) ctx.lineTo(colX(i), baseY + u[i]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1.5; ctx.stroke();
+}
+
+function drawDucks() {
+  for (const d of ducks) {
+    const r = d.r;
+    const squashY = 1 + Math.max(-0.35, Math.min(0.35, d.bob * 0.012));
+    const squashX = 1 / squashY;
+    ctx.save();
+    ctx.translate(d.x, d.y);
+    ctx.rotate(d.angle);
+    ctx.scale(squashX, squashY);
+
+    // contact shadow just under the waterline
+    ctx.fillStyle = 'rgba(0,0,0,0.18)';
+    ctx.beginPath(); ctx.ellipse(0, r * 0.5, r * 0.9, r * 0.22, 0, 0, Math.PI * 2); ctx.fill();
+
+    // body
+    const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.4, r * 0.1, 0, 0, r * 1.3);
+    grad.addColorStop(0, d.color.light); grad.addColorStop(0.6, d.color.base); grad.addColorStop(1, d.color.dark);
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.ellipse(0, 0, r * 1.15, r * 0.85, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1.2; ctx.stroke();
+
+    // wing marking
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)'; ctx.lineWidth = r * 0.12;
+    ctx.beginPath(); ctx.arc(-r * 0.1, r * 0.05, r * 0.55, 0.2, 1.6); ctx.stroke();
+
+    // head
+    const hx = r * 0.85, hy = -r * 0.55;
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(hx, hy, r * 0.55, 0, Math.PI * 2); ctx.fill();
+
+    // beak
+    ctx.fillStyle = '#e8862f';
+    ctx.beginPath();
+    ctx.moveTo(hx + r * 0.35, hy + r * 0.05);
+    ctx.lineTo(hx + r * 0.95, hy + r * 0.12);
+    ctx.lineTo(hx + r * 0.35, hy + r * 0.32);
+    ctx.closePath(); ctx.fill();
+
+    // eye (blinks)
+    const blink = d.blinkT < 0 ? 0.1 : 1;
+    ctx.fillStyle = '#20201a';
+    ctx.beginPath(); ctx.ellipse(hx + r * 0.15, hy - r * 0.08, r * 0.09, r * 0.09 * blink, 0, 0, Math.PI * 2); ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, w, h);
+  const sunX = drawSky();
+  drawDragonflies();
+  drawReeds();
+  drawPond(sunX);
+  drawDucks();
+
+  // rain
+  ctx.strokeStyle = 'rgba(210,235,250,0.75)'; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  for (const d of drops) {
+    if (!d.active) continue;
+    ctx.beginPath();
+    ctx.moveTo(d.x, d.y);
+    ctx.lineTo(d.x - d.vy * 0.02, d.y - d.size * 2.4);
+    ctx.stroke();
+  }
+
+  // splash rings
+  for (const r of rings) {
+    ctx.strokeStyle = r.color + r.alpha.toFixed(3) + ')';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(r.x, r.y, r.r, r.r * 0.28, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // additive splash particles
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    const t = p.life / p.max;
+    ctx.globalAlpha = t * 0.9;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * t, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // finger indicator: only shown while it's actually touching the water
+  if (hasMouse) {
+    const surf = waterY(mouseX);
+    if (mouseY > surf - 14) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.ellipse(mouseX, surf, 10, 3, 0, 0, Math.PI * 2); ctx.stroke();
+    } else {
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(mouseX, mouseY, 5, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  shimmerT += DT;
+}
+
+// ==================== UI ====================
+const stormEl = document.getElementById('stormVal');
+const duckEl = document.getElementById('duckCount');
+let lastStorm = -1, lastDuckN = -1;
+function updateUI() {
+  if (stormIntensity.toFixed(2) !== lastStorm) { stormEl.textContent = stormIntensity.toFixed(2); lastStorm = stormIntensity.toFixed(2); }
+  if (ducks.length !== lastDuckN) { duckEl.textContent = ducks.length + '/' + MAX_DUCKS; lastDuckN = ducks.length; }
+}
+
+// ==================== INIT + MAIN LOOP (§2 fixed timestep) ====================
+fitCanvas();
+resetAll();
+
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { step(); acc -= DT; }
+  draw();
+  updateUI();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.addEventListener('visibilitychange', () => { last = performance.now(); acc = 0; });
+</script>
+</body>
+</html>

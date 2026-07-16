@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mandala Generator</title>
+<!--
+  HANDBOOK_SMALL.md house standards in action.
+  A persistent offscreen "paint" canvas holds the finished artwork. Every
+  stroke sample is mirrored into a live symmetry group of N rotations plus
+  N reflections (a dihedral group, 2N stamps total) around the screen
+  centre, so any scribble comes out as a rose window. Colour drifts along
+  a cosine palette (§4) as you paint. Glow strokes use pre-rendered
+  radial-gradient sprites with 'lighter' additive blending (§4) — never
+  ctx.shadowBlur per stamp. A faint red/blue offset copy of each stamp
+  gives cheap chromatic-dispersion fringing (§4). The whole piece drifts in
+  a very slow turntable rotation; mouse coordinates are counter-rotated
+  before stamping so painting still feels anchored to the cursor.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { overflow: hidden; background: #07060f; height: 100%; }
+  canvas { display: block; touch-action: none; cursor: crosshair; }
+
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .key { color: #888; }
+  #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h3>&#x2726; Mandala Generator</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Shimmer preview</span></div>
+  <div class="param"><span class="key">Left drag</span><span class="val">Paint glow</span></div>
+  <div class="param"><span class="key">Right drag</span><span class="val">Erase</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Change symmetry</span></div>
+  <br>
+  <div class="param"><span class="key">Symmetry (N):</span><span class="val" id="nVal">8</span></div>
+</div>
+
+<button id="resetBtn">&#x21BA; Reset</button>
+
+<script>
+'use strict';
+const TWO_PI = Math.PI * 2;
+
+// ------------------------------------------------------------- canvas --
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0, dpr = 1, cx = 0, cy = 0;
+
+// Persistent paint buffer — survives resize by being redrawn centred (§2).
+let paintCanvas = document.createElement('canvas');
+let paintCtx = paintCanvas.getContext('2d');
+
+let bgGradient = null, vignetteGradient = null;
+
+function fitCanvas() {
+  const newDpr = Math.min(window.devicePixelRatio || 1, 2);
+  const newW = window.innerWidth, newH = window.innerHeight;
+  const newPW = Math.round(newW * newDpr), newPH = Math.round(newH * newDpr);
+
+  // Rebuild the paint buffer at the new size, blitting the old content back
+  // in centred so the artwork survives a resize without reloading.
+  const fresh = document.createElement('canvas');
+  fresh.width = newPW; fresh.height = newPH;
+  const freshCtx = fresh.getContext('2d');
+  if (paintCanvas.width > 0 && paintCanvas.height > 0) {
+    const dx = (newPW - paintCanvas.width) / 2;
+    const dy = (newPH - paintCanvas.height) / 2;
+    freshCtx.drawImage(paintCanvas, dx, dy);
+  }
+  paintCanvas = fresh;
+  paintCtx = freshCtx;
+  paintCtx.setTransform(newDpr, 0, 0, newDpr, 0, 0);
+
+  canvas.width = newPW; canvas.height = newPH;
+  canvas.style.width = newW + 'px'; canvas.style.height = newH + 'px';
+  ctx.setTransform(newDpr, 0, 0, newDpr, 0, 0);
+
+  w = newW; h = newH; dpr = newDpr;
+  cx = w / 2; cy = h / 2;
+
+  bgGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.hypot(cx, cy));
+  bgGradient.addColorStop(0, '#181430');
+  bgGradient.addColorStop(1, '#07060f');
+
+  vignetteGradient = ctx.createRadialGradient(cx, cy, Math.hypot(cx, cy) * 0.4, cx, cy, Math.hypot(cx, cy));
+  vignetteGradient.addColorStop(0, 'rgba(255,255,255,1)');
+  vignetteGradient.addColorStop(1, 'rgba(120,110,150,0.55)');
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+// --------------------------------------------------------------- palette --
+// §4 cosine gradient palette — every stroke colour comes through this,
+// never a raw HSL rainbow.
+function paletteColor(t) {
+  const a = [0.55, 0.52, 0.58], b = [0.45, 0.45, 0.42], c = [1, 1, 1], d = [0.0, 0.33, 0.67];
+  return [0, 1, 2].map(i => Math.round(255 * Math.max(0, Math.min(1,
+    a[i] + b[i] * Math.cos(TWO_PI * (c[i] * t + d[i]))))));
+}
+
+// ---------------------------------------------------------- sprites (§4) --
+// Pre-rendered radial-gradient sprites, stamped with 'lighter' blending.
+// The palette is quantised into buckets so we never build a gradient
+// per stamp (§6: precompute, don't allocate in the hot loop).
+const SPRITE_SIZE = 128;
+const BUCKETS = 90;
+
+function makeSprite(rgb, size) {
+  const s = document.createElement('canvas');
+  s.width = s.height = size;
+  const sc = s.getContext('2d');
+  const g = sc.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},1)`);
+  g.addColorStop(0.35, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.75)`);
+  g.addColorStop(1, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
+  sc.fillStyle = g;
+  sc.fillRect(0, 0, size, size);
+  return s;
+}
+
+const paletteSprites = [];
+for (let i = 0; i < BUCKETS; i++) paletteSprites.push(makeSprite(paletteColor(i / BUCKETS), SPRITE_SIZE));
+const eraseSprite = makeSprite([255, 255, 255], SPRITE_SIZE); // alpha mask only, used with destination-out
+const redSprite = makeSprite([255, 70, 70], SPRITE_SIZE);
+const blueSprite = makeSprite([70, 150, 255], SPRITE_SIZE);
+
+function bucketOf(t) {
+  const f = ((t % 1) + 1) % 1;
+  return Math.min(BUCKETS - 1, Math.floor(f * BUCKETS));
+}
+
+// --------------------------------------------------------- symmetry stamp --
+let N = 8; // live symmetry count, 2-16, changed by the scroll wheel
+
+function drawSprite(tctx, sprite, x, y, radius) {
+  tctx.drawImage(sprite, x - radius, y - radius, radius * 2, radius * 2);
+}
+
+// Fold a world-space point into its dihedral orbit (N rotations + N mirrored
+// rotations = 2N stamps) and stamp every copy. Cheaper and simpler on
+// Canvas 2D than per-pixel warping a whole scene.
+function stampSymmetry(tctx, worldX, worldY, sprite, radius, rOffset, alpha, compositeOp) {
+  const ddx = worldX - cx, ddy = worldY - cy;
+  const rr = Math.hypot(ddx, ddy) + rOffset;
+  if (rr <= 0) return;
+  const theta = Math.atan2(ddy, ddx);
+  const step = TWO_PI / N;
+  tctx.globalCompositeOperation = compositeOp;
+  tctx.globalAlpha = alpha;
+  for (let k = 0; k < N; k++) {
+    const a1 = theta + k * step;
+    drawSprite(tctx, sprite, cx + rr * Math.cos(a1), cy + rr * Math.sin(a1), radius);
+    const a2 = -theta + k * step;
+    drawSprite(tctx, sprite, cx + rr * Math.cos(a2), cy + rr * Math.sin(a2), radius);
+  }
+}
+
+// ------------------------------------------------------------- turntable --
+// A very slow ambient rotation of the finished piece (§5 "ambient life").
+// Mouse coordinates are counter-rotated before painting so a click still
+// lands exactly under the cursor.
+let rotationAngle = 0;
+const ROT_SPEED = 0.015; // rad/s
+
+function screenToWorld(x, y) {
+  const dx = x - cx, dy = y - cy;
+  const ca = Math.cos(-rotationAngle), sa = Math.sin(-rotationAngle);
+  return { x: cx + dx * ca - dy * sa, y: cy + dx * sa + dy * ca };
+}
+
+// ------------------------------------------------------------- brushwork --
+const BASE_RADIUS = 20;
+const ERASE_RADIUS = 36;
+const SPACING = 5;
+const DISPERSE = 4;
+let hueAccum = 0;
+
+function walkAndStamp(from, to, spacing, fn) {
+  if (!from) { fn(to); return; }
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const dist = Math.hypot(dx, dy);
+  const steps = Math.max(1, Math.min(48, Math.round(dist / spacing)));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    fn({ x: from.x + dx * t, y: from.y + dy * t });
+  }
+}
+
+function paintStroke(from, to) {
+  walkAndStamp(from, to, SPACING, p => {
+    hueAccum += 0.006;
+    const radius = BASE_RADIUS * (0.85 + 0.15 * Math.sin(hueAccum * 8));
+    const bucket = bucketOf(hueAccum);
+    paintCtx.save();
+    stampSymmetry(paintCtx, p.x, p.y, paletteSprites[bucket], radius, 0, 1, 'lighter');
+    stampSymmetry(paintCtx, p.x, p.y, redSprite, radius * 0.9, DISPERSE, 0.30, 'lighter');
+    stampSymmetry(paintCtx, p.x, p.y, blueSprite, radius * 0.9, -DISPERSE, 0.30, 'lighter');
+    paintCtx.restore();
+  });
+}
+
+function eraseStroke(from, to) {
+  walkAndStamp(from, to, SPACING * 1.4, p => {
+    paintCtx.save();
+    stampSymmetry(paintCtx, p.x, p.y, eraseSprite, ERASE_RADIUS, 0, 1, 'destination-out');
+    paintCtx.restore();
+  });
+}
+
+// -------------------------------------------------------------- sparkles --
+// A gentle burst of short-lived particles on stroke end, mirrored through
+// every sector so the sparkle itself respects the symmetry.
+const particles = [];
+const MAX_PARTICLES = 500;
+
+function spawnSparkleBurst(world) {
+  if (!world) return;
+  const ddx = world.x - cx, ddy = world.y - cy;
+  const rr = Math.hypot(ddx, ddy);
+  const theta = Math.atan2(ddy, ddx);
+  const step = TWO_PI / N;
+  const bucket = bucketOf(hueAccum);
+  for (let k = 0; k < N && particles.length < MAX_PARTICLES; k++) {
+    for (const a of [theta + k * step, -theta + k * step]) {
+      const x = cx + rr * Math.cos(a), y = cy + rr * Math.sin(a);
+      for (let i = 0; i < 2 && particles.length < MAX_PARTICLES; i++) {
+        const ang = Math.random() * TWO_PI;
+        const spd = 30 + Math.random() * 60;
+        particles.push({
+          x, y, vx: Math.cos(ang) * spd, vy: Math.sin(ang) * spd,
+          life: 0.5 + Math.random() * 0.3, maxLife: 0.8, bucket,
+        });
+      }
+    }
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.94; p.vy *= 0.94;
+  }
+}
+
+function drawParticles() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of particles) {
+    const a = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = a * 0.8;
+    drawSprite(ctx, paletteSprites[p.bucket], p.x, p.y, 6 * a + 2);
+  }
+  ctx.restore();
+}
+
+// ------------------------------------------------------------------ input --
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+let mouseX = -9999, mouseY = -9999;
+let drawing = false, erasing = false;
+let lastWorld = null;
+
+function updateMouse(e) { mouseX = e.clientX; mouseY = e.clientY; }
+
+canvas.addEventListener('mousedown', e => {
+  updateMouse(e);
+  const world = screenToWorld(mouseX, mouseY);
+  if (e.button === 0) { drawing = true; lastWorld = world; paintStroke(world, world); }
+  if (e.button === 2) { erasing = true; lastWorld = world; eraseStroke(world, world); }
+});
+
+window.addEventListener('mouseup', e => {
+  if (e.button === 0 && drawing) { spawnSparkleBurst(lastWorld); drawing = false; lastWorld = null; }
+  if (e.button === 2 && erasing) { erasing = false; lastWorld = null; }
+});
+
+canvas.addEventListener('mousemove', e => {
+  updateMouse(e);
+  const buttons = e.buttons; // read live bit flags, never go stale off-canvas
+  const nowDrawing = !!(buttons & 1);
+  const nowErasing = !!(buttons & 2);
+  const world = screenToWorld(mouseX, mouseY);
+  if (nowDrawing) paintStroke(lastWorld, world);
+  else if (nowErasing) eraseStroke(lastWorld, world);
+  drawing = nowDrawing; erasing = nowErasing;
+  lastWorld = (nowDrawing || nowErasing) ? world : null;
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  N = Math.max(2, Math.min(16, N - Math.sign(e.deltaY)));
+}, { passive: false });
+
+function resetAll() {
+  paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+  N = 8;
+  rotationAngle = 0;
+  hueAccum = 0;
+  particles.length = 0;
+  drawing = false; erasing = false; lastWorld = null;
+}
+document.getElementById('resetBtn').addEventListener('click', resetAll);
+
+// -------------------------------------------------------------- main loop --
+// Fixed timestep for the ambient state (rotation, particles); draw every rAF.
+const DT = 1 / 60;
+let acc = 0, last = performance.now();
+
+function update(dt) {
+  rotationAngle += ROT_SPEED * dt;
+  updateParticles(dt);
+}
+
+const nValEl = document.getElementById('nVal');
+let lastN = -1;
+
+function draw() {
+  // background
+  ctx.fillStyle = bgGradient;
+  ctx.fillRect(0, 0, w, h);
+
+  // blit the rotated paint buffer — raw 1:1 device-pixel copy, so drop to
+  // the identity transform for this block only (§2, restored after).
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(rotationAngle);
+  ctx.drawImage(paintCanvas, -canvas.width / 2, -canvas.height / 2);
+  ctx.restore();
+
+  // vignette (§4 cheap post-processing)
+  ctx.save();
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.fillStyle = vignetteGradient;
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+
+  // idle shimmer preview — the cursor matters even with no button held
+  if (!drawing && !erasing) {
+    const world = screenToWorld(mouseX, mouseY);
+    const shimmer = 0.5 + 0.5 * Math.sin(performance.now() * 0.006);
+    const bucket = bucketOf(hueAccum + performance.now() * 0.0002);
+    ctx.save();
+    stampSymmetry(ctx, world.x, world.y, paletteSprites[bucket],
+      BASE_RADIUS * (0.5 + 0.15 * shimmer), 0, 0.10 + 0.10 * shimmer, 'lighter');
+    ctx.restore();
+  }
+
+  drawParticles();
+
+  if (N !== lastN) { nValEl.textContent = N; lastN = N; }
+}
+
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

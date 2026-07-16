@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Puppet Pets</title>
+<!--
+  Implements HANDBOOK_SMALL.md:
+    §0   house standards: mouse-only 4-input vocabulary, controls pane, no touch,
+         contextmenu prevented, pill reset button
+    §2   fixed timestep, DPR-aware canvas
+    §3   verlet chains (spine + dangly leg/ear/tail sub-chains) + damped-spring head
+    §4.7 hand-drawn wobble style on warm paper, multiply-composited crayon strokes
+    §5   squash on landing, happy wiggle, dust puffs, pentatonic sound (off by default)
+    §7   no fail state, sound off by default, reduced-motion aware
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #efe6d3; }
+  canvas { display: block; touch-action: none; cursor: crosshair; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #3a2f22; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(255,250,238,0.72);
+    border: 1px solid rgba(80,60,30,0.18); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #26201a; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.3px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .key { color: #7a6b52; }
+  #ui .val { color: #a15c2e; font-weight: 700; font-variant-numeric: tabular-nums; }
+  #resetBtn, #muteBtn {
+    position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #3a2f22; background: rgba(255,250,238,0.85); border: 1px solid rgba(80,60,30,0.25);
+    border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); }
+  #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; line-height: 1; }
+  #resetBtn:hover, #muteBtn:hover { background: rgba(255,240,210,0.95); border-color: rgba(80,60,30,0.4); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>🐾 Puppet Pets</h3>
+  <div class="param"><span class="key">Move mouse</span><span class="val">Nearest pet chases</span></div>
+  <div class="param"><span class="key">Left drag</span><span class="val">Puppeteer any point</span></div>
+  <div class="param"><span class="key">Right click</span><span class="val">New pet / startle</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Grow/shrink leader</span></div>
+  <br>
+  <div class="param"><span class="key">Pets</span><span class="val"><span id="petCount">0</span>/6</span></div>
+  <div class="param"><span class="key">Leader segments</span><span class="val" id="segCount">0</span></div>
+</div>
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
+<button id="resetBtn">&#x21BA; Reset pets</button>
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0;
+
+// ---- §2 DPR-aware canvas ----
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+
+const REDUCED = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---- Tuning ----
+const DT = 1 / 60;
+const GRAVITY = 0.34;
+const DAMPING = 0.985;
+const ITERS = 5;
+const MAX_PETS = 6;
+const MIN_SEG = 3, MAX_SEG = 14;
+const FLOOR_PAD = 44;
+let floorY = h - FLOOR_PAD;
+
+// ---- §4 cosine palette (never raw HSL rainbow) ----
+function cosPalette(t) {
+  const c = [], d = [0.02, 0.30, 0.58];
+  for (let i = 0; i < 3; i++) c.push(0.5 + 0.42 * Math.cos(6.28318 * (0.85 * t + d[i])));
+  return c;
+}
+function rgb(c, mul, add) {
+  return `rgb(${c.map(v => Math.round(Math.min(1, Math.max(0, v * mul + add)) * 255)).join(',')})`;
+}
+
+// ---- §5 sound: tiny Web Audio synth, pentatonic, off by default (classroom) ----
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+}
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'triangle';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0, 2, 4, 7, 9];
+const penta = (base, i) => base * Math.pow(2, (PENTA[i % 5] + 12 * ((i / 5) | 0)) / 12);
+
+// ---- §4.7 hand-drawn wobble: a shared offset bank re-rolled ~2x/sec ----
+const WOBBLE_N = 160;
+const wobbleBank = new Array(WOBBLE_N).fill(0).map(() => ({ x: 0, y: 0 }));
+const WOBBLE_AMT = REDUCED ? 0.5 : 1.5;
+function refreshWobble() {
+  for (let i = 0; i < WOBBLE_N; i++)
+    wobbleBank[i] = { x: (Math.random() - 0.5) * 2 * WOBBLE_AMT, y: (Math.random() - 0.5) * 2 * WOBBLE_AMT };
+}
+refreshWobble();
+let wobbleClock = 0;
+function wob(x, y, seed, i, pass) {
+  const idx = ((seed + i * 7 + pass * 31) % WOBBLE_N + WOBBLE_N) % WOBBLE_N;
+  const o = wobbleBank[idx];
+  return [x + o.x, y + o.y];
+}
+
+// ---- dust puff pool (multiply-blended soft circles — reads as charcoal dust on paper) ----
+const dustSprite = document.createElement('canvas');
+dustSprite.width = dustSprite.height = 64;
+{
+  const g = dustSprite.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(90,75,55,0.55)');
+  grad.addColorStop(1, 'rgba(90,75,55,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+}
+const POOL = 160;
+const parts = [];
+for (let i = 0; i < POOL; i++) parts.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 8 });
+let partHead = 0;
+function spawnDust(x, y, vx, vy, size, life) {
+  const p = parts[partHead]; partHead = (partHead + 1) % POOL;
+  p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.size = size; p.life = p.max = life;
+}
+
+// ---- creature species: distinct shapes/proportions built from the same chain parts ----
+const SPECIES = [
+  { name: 'Pup',    legs: 4, legLen: 17, legSegs: 2, earLen: 22, earSegs: 2, earGrav: GRAVITY,        earSpread: 0.85, tailSegs: 3, tailLen: 20, seg: 7,  headScale: 1.20, tailTaper: 0.42, earShape: 'floppy' },
+  { name: 'Kitten', legs: 4, legLen: 14, legSegs: 2, earLen: 12, earSegs: 1, earGrav: GRAVITY * 0.10, earSpread: 0.55, tailSegs: 4, tailLen: 17, seg: 6,  headScale: 1.05, tailTaper: 0.40, earShape: 'pointy' },
+  { name: 'Bunny',  legs: 4, legLen: 15, legSegs: 2, earLen: 32, earSegs: 2, earGrav: GRAVITY * 0.08, earSpread: 0.32, tailSegs: 1, tailLen: 9,  seg: 6,  headScale: 1.10, tailTaper: 0.50, earShape: 'long', pomTail: true },
+  { name: 'Wormie', legs: 0, legLen: 0,  legSegs: 0, earLen: 8,  earSegs: 1, earGrav: GRAVITY * 0.5,  earSpread: 1.10, tailSegs: 5, tailLen: 18, seg: 11, headScale: 0.95, tailTaper: 0.28, earShape: 'nub' },
+];
+
+// ---- point + constraint helpers ----
+function mkPt(x, y, gravity) {
+  return { x, y, px: x, py: y, grabbed: false, fixed: false, gravity: gravity === undefined ? GRAVITY : gravity };
+}
+function solveConstraint(a, b, rest, stiff) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 0.0001;
+  const diff = (dist - rest) / dist * (stiff === undefined ? 1 : stiff);
+  const af = a.fixed || a.grabbed, bf = b.fixed || b.grabbed;
+  if (af && bf) return;
+  if (af) { b.x -= dx * diff; b.y -= dy * diff; }
+  else if (bf) { a.x += dx * diff; a.y += dy * diff; }
+  else { a.x += dx * diff * 0.5; a.y += dy * diff * 0.5; b.x -= dx * diff * 0.5; b.y -= dy * diff * 0.5; }
+}
+
+const pets = [];
+let spawnIndex = 0;
+
+function makePet(x, y) {
+  const speciesIdx = spawnIndex % SPECIES.length;
+  const sp = SPECIES[speciesIdx];
+  const col = cosPalette(spawnIndex * 0.61803398875);
+  spawnIndex++;
+
+  const head = { x, y, px: x, py: y, vx: 0, vy: 0, fixed: true, grabbed: false, isHead: true };
+  const segLen = 16;
+  const body = [];
+  for (let i = 0; i < sp.seg; i++) body.push(mkPt(x, y + (i + 1) * segLen));
+
+  const legs = [];
+  for (let i = 0; i < sp.legs; i++) {
+    const side = i % 2 === 0 ? -1 : 1;
+    const alongFront = i < 2;
+    const pts = [];
+    for (let s = 0; s < sp.legSegs; s++) pts.push(mkPt(x + side * 8, y + segLen + s * (sp.legLen / sp.legSegs)));
+    legs.push({ side, front: alongFront, pts, segLen: sp.legLen / sp.legSegs });
+  }
+
+  const ears = [];
+  for (const side of [-1, 1]) {
+    const pts = [];
+    for (let s = 0; s < sp.earSegs; s++) pts.push(mkPt(x + side * 6, y - 10 - s * (sp.earLen / sp.earSegs), sp.earGrav));
+    ears.push({ side, pts, segLen: sp.earLen / sp.earSegs });
+  }
+
+  const tail = [];
+  for (let s = 0; s < sp.tailSegs; s++) tail.push(mkPt(x, y + (sp.seg + 1 + s) * segLen));
+
+  const pet = {
+    species: sp, speciesIdx, color: { base: rgb(col, 1, 0), light: rgb(col, 1, 0.32), dark: rgb(col, 0.6, 0), ink: rgb(col, 0.35, 0) },
+    baseR: 15 * sp.headScale, head, body, legs, ears, tail, segLen,
+    target: { x, y }, wander: { x, y }, wanderT: 1 + Math.random() * 2,
+    startleT: 0, blinkT: 1 + Math.random() * 4, squash: 0, wiggle: 0, wasClose: false,
+    seedBase: ((spawnIndex * 97) % 5000),
+  };
+  pets.push(pet);
+  return pet;
+}
+
+function allPoints(pet) {
+  const pts = [pet.head, ...pet.body, ...pet.tail];
+  for (const l of pet.legs) pts.push(...l.pts);
+  for (const e of pet.ears) pts.push(...e.pts);
+  return pts;
+}
+
+function resetPets() {
+  pets.length = 0;
+  spawnIndex = 0;
+  const n = 3;
+  for (let i = 0; i < n; i++) makePet(w * (0.28 + 0.24 * i), h * 0.45);
+}
+
+// ---- input: mouse-only, single active drag (house §2) ----
+let mouseX = 0, mouseY = 0, prevMouseX = 0, prevMouseY = 0, mouseVX = 0, mouseVY = 0;
+let grabbed = null; // {pet, point}
+mouseX = prevMouseX = window.innerWidth / 2;
+mouseY = prevMouseY = window.innerHeight / 2;
+
+canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousedown', e => {
+  ensureAudio();
+  if (e.button === 0) {
+    let best = null, bd = 60 * 60;
+    for (const pet of pets) {
+      for (const p of allPoints(pet)) {
+        const d = (p.x - e.clientX) ** 2 + (p.y - e.clientY) ** 2;
+        if (d < bd) { bd = d; best = { pet, point: p }; }
+      }
+    }
+    if (best) {
+      best.point.grabbed = true;
+      grabbed = best;
+      tone(penta(340, (Math.random() * 5) | 0), 300, 0.08, 0.08);
+    }
+  } else if (e.button === 2) {
+    if (pets.length < MAX_PETS) {
+      makePet(e.clientX, e.clientY);
+      const n = (Math.random() * 5) | 0;
+      tone(penta(280, n), penta(280, n) * 1.02, 0.10, 0.12, 'sine');
+      tone(penta(280, n + 2), penta(280, n + 2) * 1.02, 0.12, 0.10, 'sine', 0.06);
+    } else {
+      startleAll(e.clientX, e.clientY);
+    }
+  }
+});
+window.addEventListener('mouseup', () => {
+  if (grabbed) {
+    const p = grabbed.point;
+    p.grabbed = false;
+    p.px = p.x - mouseVX * 0.9;
+    p.py = p.y - mouseVY * 0.9;
+    if (p.isHead) { p.vx = mouseVX * 1.1; p.vy = mouseVY * 1.1; }
+    grabbed = null;
+  }
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const pet = nearestPet();
+  if (!pet) return;
+  pet.scrollAcc = (pet.scrollAcc || 0) + e.deltaY;
+  const STEP = 55;
+  while (pet.scrollAcc <= -STEP) { addSegment(pet); pet.scrollAcc += STEP; }
+  while (pet.scrollAcc >= STEP) { removeSegment(pet); pet.scrollAcc -= STEP; }
+}, { passive: false });
+
+document.getElementById('resetBtn').addEventListener('click', resetPets);
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) tone(523, 530, 0.1, 0.1, 'sine');
+});
+
+function nearestPet() {
+  let best = null, bd = Infinity;
+  for (const pet of pets) {
+    const d = (pet.head.x - mouseX) ** 2 + (pet.head.y - mouseY) ** 2;
+    if (d < bd) { bd = d; best = pet; }
+  }
+  return best;
+}
+
+function addSegment(pet) {
+  if (pet.body.length >= MAX_SEG) return;
+  const last = pet.body[pet.body.length - 1];
+  pet.body.push(mkPt(last.x, last.y + pet.segLen));
+  tone(360, 420, 0.06, 0.06, 'sine');
+}
+function removeSegment(pet) {
+  if (pet.body.length <= MIN_SEG) return;
+  pet.body.pop();
+  tone(320, 260, 0.06, 0.06, 'sine');
+}
+
+function startleAll(cx, cy) {
+  for (const pet of pets) {
+    const dx = pet.head.x - cx, dy = pet.head.y - cy;
+    const d = Math.hypot(dx, dy) || 1;
+    pet.startleT = 0.45 + Math.random() * 0.15;
+    pet.startleTarget = {
+      x: Math.max(30, Math.min(w - 30, pet.head.x + dx / d * 150)),
+      y: Math.max(30, Math.min(h - 30, pet.head.y + dy / d * 90)),
+    };
+    pet.startleEyes = 0.5;
+    for (const p of [...pet.body, ...pet.tail]) if (!p.grabbed) { p.px += (Math.random() - 0.5) * 10; p.py -= Math.random() * 6; }
+  }
+  trauma = Math.min(1, trauma + 0.3);
+  tone(200, 90, 0.2, 0.14, 'square');
+  for (let i = 0; i < 14; i++) spawnDust(cx + (Math.random() - 0.5) * 40, cy + (Math.random() - 0.5) * 40,
+    (Math.random() - 0.5) * 3, -Math.random() * 2, 6 + Math.random() * 8, 0.4 + Math.random() * 0.3);
+}
+
+let trauma = 0;
+
+window.addEventListener('resize', () => { fitCanvas(); floorY = h - FLOOR_PAD; });
+
+// ---- physics step (fixed 60Hz — §2) ----
+function stepHead(pet) {
+  const target = pet.startleT > 0 ? pet.startleTarget : pet.target;
+  const head = pet.head;
+  if (head.grabbed) {
+    head.x = Math.max(4, Math.min(w - 4, mouseX));
+    head.y = Math.max(4, Math.min(h - 4, mouseY));
+    head.vx = mouseVX; head.vy = mouseVY;
+    return;
+  }
+  const omega = pet.startleT > 0 ? 16 : 12;
+  head.vx += (target.x - head.x) * omega * omega * DT;
+  head.vy += (target.y - head.y) * omega * omega * DT;
+  const damp = Math.exp(-2 * omega * DT);
+  head.vx *= damp; head.vy *= damp;
+  head.x += head.vx * DT;
+  head.y += head.vy * DT;
+  if (head.y > floorY) { head.y = floorY; head.vy *= -0.2; }
+  if (head.y < 4) head.y = 4;
+  head.x = Math.max(4, Math.min(w - 4, head.x));
+}
+
+function integratePoint(p) {
+  if (p.grabbed) return;
+  const vx = (p.x - p.px) * DAMPING, vy = (p.y - p.py) * DAMPING;
+  p.px = p.x; p.py = p.y;
+  p.x += vx;
+  p.y += vy + p.gravity;
+}
+
+function pinGrabbed() {
+  if (!grabbed) return;
+  const p = grabbed.point;
+  const gx = Math.max(2, Math.min(w - 2, mouseX)), gy = Math.max(2, Math.min(h - 2, mouseY));
+  p.x = p.px = gx; p.y = p.py = gy;
+}
+
+function collide(p) {
+  if (p.grabbed) return 0;
+  let impact = 0;
+  if (p.y > floorY) {
+    const vy = p.y - p.py, vx = p.x - p.px;
+    impact = vy;
+    p.y = floorY;
+    p.py = p.y + vy * 0.30;
+    p.px = p.x - vx * 0.5;
+  }
+  if (p.x < 3) { p.x = 3; p.px = p.x + (p.x - p.px) * 0.3; }
+  if (p.x > w - 3) { p.x = w - 3; p.px = p.x + (p.x - p.px) * 0.3; }
+  return impact;
+}
+
+function updatePet(pet) {
+  // idle wander target for pets not currently being chased/dragged
+  pet.wanderT -= DT;
+  if (pet.wanderT <= 0) {
+    pet.wanderT = 2 + Math.random() * 3;
+    pet.wander = { x: 40 + Math.random() * (w - 80), y: floorY - 30 - Math.random() * 130 };
+  }
+  if (pet.startleT > 0) pet.startleT -= DT;
+  if (pet.startleEyes > 0) pet.startleEyes -= DT;
+
+  stepHead(pet);
+
+  pinGrabbed();
+  for (const p of pet.body) integratePoint(p);
+  for (const p of pet.tail) integratePoint(p);
+  for (const l of pet.legs) for (const p of l.pts) integratePoint(p);
+  for (const e of pet.ears) for (const p of e.pts) integratePoint(p);
+
+  const n = pet.body.length;
+  for (let iter = 0; iter < ITERS; iter++) {
+    pinGrabbed();
+    // spine chain: head -> body[0] -> body[1] -> ... -> tail[0] -> tail[1]...
+    solveConstraint(pet.head, pet.body[0], pet.segLen, 1);
+    for (let i = 0; i < n - 1; i++) solveConstraint(pet.body[i], pet.body[i + 1], pet.segLen, 1);
+    // bend constraint (skip-one) keeps the spine from kinking, like jelly's ring bend
+    if (n >= 2) solveConstraint(pet.head, pet.body[1], pet.segLen * 2, 0.25);
+    for (let i = 0; i < n - 2; i++) solveConstraint(pet.body[i], pet.body[i + 2], pet.segLen * 2, 0.25);
+
+    const tailAnchor = pet.body[n - 1];
+    if (pet.tail.length) {
+      solveConstraint(tailAnchor, pet.tail[0], pet.segLen * 0.8, 0.9);
+      for (let i = 0; i < pet.tail.length - 1; i++) solveConstraint(pet.tail[i], pet.tail[i + 1], pet.species.tailLen / Math.max(1, pet.species.tailSegs), 0.9);
+    }
+
+    // legs: virtual anchor = spine point + side offset (recomputed fresh, never stored stale)
+    for (const l of pet.legs) {
+      const idx = l.front ? Math.min(0, n - 1) : Math.max(0, n - 2);
+      const spinePt = pet.body[Math.min(idx, n - 1)] || pet.head;
+      const anchor = { x: spinePt.x + l.side * pet.baseR * pet.species.earSpread * 0 + l.side * 9, y: spinePt.y, fixed: true };
+      solveConstraint(anchor, l.pts[0], l.segLen, 0.9);
+      for (let i = 0; i < l.pts.length - 1; i++) solveConstraint(l.pts[i], l.pts[i + 1], l.segLen, 0.85);
+    }
+
+    // ears: anchored to the head, offset to each side
+    for (const e of pet.ears) {
+      const anchor = { x: pet.head.x + e.side * 7, y: pet.head.y - 4, fixed: true };
+      solveConstraint(anchor, e.pts[0], e.segLen, 0.8);
+      for (let i = 0; i < e.pts.length - 1; i++) solveConstraint(e.pts[i], e.pts[i + 1], e.segLen, 0.8);
+    }
+
+    // floor & walls
+    let maxImpact = 0;
+    for (const p of pet.body) maxImpact = Math.max(maxImpact, collide(p));
+    for (const p of pet.tail) collide(p);
+    for (const l of pet.legs) for (const p of l.pts) collide(p);
+    for (const e of pet.ears) for (const p of e.pts) collide(p);
+    if (iter === 0 && maxImpact > 5) {
+      const strength = Math.min(1, (maxImpact - 5) / 9);
+      pet.squash = Math.max(pet.squash, strength);
+      trauma = Math.min(1, trauma + strength * 0.12);
+      const cx = pet.body[Math.floor(n / 2)].x, cy = floorY;
+      for (let i = 0; i < 3 + strength * 6; i++)
+        spawnDust(cx + (Math.random() - 0.5) * pet.baseR * 3, cy,
+          (Math.random() - 0.5) * 2, -0.5 - Math.random() * 1.5 * strength, 4 + Math.random() * 6, 0.35 + Math.random() * 0.25);
+      tone(240 - pet.baseR * 2, 90, 0.1, 0.05 + strength * 0.08);
+    }
+  }
+
+  pet.squash *= 0.90;
+
+  // happy wiggle when the head arrives at its target
+  const target = pet.startleT > 0 ? pet.startleTarget : pet.target;
+  const closeNow = Math.hypot(pet.head.x - target.x, pet.head.y - target.y) < 26;
+  if (closeNow && !pet.wasClose) { pet.wiggle = 1; tone(penta(500, (Math.random() * 5) | 0), 520, 0.08, 0.05, 'sine'); }
+  pet.wasClose = closeNow;
+  pet.wiggle *= 0.92;
+
+  pet.blinkT -= DT;
+  if (pet.blinkT < -0.12) pet.blinkT = 1.4 + Math.random() * 4;
+}
+
+function step() {
+  mouseVX = mouseX - prevMouseX; mouseVY = mouseY - prevMouseY;
+  prevMouseX = mouseX; prevMouseY = mouseY;
+
+  const active = nearestPet();
+  for (const pet of pets) {
+    pet.target = pet.startleT > 0 ? pet.startleTarget : (pet === active ? { x: mouseX, y: mouseY } : pet.wander);
+    updatePet(pet);
+  }
+
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    p.life -= DT;
+    p.vy += 0.10; p.vx *= 0.97;
+    p.x += p.vx; p.y += p.vy;
+  }
+
+  trauma = Math.max(0, trauma - 0.03);
+  wobbleClock += DT;
+  if (wobbleClock >= 0.5) { wobbleClock -= 0.5; refreshWobble(); }
+}
+
+// ---- rendering ----
+function ribbonPath(pts, seed, pass) {
+  const n = pts.length;
+  ctx.beginPath();
+  let [mx, my] = pass < 0 ? [(pts[n - 1].x + pts[0].x) / 2, (pts[n - 1].y + pts[0].y) / 2]
+                          : wob((pts[n - 1].x + pts[0].x) / 2, (pts[n - 1].y + pts[0].y) / 2, seed, n, pass);
+  ctx.moveTo(mx, my);
+  for (let i = 0; i < n; i++) {
+    const q = pts[(i + 1) % n];
+    const [px, py] = pass < 0 ? [pts[i].x, pts[i].y] : wob(pts[i].x, pts[i].y, seed, i, pass);
+    const [qx, qy] = pass < 0 ? [q.x, q.y] : wob(q.x, q.y, seed, i + 1, pass);
+    ctx.quadraticCurveTo(px, py, (px + qx) / 2, (py + qy) / 2);
+  }
+  ctx.closePath();
+}
+
+function strokeChain(anchor, pts, seed, color, width) {
+  const all = [anchor, ...pts];
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = width;
+  ctx.globalCompositeOperation = 'multiply';
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.globalAlpha = pass === 0 ? 0.55 : 0.4;
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    for (let i = 0; i < all.length; i++) {
+      const [x, y] = wob(all[i].x, all[i].y, seed, i, pass);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawSpine(pet) {
+  const spine = [pet.head, ...pet.body];
+  const n = spine.length;
+  const tx = [], ty = [];
+  for (let i = 0; i < n; i++) {
+    const a = spine[Math.max(0, i - 1)], b = spine[Math.min(n - 1, i + 1)];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    tx.push(dx / d); ty.push(dy / d);
+  }
+  const squashMul = 1 + pet.squash * 0.55;
+  const left = [], right = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const r = pet.baseR * (pet.species.headScale * (1 - t) + pet.species.tailTaper * t) * squashMul;
+    const px = -ty[i], py = tx[i];
+    left.push({ x: spine[i].x + px * r, y: spine[i].y + py * r });
+    right.push({ x: spine[i].x - px * r, y: spine[i].y - py * r });
+  }
+  const boundary = left.concat(right.slice().reverse());
+
+  // solid fill on the clean (unwobbled) silhouette
+  ribbonPath(boundary, 0, -1);
+  const r0 = pet.baseR * pet.species.headScale * squashMul;
+  const grad = ctx.createRadialGradient(pet.head.x - r0 * 0.3, pet.head.y - r0 * 0.35, r0 * 0.1, pet.head.x, pet.head.y, r0 * (n * 0.35));
+  grad.addColorStop(0, pet.color.light); grad.addColorStop(0.55, pet.color.base); grad.addColorStop(1, pet.color.dark);
+  ctx.fillStyle = grad; ctx.fill();
+
+  // hand-drawn wobble outline on top (§4.7): two randomised passes, multiply
+  ctx.lineWidth = 2;
+  ctx.globalCompositeOperation = 'multiply';
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.globalAlpha = pass === 0 ? 0.5 : 0.35;
+    ctx.strokeStyle = pet.color.ink;
+    ribbonPath(boundary, pet.seedBase, pass);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawFace(pet) {
+  const head = pet.head, next = pet.body[0];
+  let fx = head.x - next.x, fy = head.y - next.y;
+  const fl = Math.hypot(fx, fy) || 1; fx /= fl; fy /= fl;
+  const px = -fy, py = fx;
+  const r = pet.baseR * pet.species.headScale;
+
+  // ears (behind head bulge, drawn first)
+  for (const e of pet.ears) {
+    const anchor = { x: head.x + e.side * 7, y: head.y - 4 };
+    const w2 = pet.species.earShape === 'long' ? 6 : pet.species.earShape === 'pointy' ? 5 : 7;
+    strokeChain(anchor, e.pts, pet.seedBase + 200 + e.side * 11, pet.color.ink, w2);
+    const tip = e.pts[e.pts.length - 1];
+    ctx.fillStyle = pet.color.base;
+    ctx.beginPath(); ctx.ellipse(tip.x, tip.y, w2 * 0.55, w2 * 0.65, 0, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // legs
+  for (const l of pet.legs) {
+    const idx = l.front ? 0 : Math.max(0, pet.body.length - 2);
+    const spinePt = pet.body[Math.min(idx, pet.body.length - 1)];
+    const anchor = { x: spinePt.x + l.side * 9, y: spinePt.y };
+    strokeChain(anchor, l.pts, pet.seedBase + 300 + l.side * 13 + (l.front ? 0 : 40), pet.color.dark, 7);
+    const paw = l.pts[l.pts.length - 1];
+    ctx.fillStyle = pet.color.dark;
+    ctx.beginPath(); ctx.ellipse(paw.x, paw.y, 5, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // tail
+  if (pet.tail.length) {
+    const anchor = pet.body[pet.body.length - 1];
+    strokeChain(anchor, pet.tail, pet.seedBase + 400, pet.color.ink, 6);
+    if (pet.species.pomTail) {
+      const tip = pet.tail[pet.tail.length - 1];
+      ctx.fillStyle = pet.color.light;
+      ctx.beginPath(); ctx.arc(tip.x, tip.y, 9, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+}
+
+function drawEyesMouth(pet) {
+  const head = pet.head, next = pet.body[0];
+  let fx = head.x - next.x, fy = head.y - next.y;
+  const fl = Math.hypot(fx, fy) || 1; fx /= fl; fy /= fl;
+  const px = -fy, py = fx;
+  const r = pet.baseR * pet.species.headScale;
+  const eyeR = r * (pet.startleEyes > 0 ? 0.30 : 0.20);
+  const blink = pet.blinkT < 0 ? 0.12 : 1;
+
+  let lookX = mouseX - head.x, lookY = mouseY - head.y;
+  const ll = Math.hypot(lookX, lookY) || 1;
+
+  for (const side of [-1, 1]) {
+    const ex = head.x + fx * r * 0.35 + px * side * r * 0.4;
+    const ey = head.y + fy * r * 0.35 + py * side * r * 0.4;
+    ctx.fillStyle = '#fffaf0';
+    ctx.beginPath(); ctx.ellipse(ex, ey, eyeR, eyeR * blink, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = pet.color.ink; ctx.lineWidth = 1; ctx.stroke();
+    if (blink === 1) {
+      ctx.fillStyle = '#2a2016';
+      ctx.beginPath();
+      ctx.arc(ex + lookX / ll * eyeR * 0.4, ey + lookY / ll * eyeR * 0.4, eyeR * 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  const mx = head.x + fx * r * 0.75, my = head.y + fy * r * 0.75;
+  ctx.strokeStyle = pet.color.ink; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  ctx.beginPath();
+  const smile = 0.4 + Math.min(0.5, pet.wiggle * 0.5);
+  ctx.arc(mx, my - r * 0.05, r * 0.22, Math.atan2(py, px) - smile, Math.atan2(py, px) + smile);
+  ctx.stroke();
+}
+
+function drawShadow(pet) {
+  const n = pet.body.length;
+  const cx = pet.body[Math.floor(n / 2)].x;
+  const dist = Math.abs(floorY - pet.body[Math.floor(n / 2)].y);
+  const a = Math.max(0, 0.28 - dist / 260);
+  if (a <= 0.01) return;
+  ctx.fillStyle = `rgba(60,45,25,${a.toFixed(3)})`;
+  ctx.beginPath();
+  ctx.ellipse(cx, floorY + 2, pet.baseR * (n * 0.32), 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// paper grain, drawn once to an offscreen layer and reused every frame
+let grain = null;
+function makeGrain() {
+  grain = document.createElement('canvas');
+  grain.width = w; grain.height = h;
+  const g = grain.getContext('2d');
+  const bg = g.createLinearGradient(0, 0, w, h);
+  bg.addColorStop(0, '#f5efe0'); bg.addColorStop(1, '#ece2cc');
+  g.fillStyle = bg; g.fillRect(0, 0, w, h);
+  g.globalAlpha = 0.05;
+  for (let i = 0; i < 2600; i++) {
+    g.fillStyle = Math.random() < 0.5 ? '#3a2f1e' : '#ffffff';
+    g.fillRect(Math.random() * w, Math.random() * h, 1, 1);
+  }
+  g.globalAlpha = 1;
+}
+makeGrain();
+let lastW = w, lastH = h;
+
+function draw() {
+  if (w !== lastW || h !== lastH) { makeGrain(); lastW = w; lastH = h; }
+  ctx.clearRect(0, 0, w, h);
+  ctx.drawImage(grain, 0, 0, w, h);
+
+  const sh = trauma * trauma;
+  ctx.save();
+  if (sh > 0.001 && !REDUCED) {
+    ctx.translate((Math.random() - 0.5) * 6 * sh, (Math.random() - 0.5) * 6 * sh);
+  }
+
+  // hand-drawn floor line
+  ctx.strokeStyle = 'rgba(70,55,30,0.35)';
+  ctx.lineWidth = 2;
+  for (let pass = 0; pass < 2; pass++) {
+    ctx.globalAlpha = pass === 0 ? 0.5 : 0.35;
+    ctx.beginPath();
+    for (let x = -10; x <= w + 10; x += 24) {
+      const [px, py] = wob(x, floorY, 999, x, pass);
+      if (x === -10) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  for (const pet of pets) drawShadow(pet);
+  for (const pet of pets) { drawFace(pet); drawSpine(pet); drawEyesMouth(pet); }
+
+  // dust puffs
+  ctx.globalCompositeOperation = 'multiply';
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    const t = p.life / p.max;
+    ctx.globalAlpha = t * 0.8;
+    ctx.drawImage(dustSprite, p.x - p.size * 2, p.y - p.size * 2, p.size * 4, p.size * 4);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  ctx.restore();
+}
+
+// ---- UI ----
+const petCountEl = document.getElementById('petCount');
+const segCountEl = document.getElementById('segCount');
+let lastPetCount = -1, lastSeg = -1;
+function updateUI() {
+  if (pets.length !== lastPetCount) { petCountEl.textContent = pets.length; lastPetCount = pets.length; }
+  const active = nearestPet();
+  const seg = active ? active.body.length : 0;
+  if (seg !== lastSeg) { segCountEl.textContent = seg; lastSeg = seg; }
+}
+
+resetPets();
+
+// ---- §2 fixed timestep loop ----
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { step(); acc -= DT; }
+  draw();
+  updateUI();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.addEventListener('visibilitychange', () => { last = performance.now(); acc = 0; });
+</script>
+</body>
+</html>

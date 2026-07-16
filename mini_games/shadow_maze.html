@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shadow Maze</title>
+<!--
+  Standalone mini-game for the spelling app. Implements HANDBOOK_SMALL.md:
+    §0 house standards — mouse-only 4-input vocabulary, controls pane, no touch,
+       preventDefault(contextmenu), bottom-centre reset pill
+    §2  fixed timestep + DPR-aware canvas
+    §4.8 real 2D shadows — raycast visibility polygon from every light to every
+         wall vertex (± epsilon), sorted by angle, filled to make hard shadows
+    §5  juice — torch flicker via noise, pulsing collectables, warm/cool glow,
+        additive particle bursts, pentatonic chimes (muted by default)
+    §7  designed for children — no fail state, exploration & collection only
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #0c0c1e; }
+  canvas { display: block; cursor: none; } /* the cursor IS the lantern — drawn ourselves */
+
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .key { color: #888; }
+  #ui .val { color: #ffcf7d; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  #resetBtn, #muteBtn {
+    position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); }
+  #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; line-height: 1; }
+  #resetBtn:hover, #muteBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>🏮 Shadow Maze</h3>
+  <div class="param"><span class="key">Move mouse</span><span class="val">Carry the lantern</span></div>
+  <div class="param"><span class="key">Left click</span><span class="val">Plant a torch (<span id="torchCount">0</span>/4)</span></div>
+  <div class="param"><span class="key">Right click</span><span class="val">Pulse of light</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Lantern: <span id="radiusVal">170</span>px</span></div>
+  <br>
+  <div class="param"><span class="key">Found</span><span class="val"><span id="foundVal">0</span> / <span id="totalVal">0</span></span></div>
+</div>
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
+<button id="resetBtn">&#x21BA; New maze</button>
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0, dpr = 1;
+
+// ---- §2 DPR-aware canvas: main canvas + an identically-transformed offscreen
+//      "darkness" canvas we punch light-shaped holes into every frame. ----
+const darkCanvas = document.createElement('canvas');
+const darkCtx = darkCanvas.getContext('2d');
+function fitCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  darkCanvas.width = canvas.width; darkCanvas.height = canvas.height;
+  darkCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+// ---- §4.1-style cosine palette for collectables — never a raw HSL rainbow ----
+function cosPalette(t) {
+  const d = [0.00, 0.30, 0.55];
+  const c = [];
+  for (let i = 0; i < 3; i++) c.push(0.55 + 0.42 * Math.cos(6.28318 * (0.85 * t + d[i])));
+  return `rgb(${c.map(v => Math.round(clamp(v, 0, 1) * 255)).join(',')})`;
+}
+
+// =====================================================================
+// Sound — tiny Web Audio synth, pentatonic so random events sound musical.
+// Off by default (classroom-friendly), toggled top-right.
+// =====================================================================
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+}
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'triangle';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0, 2, 4, 7, 9];
+const penta = (base, i) => base * Math.pow(2, (PENTA[i % 5] + 12 * ((i / 5) | 0)) / 12);
+
+// =====================================================================
+// Maze: rectangular walls + hidden glowing collectables
+// =====================================================================
+const WALL_MARGIN = 40;
+let walls = [];          // {x,y,w,h}
+let segments = [];       // {x1,y1,x2,y2} — wall edges + screen border
+let cornerPts = [];      // world points sampled for ray angles (wall corners + screen corners)
+let collectables = [];   // {x,y,found,hue}
+let total = 0, found = 0;
+let torches = [];        // {x,y,seed}
+const MAX_TORCHES = 4;
+const TORCH_R = 130;
+let pulse = null;        // {x,y,t}
+const PULSE_EXPAND = 0.55, PULSE_HOLD = 0.15, PULSE_FADE = 0.55;
+const PULSE_TOTAL = PULSE_EXPAND + PULSE_HOLD + PULSE_FADE;
+
+let lanternRadius = 170;
+const LANTERN_MIN = 80, LANTERN_MAX = 320;
+const COLLECT_R = 26;
+
+let mouseX = 0, mouseY = 0;
+let celebrating = false, celebT = 0;
+const CELEBRATE_DURATION = 3.0;
+let simT = 0;
+
+function rectOverlapsPoint(rx, ry, rw, rh, x, y, margin) {
+  return x > rx - margin && x < rx + rw + margin && y > ry - margin && y < ry + rh + margin;
+}
+function pointInWalls(x, y, margin) {
+  for (const wa of walls) if (rectOverlapsPoint(wa.x, wa.y, wa.w, wa.h, x, y, margin)) return true;
+  return false;
+}
+
+function generateMaze() {
+  walls = []; segments = []; cornerPts = [];
+  torches = []; pulse = null; celebrating = false; celebT = 0;
+
+  // screen border — light rays terminate here, giving a real polygon edge
+  segments.push({ x1: 0, y1: 0, x2: w, y2: 0 });
+  segments.push({ x1: w, y1: 0, x2: w, y2: h });
+  segments.push({ x1: w, y1: h, x2: 0, y2: h });
+  segments.push({ x1: 0, y1: h, x2: 0, y2: 0 });
+  cornerPts.push({ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h });
+
+  const numWalls = 8 + Math.floor(Math.random() * 4); // not too dense (§ toy brief)
+  for (let i = 0; i < numWalls; i++) {
+    const horizontal = Math.random() < 0.5;
+    const ww = horizontal ? rand(0.10, 0.24) * w : rand(0.04, 0.09) * w;
+    const hh = horizontal ? rand(0.04, 0.09) * h : rand(0.12, 0.26) * h;
+    const x = rand(WALL_MARGIN, Math.max(WALL_MARGIN + 1, w - WALL_MARGIN - ww));
+    const y = rand(WALL_MARGIN, Math.max(WALL_MARGIN + 1, h - WALL_MARGIN - hh));
+    walls.push({ x, y, w: ww, h: hh });
+    const cs = [[x, y], [x + ww, y], [x + ww, y + hh], [x, y + hh]];
+    for (let k = 0; k < 4; k++) {
+      const a = cs[k], b = cs[(k + 1) % 4];
+      segments.push({ x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+    }
+    for (const c of cs) cornerPts.push({ x: c[0], y: c[1] });
+  }
+
+  collectables = [];
+  total = 8 + Math.floor(Math.random() * 5);
+  found = 0;
+  for (let i = 0; i < total; i++) {
+    let x, y, tries = 0, ok = false;
+    do {
+      x = rand(30, w - 30); y = rand(30, h - 30);
+      ok = !pointInWalls(x, y, 22);
+      for (const c of collectables) if (ok && Math.hypot(c.x - x, c.y - y) < 80) ok = false;
+      tries++;
+    } while (!ok && tries < 400);
+    collectables.push({ x, y, found: false, hue: i / total, phase: Math.random() * 10 });
+  }
+}
+generateMaze();
+
+// =====================================================================
+// §4.8 real 2D shadows: raycast to every wall vertex (± epsilon), sort by
+// angle, intersect with all segments, keep the nearest hit per ray.
+// =====================================================================
+function raySegIntersect(ox, oy, dx, dy, x1, y1, x2, y2) {
+  const sx = x2 - x1, sy = y2 - y1;
+  const denom = dx * sy - dy * sx;
+  if (Math.abs(denom) < 1e-10) return null;
+  const t = ((x1 - ox) * sy - (y1 - oy) * sx) / denom;
+  const u = ((x1 - ox) * dy - (y1 - oy) * dx) / denom;
+  if (t < 0 || u < 0 || u > 1) return null;
+  return t; // dx,dy is a unit vector, so t IS the hit distance
+}
+
+const EPS = 0.00005;
+function computeVisibilityPolygon(lx, ly, maxR) {
+  const angles = [];
+  for (const p of cornerPts) {
+    const a = Math.atan2(p.y - ly, p.x - lx);
+    angles.push(a - EPS, a, a + EPS);
+  }
+  // extra uniform rays so open, obstruction-free stretches still read as a
+  // smooth circle rather than a faceted polygon
+  for (let i = 0; i < 48; i++) angles.push((i / 48) * Math.PI * 2);
+  angles.sort((a, b) => a - b);
+
+  const poly = [];
+  for (const a of angles) {
+    const dx = Math.cos(a), dy = Math.sin(a);
+    let best = maxR;
+    for (const s of segments) {
+      const t = raySegIntersect(lx, ly, dx, dy, s.x1, s.y1, s.x2, s.y2);
+      if (t !== null && t < best) best = t;
+    }
+    for (const wa of walls) {
+      // walls already contribute their edges via `segments`; nothing extra to do —
+      // kept as a marker comment for anyone tuning wall density later.
+    }
+    poly.push({ x: lx + dx * best, y: ly + dy * best });
+  }
+  return poly;
+}
+
+// =====================================================================
+// Particles — pooled, additive, spent on collect + celebration (§5/§6)
+// =====================================================================
+const glow = document.createElement('canvas');
+glow.width = glow.height = 64;
+{
+  const g = glow.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+}
+const POOL = 400;
+const parts = [];
+for (let i = 0; i < POOL; i++) parts.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, size: 6, color: '#fff' });
+let partHead = 0;
+function spawnPart(x, y, vx, vy, size, color, life) {
+  const p = parts[partHead]; partHead = (partHead + 1) % POOL;
+  p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.size = size; p.color = color; p.life = p.max = life;
+}
+
+function triggerCelebration() {
+  celebrating = true; celebT = 0;
+  for (const c of collectables) {
+    for (let i = 0; i < 10; i++) {
+      const ang = Math.random() * Math.PI * 2, sp = 1 + Math.random() * 4;
+      spawnPart(c.x, c.y, Math.cos(ang) * sp, Math.sin(ang) * sp - 1,
+                4 + Math.random() * 7, cosPalette(c.hue), 0.6 + Math.random() * 0.6);
+    }
+  }
+  for (let i = 0; i < 6; i++)
+    tone(penta(392, i), penta(392, i) * 1.01, 0.35, 0.14, 'sine', i * 0.12);
+}
+
+// =====================================================================
+// Input — mouse-only, four distinct jobs (§0.1)
+// =====================================================================
+mouseX = w / 2; mouseY = h / 2; // lantern is lit before the first move (§1: respond instantly)
+
+canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('mousedown', e => {
+  ensureAudio();
+  if (e.button === 0) { // left: plant a fixed torch, cap 4, oldest expires
+    if (torches.length >= MAX_TORCHES) {
+      const old = torches.shift();
+      for (let i = 0; i < 8; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        spawnPart(old.x, old.y, Math.cos(ang) * 1.5, Math.sin(ang) * 1.5, 4, '#ffb347', 0.4);
+      }
+    }
+    torches.push({ x: mouseX, y: mouseY, seed: Math.random() * 1000 });
+    tone(520, 300, 0.18, 0.14, 'triangle');
+  } else if (e.button === 2) { // right: expanding pulse reveals the maze briefly
+    pulse = { x: mouseX, y: mouseY, t: 0 };
+    tone(180, 500, 0.35, 0.12, 'sine');
+    tone(140, 60, 0.5, 0.10, 'sine', 0.05);
+  }
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  lanternRadius = clamp(lanternRadius - Math.sign(e.deltaY) * 10, LANTERN_MIN, LANTERN_MAX);
+}, { passive: false });
+
+document.getElementById('resetBtn').addEventListener('click', generateMaze);
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) tone(523, 530, 0.1, 0.12, 'sine');
+});
+
+window.addEventListener('resize', fitCanvas);
+
+// simple noise-ish flicker for torches/lantern — no dependency, just summed sines (§5)
+function flicker(t, seed) {
+  return 1 + 0.05 * Math.sin(t * 17 + seed) + 0.035 * Math.sin(t * 29 + seed * 1.7);
+}
+function easeOutExpo(x) { return x >= 1 ? 1 : 1 - Math.pow(2, -10 * x); }
+
+// =====================================================================
+// Update (fixed timestep, §2)
+// =====================================================================
+function update(dt) {
+  simT += dt;
+
+  if (pulse) {
+    pulse.t += dt;
+    if (pulse.t > PULSE_TOTAL) pulse = null;
+  }
+
+  if (!celebrating) {
+    for (const c of collectables) {
+      if (c.found) continue;
+      if (Math.hypot(c.x - mouseX, c.y - mouseY) < COLLECT_R) {
+        c.found = true; found++;
+        for (let i = 0; i < 12; i++) {
+          const ang = Math.random() * Math.PI * 2, sp = 0.6 + Math.random() * 2.4;
+          spawnPart(c.x, c.y, Math.cos(ang) * sp, Math.sin(ang) * sp, 3 + Math.random() * 4,
+                    cosPalette(c.hue), 0.35 + Math.random() * 0.3);
+        }
+        tone(penta(660, found), penta(660, found) * 1.02, 0.14, 0.15, 'sine');
+        if (found >= total) triggerCelebration();
+      }
+    }
+  } else {
+    celebT += dt;
+    if (celebT > CELEBRATE_DURATION) generateMaze();
+  }
+
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    p.vy += 0.05; p.vx *= 0.985; p.vy *= 0.985;
+    p.x += p.vx; p.y += p.vy;
+  }
+}
+
+// =====================================================================
+// Render
+// =====================================================================
+function drawBackground() {
+  const bg = ctx.createRadialGradient(w * 0.5, h * 0.4, 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.75);
+  bg.addColorStop(0, '#1b1730'); bg.addColorStop(1, '#0c0c1e'); // never pure black (§4)
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+  // faint floor grid for texture, only ever seen where the darkness mask allows
+  ctx.strokeStyle = 'rgba(255,255,255,0.035)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x < w; x += 48) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+  for (let y = 0; y < h; y += 48) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+  ctx.stroke();
+}
+
+function drawWalls() {
+  for (const wa of walls) {
+    const g = ctx.createLinearGradient(wa.x, wa.y, wa.x, wa.y + wa.h);
+    g.addColorStop(0, '#6b7290'); g.addColorStop(1, '#3c3f52');
+    ctx.fillStyle = g;
+    ctx.fillRect(wa.x, wa.y, wa.w, wa.h);
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2;
+    ctx.strokeRect(wa.x + 1, wa.y + 1, wa.w - 2, wa.h - 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1;
+    ctx.strokeRect(wa.x + 2, wa.y + 2, wa.w - 4, 2);
+  }
+}
+
+function drawCollectables() {
+  for (const c of collectables) {
+    if (c.found) continue;
+    const pulseS = 1 + 0.18 * Math.sin(simT * 3 + c.phase);
+    const col = cosPalette(c.hue);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(glow, c.x - 20 * pulseS, c.y - 20 * pulseS, 40 * pulseS, 40 * pulseS);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(simT * 0.6 + c.phase);
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2;
+      const r1 = 8 * pulseS, r2 = 3 * pulseS;
+      ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
+      ctx.lineTo(Math.cos(a + Math.PI / 4) * r2, Math.sin(a + Math.PI / 4) * r2);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function buildDarkness(lights) {
+  darkCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  darkCtx.globalCompositeOperation = 'source-over';
+  darkCtx.fillStyle = 'rgba(9,9,22,0.95)'; // never pure black
+  darkCtx.fillRect(0, 0, w, h);
+
+  for (const L of lights) {
+    const poly = computeVisibilityPolygon(L.x, L.y, L.r);
+    if (poly.length < 3) continue;
+    darkCtx.save();
+    darkCtx.beginPath();
+    darkCtx.moveTo(poly[0].x, poly[0].y);
+    for (let i = 1; i < poly.length; i++) darkCtx.lineTo(poly[i].x, poly[i].y);
+    darkCtx.closePath();
+    darkCtx.clip(); // hard shadow edge comes from clipping to the visibility polygon
+    darkCtx.globalCompositeOperation = 'destination-out';
+    const grad = darkCtx.createRadialGradient(L.x, L.y, 0, L.x, L.y, L.r);
+    grad.addColorStop(0, 'rgba(0,0,0,1)');
+    grad.addColorStop(0.65, 'rgba(0,0,0,0.85)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)'); // soft radial falloff within the hard polygon
+    darkCtx.fillStyle = grad;
+    darkCtx.fillRect(L.x - L.r, L.y - L.r, L.r * 2, L.r * 2);
+    darkCtx.restore();
+  }
+}
+
+function drawGlowAt(x, y, r, color, alpha) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = alpha * 0.6;
+  ctx.drawImage(glow, x - r, y - r, r * 2, r * 2);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawTorchIcons() {
+  for (const t of torches) {
+    const f = flicker(simT * 3, t.seed);
+    ctx.fillStyle = '#5a4632';
+    ctx.fillRect(t.x - 3, t.y - 2, 6, 20);
+    drawGlowAt(t.x, t.y - 10, 22 * f, 'rgba(255,178,80,0.9)', 0.5);
+    ctx.fillStyle = '#ffdca0';
+    ctx.beginPath(); ctx.arc(t.x, t.y - 10, 4 * f, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawLanternCursor() {
+  drawGlowAt(mouseX, mouseY, 16, 'rgba(255,214,140,0.9)', 0.7);
+  ctx.strokeStyle = 'rgba(255,230,180,0.9)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(mouseX, mouseY, 7, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#fff6d8';
+  ctx.beginPath(); ctx.arc(mouseX, mouseY, 3, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawPulseRing() {
+  if (!pulse) return;
+  let r, alpha;
+  if (pulse.t < PULSE_EXPAND) {
+    r = easeOutExpo(pulse.t / PULSE_EXPAND) * Math.hypot(w, h) * 0.75;
+    alpha = 0.5;
+  } else if (pulse.t < PULSE_EXPAND + PULSE_HOLD) {
+    r = Math.hypot(w, h) * 0.75; alpha = 0.5;
+  } else {
+    const f = (pulse.t - PULSE_EXPAND - PULSE_HOLD) / PULSE_FADE;
+    r = Math.hypot(w, h) * 0.75; alpha = 0.5 * (1 - f);
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.max(0, alpha);
+  ctx.strokeStyle = 'rgba(255,240,200,1)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(pulse.x, pulse.y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawParticles() {
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of parts) {
+    if (p.life <= 0) continue;
+    const t = p.life / p.max;
+    ctx.globalAlpha = t * 0.9;
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.size * t, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = t * 0.5;
+    ctx.drawImage(glow, p.x - p.size * 2, p.y - p.size * 2, p.size * 4, p.size * 4);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawCelebration() {
+  if (!celebrating) return;
+  const f = celebT / CELEBRATE_DURATION;
+  const alpha = f < 0.15 ? f / 0.15 : f > 0.8 ? (1 - f) / 0.2 : 1;
+  ctx.save();
+  ctx.globalAlpha = clamp(alpha, 0, 1);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff6d8';
+  ctx.font = 'bold 42px "Segoe UI", sans-serif';
+  ctx.shadowColor = 'rgba(255,200,120,0.8)'; ctx.shadowBlur = 20;
+  ctx.fillText('✨ All found! ✨', w / 2, h * 0.42);
+  ctx.font = '18px "Segoe UI", sans-serif';
+  ctx.shadowBlur = 8;
+  ctx.fillText('A fresh maze is on its way…', w / 2, h * 0.42 + 34);
+  ctx.restore();
+}
+
+function render() {
+  drawBackground();
+  drawWalls();
+  drawCollectables();
+
+  const lights = [{ x: mouseX, y: mouseY, r: lanternRadius * flicker(simT, 0) }];
+  for (const t of torches) lights.push({ x: t.x, y: t.y, r: TORCH_R * flicker(simT * 3, t.seed) });
+  if (pulse) {
+    let r;
+    if (pulse.t < PULSE_EXPAND) r = easeOutExpo(pulse.t / PULSE_EXPAND) * Math.hypot(w, h) * 0.9;
+    else r = Math.hypot(w, h) * 0.9;
+    lights.push({ x: pulse.x, y: pulse.y, r });
+  }
+  buildDarkness(lights);
+  ctx.drawImage(darkCanvas, 0, 0, w, h);
+
+  drawTorchIcons();
+  drawPulseRing();
+  drawLanternCursor();
+  drawParticles();
+  drawCelebration();
+}
+
+// ---- UI text (only touch the DOM when a value actually changes) ----
+const torchCountEl = document.getElementById('torchCount');
+const radiusValEl = document.getElementById('radiusVal');
+const foundValEl = document.getElementById('foundVal');
+const totalValEl = document.getElementById('totalVal');
+let lastTorch = -1, lastRadius = -1, lastFound = -1, lastTotal = -1;
+function updateUI() {
+  if (torches.length !== lastTorch) { torchCountEl.textContent = torches.length; lastTorch = torches.length; }
+  const r = Math.round(lanternRadius);
+  if (r !== lastRadius) { radiusValEl.textContent = r; lastRadius = r; }
+  if (found !== lastFound) { foundValEl.textContent = found; lastFound = found; }
+  if (total !== lastTotal) { totalValEl.textContent = total; lastTotal = total; }
+}
+
+// ---- §2 fixed timestep: physics/logic at exactly 60 steps/sec everywhere ----
+const DT = 1 / 60;
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1); // clamp guards the tab-switch spiral
+  last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  render();
+  updateUI();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reaction-Diffusion Painter</title>
+<!--
+  Reference implementation for HANDBOOK_SMALL.md. Implements:
+    §0 house standards: 4 distinct mouse jobs, frosted controls pane, no touch,
+       contextmenu prevented, pill Reset button restoring seeded initial state.
+    WebGL2 Gray-Scott reaction-diffusion, ping-pong float framebuffers,
+    ~14 sim steps per displayed frame, cosine/gradient palette + embossed
+    shading + cheap multi-tap bloom in the display pass.
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0c0c1e; }
+  canvas { display: block; touch-action: none; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 240px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .key { color: #888; }
+  #ui .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #resetBtn {
+    position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+    bottom: 24px; left: 50%; transform: translateX(-50%);
+  }
+  #resetBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+  #fallback {
+    display: none; position: fixed; inset: 0; z-index: 20; color: #eee;
+    background: #0c0c1e; align-items: center; justify-content: center;
+    text-align: center; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #fallback .box { max-width: 480px; padding: 32px; }
+  #fallback .emoji { font-size: 48px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h3>&#129514; Reaction-Diffusion Painter</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Smudge the pattern</span></div>
+  <div class="param"><span class="key">Left drag</span><span class="val">Paint chemical (grow)</span></div>
+  <div class="param"><span class="key">Right drag</span><span class="val">Erase (carve paths)</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Change preset</span></div>
+  <br>
+  <div class="param"><span class="key">Preset</span><span class="val" id="presetName">Coral</span></div>
+  <div class="param"><span class="key">Feed / Kill</span><span class="val" id="presetFK">.0545 / .0620</span></div>
+</div>
+
+<button id="resetBtn">&#x21BA; Reset</button>
+
+<div id="fallback">
+  <div class="box">
+    <div class="emoji">&#128546;</div>
+    <div>This toy needs a desktop browser with WebGL2 and floating-point
+    textures (try a recent Chrome, Firefox, or Edge) to grow its patterns.</div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const canvas = document.getElementById('c');
+const fallback = document.getElementById('fallback');
+const presetNameEl = document.getElementById('presetName');
+const presetFKEl = document.getElementById('presetFK');
+const resetBtn = document.getElementById('resetBtn');
+
+// alpha:true + an immediate synchronous clear: some browsers (notably
+// SwiftShader-backed headless Chromium) lose an alpha:false context whose
+// canvas is composited before its first draw.
+const gl = canvas.getContext('webgl2', { antialias: false, depth: false, stencil: false, alpha: true });
+
+// Prefer RGBA16F: EXT_color_buffer_float makes it renderable, and half-float
+// textures are LINEAR-filterable in core WebGL2. RGBA32F is only used when
+// OES_texture_float_linear is also present (32F is NOT filterable without it —
+// sampling would silently return black).
+let TYPE = null, IFORMAT = null;
+if (gl) {
+  const renderableFloat = gl.getExtension('EXT_color_buffer_float') ||
+                          gl.getExtension('EXT_color_buffer_half_float');
+  if (renderableFloat) {
+    TYPE = gl.HALF_FLOAT; IFORMAT = gl.RGBA16F;
+    if (gl.getExtension('EXT_color_buffer_float') && gl.getExtension('OES_texture_float_linear')) {
+      TYPE = gl.FLOAT; IFORMAT = gl.RGBA32F;
+    }
+  }
+}
+
+let started = false;
+if (gl && TYPE) {
+  try {
+    runApp(gl, TYPE, IFORMAT);
+    started = true;
+  } catch (err) {
+    // shader compile / framebuffer failure — fall through to friendly message
+  }
+}
+if (!started) {
+  fallback.style.display = 'flex';
+  canvas.style.display = 'none';
+}
+
+function runApp(gl, TYPE, IFORMAT) {
+  // ---------- shaders ----------
+  const VS = `#version 300 es
+    layout(location = 0) in vec2 aPos;
+    out vec2 vUv;
+    void main() {
+      vUv = aPos * 0.5 + 0.5;
+      gl_Position = vec4(aPos, 0.0, 1.0);
+    }`;
+
+  const SEED_FS = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    out vec4 outColor;
+    void main() {
+      vec2 uv = vUv;
+      float u = 1.0, v = 0.0;
+      vec2 seeds[4];
+      seeds[0] = vec2(0.50, 0.50);
+      seeds[1] = vec2(0.42, 0.58);
+      seeds[2] = vec2(0.60, 0.63);
+      seeds[3] = vec2(0.47, 0.40);
+      for (int i = 0; i < 4; i++) {
+        float d = distance(uv, seeds[i]);
+        float r = 0.02 + 0.006 * float(i);
+        float m = 1.0 - smoothstep(r * 0.6, r, d);
+        v = max(v, m);
+        u = min(u, 1.0 - m * 0.6);
+      }
+      float n = sin(uv.x * 37.0) * cos(uv.y * 29.0);
+      v += 0.015 * n * smoothstep(0.15, 0.0, distance(uv, vec2(0.5)));
+      outColor = vec4(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), 0.0, 1.0);
+    }`;
+
+  const SIM_FS = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    out vec4 outColor;
+    uniform sampler2D uState;
+    uniform vec2 uTexel;
+    uniform float uF, uK, uDu, uDv, uDt;
+    uniform vec3 uPointer;   // xy = uv pos, z = radius
+    uniform int uMode;       // 0 = smudge only, 1 = add V, 2 = erase
+    uniform vec2 uPointerVel;
+
+    void main() {
+      vec2 uv = vUv;
+      vec4 c = texture(uState, uv);
+      float u = c.r, v = c.g;
+
+      vec4 cN = texture(uState, uv + vec2(0.0, uTexel.y));
+      vec4 cS = texture(uState, uv - vec2(0.0, uTexel.y));
+      vec4 cE = texture(uState, uv + vec2(uTexel.x, 0.0));
+      vec4 cW = texture(uState, uv - vec2(uTexel.x, 0.0));
+
+      float lapU = cN.r + cS.r + cE.r + cW.r - 4.0 * u;
+      float lapV = cN.g + cS.g + cE.g + cW.g - 4.0 * v;
+
+      float reaction = u * v * v;
+      float du = uDu * lapU - reaction + uF * (1.0 - u);
+      float dv = uDv * lapV + reaction - (uF + uK) * v;
+      u += du * uDt;
+      v += dv * uDt;
+
+      float d = distance(uv, uPointer.xy);
+      float falloff = 1.0 - smoothstep(0.0, uPointer.z, d);
+
+      if (uMode == 0) {
+        // gentle smudge: self-advect the existing pattern under the cursor,
+        // works with no button held.
+        vec2 warp = uPointerVel * 1.4 * falloff;
+        vec4 warped = texture(uState, uv - warp);
+        u = mix(u, warped.r, falloff * 0.5);
+        v = mix(v, warped.g, falloff * 0.5);
+      } else if (uMode == 1) {
+        v = min(1.0, v + falloff * 0.9);
+        u = max(0.0, u - falloff * 0.3);
+      } else if (uMode == 2) {
+        v = mix(v, 0.0, falloff * 0.8);
+        u = mix(u, 1.0, falloff * 0.8);
+      }
+
+      outColor = vec4(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), 0.0, 1.0);
+    }`;
+
+  const DISPLAY_FS = `#version 300 es
+    precision highp float;
+    in vec2 vUv;
+    out vec4 outColor;
+    uniform sampler2D uState;
+    uniform vec2 uTexel;
+
+    vec3 ramp(float t) {
+      vec3 s0 = vec3(0.043, 0.043, 0.090);
+      vec3 s1 = vec3(0.098, 0.247, 0.349);
+      vec3 s2 = vec3(0.949, 0.549, 0.247);
+      vec3 s3 = vec3(1.000, 0.925, 0.760);
+      t = clamp(t, 0.0, 1.0);
+      if (t < 0.33) return mix(s0, s1, t / 0.33);
+      if (t < 0.66) return mix(s1, s2, (t - 0.33) / 0.33);
+      return mix(s2, s3, (t - 0.66) / 0.34);
+    }
+
+    void main() {
+      vec2 uv = vUv;
+      float v = texture(uState, uv).g;
+
+      float vN = texture(uState, uv + vec2(0.0, uTexel.y)).g;
+      float vS = texture(uState, uv - vec2(0.0, uTexel.y)).g;
+      float vE = texture(uState, uv + vec2(uTexel.x, 0.0)).g;
+      float vW = texture(uState, uv - vec2(uTexel.x, 0.0)).g;
+      vec3 normal = normalize(vec3((vW - vE) * 9.0, (vS - vN) * 9.0, 1.0));
+      vec3 lightDir = normalize(vec3(0.4, 0.5, 0.8));
+      float diff = max(dot(normal, lightDir), 0.0);
+      float shade = 0.55 + 0.65 * diff;
+
+      vec3 col = ramp(v * 1.4) * shade;
+
+      vec3 bloom = vec3(0.0);
+      const int N = 8;
+      float ang = 0.0;
+      for (int i = 0; i < N; i++) {
+        ang += 6.28318 / float(N);
+        vec2 off = vec2(cos(ang), sin(ang)) * uTexel * 6.0;
+        float vv = texture(uState, uv + off).g;
+        bloom += ramp(vv * 1.4) * smoothstep(0.45, 1.0, vv);
+      }
+      bloom /= float(N);
+      col += bloom * 0.3;
+
+      outColor = vec4(col, 1.0);
+    }`;
+
+  function compile(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      throw new Error(gl.getShaderInfoLog(sh));
+    }
+    return sh;
+  }
+
+  function link(vs, fsSrc) {
+    const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(prog));
+    }
+    const uniforms = {};
+    const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) {
+      const info = gl.getActiveUniform(prog, i);
+      uniforms[info.name] = gl.getUniformLocation(prog, info.name);
+    }
+    return { prog, uniforms };
+  }
+
+  let seedProg, simProg, displayProg;
+
+  function initGL() {
+    // extensions must be re-enabled after a context restore
+    gl.getExtension('EXT_color_buffer_float');
+    gl.getExtension('EXT_color_buffer_half_float');
+    gl.getExtension('OES_texture_float_linear');
+
+    const vs = compile(gl.VERTEX_SHADER, VS);
+    seedProg = link(vs, SEED_FS);
+    simProg = link(vs, SIM_FS);
+    displayProg = link(vs, DISPLAY_FS);
+
+    // one full-screen triangle in a real VBO (attribute-less gl_VertexID
+    // rendering crashes some software rasterisers and loses the context)
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+    gl.clearColor(0.047, 0.047, 0.118, 1.0);
+
+    // any handles from a lost context are dead — don't try to delete them
+    texA = texB = fboA = fboB = null;
+  }
+
+  // ---------- presets ----------
+  const presets = [
+    { name: 'Coral',       f: 0.0545, k: 0.0620 },
+    { name: 'Mitosis',     f: 0.0367, k: 0.0649 },
+    { name: 'Worms',       f: 0.0780, k: 0.0610 },
+    { name: 'Mazes',       f: 0.0290, k: 0.0570 },
+    { name: 'Bubbles',     f: 0.0250, k: 0.0600 },
+    { name: 'Holes',       f: 0.0390, k: 0.0580 },
+    { name: 'Waves',       f: 0.0140, k: 0.0450 },
+    { name: 'Fingerprint', f: 0.0620, k: 0.0609 },
+  ];
+  let presetIndex = 0;
+  let targetF = presets[0].f, targetK = presets[0].k;
+  let curF = targetF, curK = targetK;
+
+  function setPreset(i) {
+    presetIndex = ((i % presets.length) + presets.length) % presets.length;
+    targetF = presets[presetIndex].f;
+    targetK = presets[presetIndex].k;
+    presetNameEl.textContent = presets[presetIndex].name;
+  }
+  function updatePresetLabel() {
+    presetFKEl.textContent = curF.toFixed(4) + ' / ' + curK.toFixed(4);
+  }
+
+  // ---------- sim textures (ping-pong) ----------
+  let simW = 0, simH = 0;
+  let texA, texB, fboA, fboB;
+  let readTex, readFbo, writeTex, writeFbo;
+
+  function createTex(w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, IFORMAT, w, h, 0, gl.RGBA, TYPE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    // CLAMP_TO_EDGE: a zero-flux boundary for the diffusion, and NPOT
+    // float textures with REPEAT crash some software rasterisers
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+  function createFbo(tex) {
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      throw new Error('float framebuffer incomplete');
+    }
+    return fbo;
+  }
+
+  function drawFullscreenTriangle() {
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  function runSeedPass() {
+    gl.useProgram(seedProg.prog);
+    gl.viewport(0, 0, simW, simH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboA);
+    drawFullscreenTriangle();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fboB);
+    drawFullscreenTriangle();
+    readTex = texA; readFbo = fboA;
+    writeTex = texB; writeFbo = fboB;
+  }
+
+  function allocSim(w, h) {
+    simW = Math.max(32, w);
+    simH = Math.max(32, h);
+    if (texA) gl.deleteTexture(texA);
+    if (texB) gl.deleteTexture(texB);
+    if (fboA) gl.deleteFramebuffer(fboA);
+    if (fboB) gl.deleteFramebuffer(fboB);
+    texA = createTex(simW, simH);
+    texB = createTex(simW, simH);
+    fboA = createFbo(texA);
+    fboB = createFbo(texB);
+    runSeedPass();
+  }
+
+  // ---------- canvas sizing ----------
+  let w = 0, h = 0;
+  function fitCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+
+    const targetMax = 480;
+    const rawW = canvas.width * 0.5, rawH = canvas.height * 0.5;
+    const scale = Math.min(1, targetMax / Math.max(rawW, rawH));
+    allocSim(Math.round(rawW * scale), Math.round(rawH * scale));
+  }
+
+  // ---------- pointer ----------
+  const pointer = { x: 0.5, y: 0.5, px: 0.5, py: 0.5, over: false, buttons: 0 };
+
+  function updatePointer(e) {
+    const r = canvas.getBoundingClientRect();
+    pointer.px = pointer.x;
+    pointer.py = pointer.y;
+    pointer.x = (e.clientX - r.left) / r.width;
+    pointer.y = 1.0 - (e.clientY - r.top) / r.height;
+    pointer.buttons = e.buttons;
+  }
+
+  canvas.addEventListener('mousemove', e => { pointer.over = true; updatePointer(e); });
+  canvas.addEventListener('mousedown', e => { pointer.over = true; updatePointer(e); pointer.buttons = e.buttons; });
+  canvas.addEventListener('mouseleave', () => { pointer.over = false; pointer.buttons = 0; });
+  window.addEventListener('mouseup', () => { pointer.buttons = 0; });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    setPreset(presetIndex + Math.sign(e.deltaY));
+  }, { passive: false });
+
+  // ---------- reset ----------
+  function reset() {
+    setPreset(0);
+    curF = targetF; curK = targetK;
+    updatePresetLabel();
+    pointer.x = pointer.px = 0.5;
+    pointer.y = pointer.py = 0.5;
+    pointer.buttons = 0;
+    runSeedPass();
+  }
+  resetBtn.addEventListener('click', reset);
+
+  // ---------- main loop ----------
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const STEPS = reducedMotion ? 5 : 14;
+  const WARMUP_FRAMES = 3;
+  let warmup = WARMUP_FRAMES;
+  let running = true;
+  let rafId = 0;
+  function startLoop() {
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(frame);
+  }
+  document.addEventListener('visibilitychange', () => { running = !document.hidden; if (running) startLoop(); });
+
+  // ---------- context loss recovery ----------
+  // Software rasterisers (e.g. headless SwiftShader) can flakily lose the
+  // context during the first few presents. preventDefault() asks the browser
+  // to restore it; we then rebuild every GL object and carry on. Only give
+  // up (friendly message) after repeated losses.
+  let lossCount = 0;
+  canvas.addEventListener('webglcontextlost', e => {
+    e.preventDefault();
+    cancelAnimationFrame(rafId);
+    lossCount++;
+    if (lossCount > 4) {
+      fallback.style.display = 'flex';
+      canvas.style.display = 'none';
+    }
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    if (lossCount > 4) return;
+    try {
+      initGL();
+      fitCanvas();
+      warmup = WARMUP_FRAMES;
+      startLoop();
+    } catch (err) {
+      fallback.style.display = 'flex';
+      canvas.style.display = 'none';
+    }
+  });
+
+  function step() {
+    // ease current feed/kill toward the target preset (visible morph)
+    curF += (targetF - curF) * 0.06;
+    curK += (targetK - curK) * 0.06;
+    updatePresetLabel();
+
+    let vx = pointer.x - pointer.px, vy = pointer.y - pointer.py;
+    const vlen = Math.hypot(vx, vy);
+    const maxV = 0.05;
+    if (vlen > maxV) { vx = vx / vlen * maxV; vy = vy / vlen * maxV; }
+    if (!pointer.over) { vx = 0; vy = 0; }
+
+    let mode = 0;
+    if (pointer.over && (pointer.buttons & 1)) mode = 1;
+    else if (pointer.over && (pointer.buttons & 2)) mode = 2;
+
+    gl.useProgram(simProg.prog);
+    gl.viewport(0, 0, simW, simH);
+    gl.uniform2f(simProg.uniforms.uTexel, 1.0 / simW, 1.0 / simH);
+    gl.uniform1f(simProg.uniforms.uF, curF);
+    gl.uniform1f(simProg.uniforms.uK, curK);
+    gl.uniform1f(simProg.uniforms.uDu, 0.16);
+    gl.uniform1f(simProg.uniforms.uDv, 0.08);
+    gl.uniform1f(simProg.uniforms.uDt, 1.0);
+    gl.uniform3f(simProg.uniforms.uPointer, pointer.x, pointer.y, 0.045);
+    gl.uniform2f(simProg.uniforms.uPointerVel, vx, vy);
+
+    for (let s = 0; s < STEPS; s++) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, writeFbo);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, readTex);
+      gl.uniform1i(simProg.uniforms.uState, 0);
+      gl.uniform1i(simProg.uniforms.uMode, mode);
+      drawFullscreenTriangle();
+      const t = readTex; readTex = writeTex; writeTex = t;
+      const f = readFbo; readFbo = writeFbo; writeFbo = f;
+    }
+
+    pointer.px = pointer.x; pointer.py = pointer.y;
+  }
+
+  function draw() {
+    gl.useProgram(displayProg.prog);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, readTex);
+    gl.uniform1i(displayProg.uniforms.uState, 0);
+    gl.uniform2f(displayProg.uniforms.uTexel, 1.0 / simW, 1.0 / simH);
+    drawFullscreenTriangle();
+  }
+
+  function frame() {
+    if (!running || gl.isContextLost()) return;
+    if (warmup > 0) {
+      // present a few cheap cleared frames before heavy shading — dodges a
+      // startup race in software rasterisers that loses the context
+      warmup--;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      rafId = requestAnimationFrame(frame);
+      return;
+    }
+    step();
+    draw();
+    rafId = requestAnimationFrame(frame);
+  }
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(fitCanvas, 150);
+  });
+
+  setPreset(0);
+  initGL();
+  fitCanvas();
+  updatePresetLabel();
+  // synchronous first draw so the canvas is never composited undrawn
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  startLoop();
+}
+</script>
+</body>
+</html>
