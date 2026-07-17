@@ -43,6 +43,7 @@
   <div class="param"><span class="key">Left hold</span><span class="val">Pour water</span></div>
   <div class="param"><span class="key">Right hold</span><span class="val">Drain plug</span></div>
   <div class="param"><span class="key">Scroll</span><span class="val">Brush size</span></div>
+  <div class="param"><span class="key">Space (hold)</span><span class="val">Shake the tub!</span></div>
   <div class="param"><span class="key">M key</span><span class="val" id="soundVal">Sound off</span></div>
   <div class="divider"></div>
   <div class="param"><span class="key">Brush</span><span class="val" id="brushVal">0</span></div>
@@ -325,7 +326,6 @@
             if (!collided[i] && speed * speed > SPLASH_SPEED2) {
               collided[i] = 1;
               spawnSplash(px[i], py[i], speed);
-              addTrauma(Math.min(1, speed / 1400));
             }
           }
         }
@@ -446,8 +446,15 @@
     e.preventDefault();
     brushRadius = Math.max(BRUSH_MIN, Math.min(BRUSH_MAX, brushRadius - Math.sign(e.deltaY) * 6));
   }, { passive: false });
+  // Screen shake is player-driven: hold Space to rock the tub (splashes no
+  // longer shake the camera on their own — constant shaking was exhausting)
+  let spaceHeld = false;
   window.addEventListener('keydown', e => {
     if (e.key === 'm' || e.key === 'M') toggleSound();
+    if (e.code === 'Space') { spaceHeld = true; e.preventDefault(); }
+  });
+  window.addEventListener('keyup', e => {
+    if (e.code === 'Space') spaceHeld = false;
   });
 
   function applyPalmForce(n, dt) {
@@ -713,6 +720,15 @@
     if (pouring && mouse.inside) {
       pourAccum += (1 + brushRadius / 22) * dt * 60;
       while (pourAccum >= 1) { spawnWater(mouse.x, mouse.y); pourAccum -= 1; }
+    }
+
+    if (spaceHeld) {
+      addTrauma(dt * 3);
+      // the shake is physical: jostle the water so it sloshes with the tub
+      for (let i = 0; i < count; i++) {
+        oldx[i] += (Math.random() - 0.5) * 1.6;
+        oldy[i] += (Math.random() - 0.5) * 0.8;
+      }
     }
 
     simulate(dt);
