@@ -392,7 +392,11 @@ cell accelerates toward the average of its neighbours:
 // 1D version: u = heights, v = velocities
 for (let i = 1; i < N - 1; i++)
   v[i] += ((u[i-1] + u[i+1]) * 0.5 - u[i]) * K;   // K ≈ 0.3
-for (let i = 0; i < N; i++) { v[i] *= 0.99; u[i] += v[i]; }
+for (let i = 0; i < N; i++) { v[i] -= u[i] * L; v[i] *= 0.99; u[i] += v[i]; }
+// L ≈ 0.02: gravity's pull back to the rest level. Don't skip it — the
+// neighbour-average term conserves the MEAN height, so under continuous
+// forcing (rain, a dragged wake) the surface accumulates permanent bulges
+// and ever-growing slosh instead of levelling out (pond.html's first bug).
 ```
 
 Poke it (set a height) and perfect ripples propagate, reflect off edges, and

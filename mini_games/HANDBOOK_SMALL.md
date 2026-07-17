@@ -163,8 +163,14 @@ propagate and reflect:
 ```js
 for (let i = 1; i < N - 1; i++)
   v[i] += ((u[i-1] + u[i+1]) * 0.5 - u[i]) * 0.3;
-for (let i = 0; i < N; i++) { v[i] *= 0.99; u[i] += v[i]; }
+for (let i = 0; i < N; i++) { v[i] -= u[i] * 0.02; v[i] *= 0.99; u[i] += v[i]; }
 ```
+
+The `-u[i] * 0.02` term is gravity levelling the surface — the
+neighbour-average term conserves the mean height, so without it
+continuous pokes (rain, a dragged wake) pile up into permanent bulges
+and ever-growing slosh instead of flattening out (pond.html learned
+this the hard way).
 
 ## 4. Art rules
 
