@@ -51,6 +51,7 @@
   <div class="param"><span class="key">Scroll</span><span class="val">Storm: <span id="stormVal">0.5</span></span></div>
   <br>
   <div class="param"><span class="key">Ducks:</span><span class="val" id="duckCount">0/6</span></div>
+  <div class="param"><span class="key">Ducklings saved:</span><span class="val" id="savedVal">0</span></div>
 </div>
 <button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
 <button id="resetBtn">&#x21BA; Reset pond</button>
@@ -87,8 +88,11 @@ const DUCK_D = [0.05, 0.15, 0.55]; // stays warm yellow/orange, never rainbows
 const SPACING = 6;
 let N = 0, u = null, v = null; // height offset & velocity per column
 // DAMPING well below 1 so the pond visibly settles within a couple of
-// seconds once disturbances stop — ducks need near-calm water to bob on
-const TENSION = 0.28, DAMPING = 0.96, SPREAD = 0.028; // spread lets ripples travel sideways
+// seconds once disturbances stop — ducks need near-calm water to bob on.
+// LEVELING is gravity's pull back to the rest height: the neighbour-average
+// tension term conserves the mean, so without it continuous pokes (rain,
+// mouse wake) pile up into ever-growing bulges and slosh instead of flattening
+const TENSION = 0.28, DAMPING = 0.96, SPREAD = 0.028, LEVELING = 0.02; // spread lets ripples travel sideways
 
 function initWater() {
   N = Math.max(24, Math.floor(w / SPACING) + 2);
@@ -128,7 +132,7 @@ function stepWater() {
   // reflecting boundaries so waves bounce off the banks instead of vanishing
   v[0] += (u[1] - u[0]) * TENSION;
   v[N - 1] += (u[N - 2] - u[N - 1]) * TENSION;
-  for (let i = 0; i < N; i++) { v[i] *= DAMPING; u[i] += v[i]; }
+  for (let i = 0; i < N; i++) { v[i] -= u[i] * LEVELING; v[i] *= DAMPING; u[i] += v[i]; }
   // sideways spread pass — lets narrow pokes broaden into travelling ripples
   for (let i = 1; i < N - 1; i++) {
     const l = (u[i - 1] - u[i]) * SPREAD, r = (u[i + 1] - u[i]) * SPREAD;
@@ -223,6 +227,44 @@ function resetDucks() {
   makeDuck(w * 0.6);
 }
 
+// ==================== DUCKLINGS (rescue mechanic) ====================
+// Lost ducklings drift in from the banks, peeping. They are light and ride
+// the waves hard, so the player's ripples, rain and storm are the rudder:
+// herd one to any grown duck and it joins that duck's brood. No fail state —
+// an ignored duckling just bobs about until someone comes for it.
+const DUCKLING_COLOR = { light: '#fff3bd', base: '#ffd35e', dark: '#c9932a' };
+const MAX_ADRIFT = 3, MAX_DUCKLINGS = 12;
+const ducklings = [];
+let savedCount = 0, ducklingTimer = 4;
+
+function spawnDuckling() {
+  const fromLeft = Math.random() < 0.5;
+  const x = fromLeft ? 14 : w - 14;
+  const y = waterY(x) - 6;
+  ducklings.push({
+    x, y, py: y, vx: (fromLeft ? 1 : -1) * (4 + Math.random() * 3),
+    r: 7.5, color: DUCKLING_COLOR, angle: 0, bob: 0, blinkT: 1 + Math.random() * 3,
+    peepT: 0.8 + Math.random() * 1.5, rescued: false, parent: null, offsetX: 0,
+  });
+}
+
+function rescueDuckling(d, adult) {
+  d.rescued = true;
+  d.parent = adult;
+  adult.chicks = (adult.chicks || 0) + 1;
+  const tier = Math.ceil(adult.chicks / 2);
+  d.offsetX = (adult.chicks % 2 ? -1 : 1) * (adult.r + 8 + tier * 15);
+  savedCount++;
+  spawnRing(d.x, waterY(d.x), 4, 30, 'rgba(255,255,255,');
+  for (let i = 0; i < 8; i++) {
+    spawnPart(d.x, d.y - 10, (Math.random() - 0.5) * 50, -30 - Math.random() * 50,
+              2 + Math.random() * 2, '#ffb3c6', 0.5 + Math.random() * 0.3);
+  }
+  const n = plopI++;
+  tone(penta(700, n), penta(700, n) * 1.5, 0.15, 0.12, 'triangle');
+  tone(penta(1050, n + 1), penta(1050, n + 1) * 1.3, 0.18, 0.10, 'triangle', 0.10);
+}
+
 // ==================== DRAGONFLIES (ambient life, §5) ====================
 const dragonflies = [];
 for (let i = 0; i < 3; i++) {
@@ -245,6 +287,9 @@ let prevMouseX = mouseX, prevMouseY = mouseY;
 function resetAll() {
   initWater();
   resetDucks();
+  ducklings.length = 0;
+  savedCount = 0;
+  ducklingTimer = 4;
   drops.forEach(d => d.active = false);
   parts.forEach(p => p.life = 0);
   rings.length = 0;
@@ -391,6 +436,56 @@ function step() {
     if (d.blinkT < -0.12) d.blinkT = 1.5 + Math.random() * 4;
   }
 
+  // --- ducklings: adrift ones ride the waves (slope is the rudder), rescued
+  //     ones paddle to their spot in the parent's brood ---
+  ducklingTimer -= DT;
+  let adrift = 0;
+  for (const d of ducklings) if (!d.rescued) adrift++;
+  if (ducklingTimer <= 0 && adrift < MAX_ADRIFT && ducklings.length < MAX_DUCKLINGS) {
+    spawnDuckling();
+    ducklingTimer = 9 + Math.random() * 7;
+  }
+  for (const d of ducklings) {
+    const vy = (d.y - d.py) * VDAMP;
+    d.py = d.y;
+    const surf = waterY(d.x);
+    const submerged = Math.min(24, (d.y + d.r * 0.6) - surf);
+    // a touch more buoyant per pixel than the adults so the little body
+    // still floats high enough to read as a duckling
+    const buoy = submerged > 0 ? submerged * BUOY_K * 1.6 : 0;
+    d.y += vy + GRAVITY - buoy;
+    d.bob = vy;
+
+    if (d.rescued) {
+      d.vx += (d.parent.x + d.offsetX - d.x) * 0.0045;
+      d.vx *= 0.94;
+    } else {
+      // much stronger slope response than the adults: waves genuinely push it
+      d.vx += slopeAt(d.x) * -70 * DT + (Math.random() - 0.5) * 3 * DT;
+      d.vx *= 0.99;
+      for (const a of ducks) {
+        if (Math.abs(d.x - a.x) < a.r + d.r + 10 && Math.abs(d.y - a.y) < 42) {
+          rescueDuckling(d, a);
+          break;
+        }
+      }
+      d.peepT -= DT;
+      if (d.peepT < 0) {
+        d.peepT = 1.6 + Math.random() * 2.4;
+        spawnRing(d.x + d.r, d.y - d.r, 1, 9, 'rgba(255,255,255,');
+        tone(penta(1500, plopI++), 1100, 0.07, 0.05, 'sine');
+      }
+    }
+    d.vx = Math.max(-12, Math.min(12, d.vx));
+    d.x += d.vx;
+    if (d.x < 12) { d.x = 12; d.vx = Math.abs(d.vx); }
+    if (d.x > w - 12) { d.x = w - 12; d.vx = -Math.abs(d.vx); }
+    const target = Math.atan(slopeAt(d.x));
+    d.angle += (target - d.angle) * 0.12;
+    d.blinkT -= DT;
+    if (d.blinkT < -0.12) d.blinkT = 1.5 + Math.random() * 4;
+  }
+
   // --- particles ---
   for (const p of parts) {
     if (p.life <= 0) continue;
@@ -517,7 +612,13 @@ function drawPond(sunX) {
 }
 
 function drawDucks() {
-  for (const d of ducks) {
+  for (const d of ducks) drawFloatingDuck(d);
+  for (const d of ducklings) drawFloatingDuck(d);
+}
+
+// shared by the grown ducks and the ducklings — everything scales off d.r
+function drawFloatingDuck(d) {
+  {
     const r = d.r;
     const squashY = 1 + Math.max(-0.35, Math.min(0.35, d.bob * 0.012));
     const squashX = 1 / squashY;
@@ -618,10 +719,12 @@ function draw() {
 // ==================== UI ====================
 const stormEl = document.getElementById('stormVal');
 const duckEl = document.getElementById('duckCount');
-let lastStorm = -1, lastDuckN = -1;
+const savedEl = document.getElementById('savedVal');
+let lastStorm = -1, lastDuckN = -1, lastSaved = -1;
 function updateUI() {
   if (stormIntensity.toFixed(2) !== lastStorm) { stormEl.textContent = stormIntensity.toFixed(2); lastStorm = stormIntensity.toFixed(2); }
   if (ducks.length !== lastDuckN) { duckEl.textContent = ducks.length + '/' + MAX_DUCKS; lastDuckN = ducks.length; }
+  if (savedCount !== lastSaved) { savedEl.textContent = savedCount; lastSaved = savedCount; }
 }
 
 // ==================== INIT + MAIN LOOP (§2 fixed timestep) ====================
