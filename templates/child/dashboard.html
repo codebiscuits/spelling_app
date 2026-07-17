@@ -48,13 +48,13 @@
 {% if my_games or mystery %}
 <section>
   <h2>My Games</h2>
-  <p class="list-name">{{ discovered_count }} of 14 discovered</p>
+  <p class="list-name">{{ discovered_count }} of 14 discovered — finish a spelling test to play!</p>
   <div class="games-grid">
     {% for game in my_games %}
-    <a href="/child/games/{{ game.file }}" class="game-card">
+    <div class="game-card">
       <div class="game-thumb game-reward-thumb">🎮</div>
       <span class="game-name">{{ game.name }}</span>
-    </a>
+    </div>
     {% endfor %}
     {% if mystery %}
     <div class="game-card game-card-mystery">

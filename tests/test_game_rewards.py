@@ -142,21 +142,27 @@ def test_locked_reward_game_404s_on_both_routes(child_client):
     assert resp2.status_code == 404
 
 
-def test_unlocked_reward_game_200s_on_both_routes(child_client):
+def test_unlocked_reward_game_needs_a_game_credit(child_client):
     game_file = REWARD_GAMES[0]["file"]
     unlock_game_for(child_client.child_id, game_file)
-    resp = child_client.get(f"/child/games/{game_file}")
-    assert resp.status_code == 200
-    resp2 = child_client.get(f"/mini-games/{game_file}")
-    assert resp2.status_code == 200
+    # Unlocked but no completed test -> no play; raw file still served
+    resp = child_client.get(f"/child/games/{game_file}", follow_redirects=False)
+    assert resp.status_code == 303
+    assert child_client.get(f"/mini-games/{game_file}").status_code == 200
+    # After a qualifying session the play route works
+    setup_practice_list(child_client.child_id, PRACTICE_WORDS)
+    run_full_session(child_client)
+    assert child_client.get(f"/child/games/{game_file}").status_code == 200
 
 
-def test_classic_games_always_200_for_child(child_client):
+def test_classic_game_needs_a_game_credit(child_client):
     classic_file = CLASSIC_GAMES[0]["file"]
-    resp = child_client.get(f"/child/games/{classic_file}")
-    assert resp.status_code == 200
-    resp2 = child_client.get(f"/mini-games/{classic_file}")
-    assert resp2.status_code == 200
+    resp = child_client.get(f"/child/games/{classic_file}", follow_redirects=False)
+    assert resp.status_code == 303
+    assert child_client.get(f"/mini-games/{classic_file}").status_code == 200
+    setup_practice_list(child_client.child_id, PRACTICE_WORDS)
+    run_full_session(child_client)
+    assert child_client.get(f"/child/games/{classic_file}").status_code == 200
 
 
 def test_admin_can_fetch_any_reward_file(admin_client):

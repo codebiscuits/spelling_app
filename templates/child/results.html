@@ -25,7 +25,9 @@
   <div class="award-banner award-unlock">🎁 New game unlocked: {{ new_game.name }}!</div>
   <div class="new-game-card">
     <p class="game-desc">{{ new_game.description }}</p>
-    <a href="/child/games/{{ new_game.file }}?score={{ session.score }}" class="btn btn-primary">Play {{ new_game.name }}</a>
+    {% if games %}
+    <a href="/child/games/{{ new_game.file }}" class="btn btn-primary">Play {{ new_game.name }}</a>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -54,7 +56,7 @@
     <h2>&#127918; Pick a game to play!</h2>
     <div class="games-grid">
       {% for game in games %}
-      <a href="/child/games/{{ game.file }}?score={{ session.score }}" class="game-card">
+      <a href="/child/games/{{ game.file }}" class="game-card">
         {% if game.tier == 'reward' %}
         <div class="game-thumb game-reward-thumb">🎮</div>
         {% else %}

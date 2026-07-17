@@ -219,6 +219,13 @@ def results(request: Request, user=Depends(require_child)):
     # Clear test session state
     request.session.pop("test", None)
 
+    # Bank a single game-play credit for a qualifying session (spent by
+    # /child/games/...); a sub-threshold session forfeits any stale credit.
+    if qualifies:
+        request.session["game_credit"] = {"score": session["score"]}
+    else:
+        request.session.pop("game_credit", None)
+
     return templates.TemplateResponse(request, "child/results.html", {
         "session": session,
         "attempts": attempts,

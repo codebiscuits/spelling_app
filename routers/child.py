@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 
 from database import get_db
 from auth import require_child
@@ -112,8 +113,15 @@ def child_dashboard(request: Request, user=Depends(require_child)):
 
 GAME_FILES = {g["file"] for g in MINI_GAMES}
 
+
+def play_duration(score: int) -> int:
+    """Seconds of play time earned by a test score: 60s at 10/20, +6s per
+    extra point, capped at 120s for a perfect 20."""
+    return max(60, (min(score, 20) - 10) * 6 + 60)
+
+
 @router.get("/games/{filename}")
-def play_game(filename: str, request: Request, score: int = 10, user=Depends(require_child)):
+def play_game(filename: str, request: Request, user=Depends(require_child)):
     if filename not in GAME_FILES:
         raise HTTPException(404)
     game = next(g for g in MINI_GAMES if g["file"] == filename)
@@ -121,8 +129,12 @@ def play_game(filename: str, request: Request, score: int = 10, user=Depends(req
         with get_db() as db:
             if filename not in unlocked_files(user["user_id"], db):
                 raise HTTPException(404)
-    duration = max(60, (min(score, 20) - 10) * 6 + 60)
+    # One play per completed test: the results flow banks a single game
+    # credit (with the real session score); playing spends it.
+    credit = request.session.pop("game_credit", None)
+    if credit is None:
+        return RedirectResponse("/child/dashboard", status_code=303)
     return templates.TemplateResponse(request, "child/game.html", {
         "game": game,
-        "duration": duration,
+        "duration": play_duration(credit["score"]),
     })

@@ -210,3 +210,16 @@ def submit_answer(client, word_id, answer):
         data={"word_id": word_id, "answer": answer},
         follow_redirects=False,
     )
+
+
+def run_full_test(client, answer_fn):
+    """Drive a whole test; answer_fn(word) returns the answer to give."""
+    client.get("/test/start")
+    for _ in range(50):
+        resp = client.get("/test/word", follow_redirects=False)
+        if resp.status_code == 303:
+            assert resp.headers["location"] == "/test/results"
+            return client.get("/test/results")
+        word_id, word, _ = current_word(client)
+        submit_answer(client, word_id, answer_fn(word))
+    raise AssertionError("Test never finished")

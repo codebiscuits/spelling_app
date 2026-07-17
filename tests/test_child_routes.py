@@ -1,6 +1,17 @@
 import pytest
 
-from tests.conftest import app_db, setup_practice_list
+from routers.child import play_duration
+from tests.conftest import app_db, run_full_test, setup_practice_list
+
+CREDIT_WORDS = ["apple", "banana", "carrot", "dolphin", "eagle",
+                "forest", "garden", "harbor", "island", "jungle"]
+
+
+def earn_game_credit(client, answer_fn=lambda w: w, words=CREDIT_WORDS):
+    """Complete a real test session so the results flow banks (or, for a
+    failing answer_fn, withholds) a game-play credit."""
+    setup_practice_list(client.child_id, words)
+    return run_full_test(client, answer_fn)
 
 
 # ── Dashboard ──────────────────────────────────────────────────────────────
@@ -69,10 +80,42 @@ def test_dashboard_lists_recent_sessions_as_mixed_practice(child_client):
 
 # ── Mini-game wrapper ──────────────────────────────────────────────────────
 
-def test_game_page_renders_known_game(child_client):
+def test_game_page_renders_after_qualifying_test(child_client):
+    earn_game_credit(child_client)  # 10 words all correct -> 20/20
     resp = child_client.get("/child/games/circles.html")
     assert resp.status_code == 200
     assert "/mini-games/circles.html" in resp.text
+    assert "var remaining = 120;" in resp.text  # duration from the real score
+
+
+def test_game_page_redirects_without_credit(child_client):
+    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/child/dashboard"
+
+
+def test_game_credit_is_single_use(child_client):
+    earn_game_credit(child_client)
+    assert child_client.get("/child/games/circles.html").status_code == 200
+    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    assert resp.status_code == 303
+
+
+def test_failing_test_banks_no_credit(child_client):
+    earn_game_credit(child_client, answer_fn=lambda w: "wrong")  # score 0
+    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    assert resp.status_code == 303
+
+
+def test_sub_threshold_test_forfeits_previous_credit(child_client):
+    """An unspent credit does not survive a later failing session."""
+    earn_game_credit(child_client)
+    earn_game_credit(
+        child_client, answer_fn=lambda w: "wrong",
+        words=["kitten", "lantern", "meadow", "narwhal", "octopus"],
+    )
+    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    assert resp.status_code == 303
 
 
 def test_game_page_404s_for_unknown_file(child_client):
@@ -91,6 +134,5 @@ def test_game_page_404s_for_path_traversal(child_client):
     (20, 120),   # perfect score → maximum time
     (99, 120),   # capped at 20
 ])
-def test_game_duration_scales_with_score(child_client, score, duration):
-    resp = child_client.get(f"/child/games/circles.html?score={score}")
-    assert f"var remaining = {duration};" in resp.text
+def test_play_duration_scales_with_score(score, duration):
+    assert play_duration(score) == duration
