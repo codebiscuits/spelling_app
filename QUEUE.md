@@ -14,7 +14,6 @@ Add items below; delete them when done.
   now implemented, so times tables can't become a way to avoid spellings.)
 
 I have manually tested the mini-games and have lots of things i would like to improve. We need to discuss each of these points until you understand enough to plan them all in detail
-- pattern grower/reaction diffusion: left-drag and right-drag do basically the same thing, it would be nice if they each had a distinct effect on the game state
 - wrecking yard: 
 	- the blocks distort in very unrealistic ways, stretching out into long needle shapes. they should either break into smaller pieces or become smaller in one dimension whilst staying the same in other dimensions
 	- the blocks in each tower are stuck together, they don't separate from each other when you hit the tower

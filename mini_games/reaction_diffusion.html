@@ -11,6 +11,9 @@
     WebGL2 Gray-Scott reaction-diffusion, ping-pong float framebuffers,
     ~14 sim steps per displayed frame, cosine/gradient palette + embossed
     shading + cheap multi-tap bloom in the display pass.
+    Right-drag paints permanent walls into the state texture's blue channel:
+    a wall texel is clamped to (u=1, v=0), so the pattern dies at its face
+    and can never cross — carve mazes and shapes. Reset clears walls.
 -->
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -52,7 +55,7 @@
   <h3>&#129514; Reaction-Diffusion Painter</h3>
   <div class="param"><span class="key">Move</span><span class="val">Smudge the pattern</span></div>
   <div class="param"><span class="key">Left drag</span><span class="val">Paint chemical (grow)</span></div>
-  <div class="param"><span class="key">Right drag</span><span class="val">Erase (carve paths)</span></div>
+  <div class="param"><span class="key">Right drag</span><span class="val">Draw walls (block growth)</span></div>
   <div class="param"><span class="key">Scroll</span><span class="val">Change preset</span></div>
   <br>
   <div class="param"><span class="key">Preset</span><span class="val" id="presetName">Coral</span></div>
@@ -155,13 +158,14 @@ function runApp(gl, TYPE, IFORMAT) {
     uniform vec2 uTexel;
     uniform float uF, uK, uDu, uDv, uDt;
     uniform vec3 uPointer;   // xy = uv pos, z = radius
-    uniform int uMode;       // 0 = smudge only, 1 = add V, 2 = erase
+    uniform int uMode;       // 0 = smudge only, 1 = add V, 2 = draw barrier
     uniform vec2 uPointerVel;
 
     void main() {
       vec2 uv = vUv;
       vec4 c = texture(uState, uv);
       float u = c.r, v = c.g;
+      float b = c.b;   // barrier mask: walls the pattern cannot grow through
 
       vec4 cN = texture(uState, uv + vec2(0.0, uTexel.y));
       vec4 cS = texture(uState, uv - vec2(0.0, uTexel.y));
@@ -191,11 +195,15 @@ function runApp(gl, TYPE, IFORMAT) {
         v = min(1.0, v + falloff * 0.9);
         u = max(0.0, u - falloff * 0.3);
       } else if (uMode == 2) {
-        v = mix(v, 0.0, falloff * 0.8);
-        u = mix(u, 1.0, falloff * 0.8);
+        // crisp wall slightly inside the brush radius
+        b = max(b, 1.0 - step(uPointer.z * 0.6, d));
       }
 
-      outColor = vec4(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), 0.0, 1.0);
+      // a wall holds no pattern, so growth dies at its face and can never
+      // cross a wall thicker than one texel; reset re-seeds with b = 0
+      if (b > 0.5) { u = 1.0; v = 0.0; }
+
+      outColor = vec4(clamp(u, 0.0, 1.0), clamp(v, 0.0, 1.0), clamp(b, 0.0, 1.0), 1.0);
     }`;
 
   const DISPLAY_FS = `#version 300 es
@@ -242,6 +250,13 @@ function runApp(gl, TYPE, IFORMAT) {
       }
       bloom /= float(N);
       col += bloom * 0.3;
+
+      // barriers render as dark slate walls, clearly distinct from pattern
+      float b = texture(uState, uv).b;
+      float bE = texture(uState, uv + vec2(uTexel.x, 0.0)).b;
+      float bS = texture(uState, uv - vec2(0.0, uTexel.y)).b;
+      vec3 wall = vec3(0.13, 0.11, 0.17) + vec3(0.10) * clamp(b - min(bE, bS), 0.0, 1.0);
+      col = mix(col, wall, clamp(b, 0.0, 1.0));
 
       outColor = vec4(col, 1.0);
     }`;
