@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Extra Points{% endblock %}
+{% block content %}
+<div class="results-card">
+  {% if earned %}
+  <div class="well-done-banner">+1 point! &#127775;</div>
+  {% elif missed %}
+  <div class="test-progress">Good try! No point that time.</div>
+  {% endif %}
+
+  <h1>Your score so far</h1>
+  <div class="score-display">
+    <span class="score-number">{{ score }}</span>
+    <span class="score-denom">/ {{ max_score }}</span>
+  </div>
+
+  <p>Spell another word to earn an extra point?</p>
+
+  <div class="results-actions">
+    <form method="post" action="/test/topup">
+      <button type="submit" class="btn btn-primary btn-large">&#11088; Spell another word</button>
+    </form>
+    <a href="/test/results" class="btn btn-secondary">No thanks &mdash; show my results</a>
+  </div>
+</div>
+{% endblock %}

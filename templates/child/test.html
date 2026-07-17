@@ -7,9 +7,13 @@
 {% endif %}
 
 <div class="test-progress">
+  {% if bonus %}
+  Bonus word <span class="attempt-badge">&#11088; +1 point</span>
+  {% else %}
   Word {{ word_number }} of {{ total_words }}
   {% if attempt == 2 %}
   <span class="attempt-badge">Second chance!</span>
+  {% endif %}
   {% endif %}
 </div>
 

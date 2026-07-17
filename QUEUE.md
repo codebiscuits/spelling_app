@@ -3,16 +3,15 @@
 Bug reports, fixes, and improvement notes waiting to be worked on.
 Add items below; delete them when done.
 
-## Bugs
-
-Discuss each of these before writing an implementation plan
-- the unlocked mini-games are available without the child doing a spelling test, this is not how it should work. the child should only be offered the available games upon completion of a spelling test
-- the countdown timer occupies the same space on the screen as the mute/unmute button
-- the new games are supposed to be unlocked once every 3 starts the child earns, but they are currently unlocking every 1 star
-
 ## Improvements
 
-- i want to implement a very simple 'times tables' module, so if the child can choose to top up their score at the end of each spelling practice session with some multiplication questions. so if, for example, the child scored 12/20 on their spelling session, the game would give them the option to do a multiplication question to earn an extra point (or 2 points for a problem that they have struggled with in the past), and it would keep making that offer until either the child reached a score of 20 (or maybe more) or the child chose not to do any more. the score from the spellings would have to be recorded separately from the times tables score. Also, the app would have to keep track of which times tables the child can manage, so for every multiplication of (`x * y`), x could be any integer from 2 to 12, but y would have to be chosen from a limited set which grows as the child demonstrates ability. That limited set would start as just {2, 10}, then {2, 5, 10}, {2, 3, 5, 10} etc until all times tables have been unlocked. This algorithm could work the same way as the spelling lists, where each times table is thought of in the same way as a different list of spellings to be unlocked one at a time, but then all of the currently unlocked spellings(multiplication problems) are one big pool that can be chosen from, with probability weighting based on the child's success rate with that specific problem, so the really easy problems like `2*10` will not come up too often because the child will have got them right every time.
+- **Times tables (deferred)** — build as a future standalone practice mode with its
+  own progression, disconnected from spelling scores. Each table `y` in `x * y`
+  is treated like a word list in an unlock ladder ({2,10} → {2,5,10} → {2,3,5,10}
+  → … through all of 2–12), with all unlocked tables forming one weighted pool
+  where problems the child struggles with come up more often. (The original
+  score-top-up version of this idea was replaced by the spelling top-up feature,
+  now implemented, so times tables can't become a way to avoid spellings.)
 
 I have manually tested the mini-games and have lots of things i would like to improve. We need to discuss each of these points until you understand enough to plan them all in detail
 - pond is very difficult to play, the water ripple simulation is quite extreme, i should do a q&a with claude to work out what's wrong there

@@ -13,6 +13,8 @@ from templates_env import templates, CLASSIC_GAMES, REWARD_GAMES
 router = APIRouter(prefix="/test")
 
 WORDS_PER_TEST = 10
+# A finished test can be topped up +1 point per extra word until this score
+BONUS_TARGET = 20
 
 
 @router.get("/start")
@@ -70,12 +72,14 @@ def show_word(request: Request, user=Depends(require_child)):
 
     idx = test["current_index"]
     word_queue = test["word_queue"]
+    bonus = "bonus_word_id" in test
 
-    if idx >= len(word_queue):
-        return RedirectResponse("/test/results", status_code=303)
+    if not bonus and idx >= len(word_queue):
+        return RedirectResponse("/test/topup", status_code=303)
 
-    word_id = word_queue[idx]
-    attempt = test["attempt_number"]
+    word_id = test["bonus_word_id"] if bonus else word_queue[idx]
+    # Bonus words are always presented like attempt 1: audio only, one try
+    attempt = 1 if bonus else test["attempt_number"]
     well_done = request.query_params.get("well_done") == "1"
 
     with get_db() as db:
@@ -104,6 +108,7 @@ def show_word(request: Request, user=Depends(require_child)):
         "well_done": well_done,
         "phrase_audio_url": phrase_audio_url,
         "sentence_audio_url": sentence_audio_url,
+        "bonus": bonus,
     })
 
 
@@ -118,10 +123,13 @@ def submit_word(
     if not test:
         return RedirectResponse("/child/dashboard", status_code=303)
 
+    if "bonus_word_id" in test:
+        return _submit_bonus_word(request, test, word_id, answer, user)
+
     idx = test["current_index"]
     word_queue = test["word_queue"]
     if idx >= len(word_queue):
-        return RedirectResponse("/test/results", status_code=303)
+        return RedirectResponse("/test/topup", status_code=303)
     # Only accept an answer for the word currently being asked — rejects
     # stale forms, double submissions, and hand-crafted word_ids
     if word_id != word_queue[idx]:
@@ -162,6 +170,113 @@ def submit_word(
     request.session["test"] = test
     redirect_url = "/test/word?well_done=1" if correct else "/test/word"
     return RedirectResponse(redirect_url, status_code=303)
+
+
+def _submit_bonus_word(request: Request, test: dict, word_id: int, answer: str, user):
+    """Handle an answer to a top-up bonus word: one attempt, +1 point if
+    correct, recorded as attempt 3 so first/second-try mastery is untouched."""
+    if word_id != test["bonus_word_id"]:
+        return RedirectResponse("/test/word", status_code=303)
+
+    now = datetime.now(timezone.utc).isoformat()
+    with get_db() as db:
+        word_row = db.execute("SELECT * FROM words WHERE id=?", (word_id,)).fetchone()
+        if not word_row:
+            raise HTTPException(500)
+
+        correct = int(answer.strip().lower() == word_row["word"].strip().lower())
+        db.execute(
+            """INSERT INTO spelling_attempts
+               (timestamp, user_id, word_id, correct, attempt_number, session_id)
+               VALUES (?,?,?,?,3,?)""",
+            (now, user["user_id"], word_id, correct, test["session_id"]),
+        )
+        if correct:
+            db.execute(
+                "UPDATE test_sessions SET score=score+1 WHERE id=? AND score<?",
+                (test["session_id"], BONUS_TARGET),
+            )
+
+    test.setdefault("topup_asked", []).append(word_id)
+    del test["bonus_word_id"]
+    request.session["test"] = test
+    result = "earned" if correct else "missed"
+    return RedirectResponse(f"/test/topup?result={result}", status_code=303)
+
+
+def _next_bonus_word(user_id: int, test: dict, db) -> int | None:
+    """Next word to offer as a top-up: words missed on attempt 1 this
+    session first (in the order they were asked), then fresh words from the
+    weighted pool; None when both are exhausted."""
+    asked = set(test.get("topup_asked", []))
+    missed_rows = db.execute(
+        """SELECT word_id FROM spelling_attempts
+           WHERE session_id=? AND attempt_number=1 AND correct=0 ORDER BY id""",
+        (test["session_id"],),
+    ).fetchall()
+    for row in missed_rows:
+        if row["word_id"] not in asked:
+            return row["word_id"]
+
+    list_ids = [
+        r["list_id"] for r in db.execute(
+            "SELECT list_id FROM user_list_unlocks WHERE user_id=?", (user_id,)
+        ).fetchall()
+    ]
+    fresh = select_words(user_id, list_ids, 1, db,
+                         exclude=asked | set(test["word_queue"]))
+    return fresh[0] if fresh else None
+
+
+@router.get("/topup")
+def topup_offer(request: Request, user=Depends(require_child)):
+    test = request.session.get("test")
+    if not test:
+        return RedirectResponse("/child/dashboard", status_code=303)
+    if test["current_index"] < len(test["word_queue"]) or "bonus_word_id" in test:
+        return RedirectResponse("/test/word", status_code=303)
+
+    with get_db() as db:
+        session = db.execute(
+            "SELECT score, max_score FROM test_sessions WHERE id=?",
+            (test["session_id"],),
+        ).fetchone()
+        has_more = _next_bonus_word(user["user_id"], test, db) is not None
+
+    if session["score"] >= BONUS_TARGET or not has_more:
+        return RedirectResponse("/test/results", status_code=303)
+
+    result = request.query_params.get("result")
+    return templates.TemplateResponse(request, "child/topup.html", {
+        "score": session["score"],
+        "max_score": session["max_score"],
+        "earned": result == "earned",
+        "missed": result == "missed",
+    })
+
+
+@router.post("/topup")
+def topup_accept(request: Request, user=Depends(require_child)):
+    test = request.session.get("test")
+    if not test:
+        return RedirectResponse("/child/dashboard", status_code=303)
+    if test["current_index"] < len(test["word_queue"]) or "bonus_word_id" in test:
+        return RedirectResponse("/test/word", status_code=303)
+
+    with get_db() as db:
+        session = db.execute(
+            "SELECT score FROM test_sessions WHERE id=?", (test["session_id"],)
+        ).fetchone()
+        if session["score"] >= BONUS_TARGET:
+            return RedirectResponse("/test/results", status_code=303)
+        wid = _next_bonus_word(user["user_id"], test, db)
+
+    if wid is None:
+        return RedirectResponse("/test/results", status_code=303)
+
+    test["bonus_word_id"] = wid
+    request.session["test"] = test
+    return RedirectResponse("/test/word", status_code=303)
 
 
 @router.get("/results")

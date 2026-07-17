@@ -44,7 +44,7 @@
       {% endif %}
       <tr class="{{ 'correct' if a.correct else 'incorrect' }}">
         <td>{{ a.word }}</td>
-        <td>{{ a.attempt_number }}</td>
+        <td>{{ 'Bonus' if a.attempt_number == 3 else a.attempt_number }}</td>
         <td>{{ '✓ Correct' if a.correct else '✗ Wrong' }}</td>
       </tr>
       {% endfor %}

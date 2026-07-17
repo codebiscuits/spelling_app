@@ -1,11 +1,13 @@
 import random
 
 
-def select_words(user_id: int, list_ids: list[int], n: int, db) -> list[int]:
+def select_words(user_id: int, list_ids: list[int], n: int, db,
+                 exclude: set[int] | None = None) -> list[int]:
     """
     Weighted sampling of word IDs from list_ids for user_id.
     Words with poor history are weighted higher (more likely to appear).
     Uses Efraimidis-Spirakis algorithm (no external deps).
+    Word IDs in `exclude` are never returned.
     """
     if not list_ids:
         return []
@@ -15,10 +17,11 @@ def select_words(user_id: int, list_ids: list[int], n: int, db) -> list[int]:
         f"SELECT id FROM words WHERE list_id IN ({placeholders})", list_ids
     ).fetchall()
 
-    if not word_rows:
-        return []
+    exclude = exclude or set()
+    word_ids = [r["id"] for r in word_rows if r["id"] not in exclude]
 
-    word_ids = [r["id"] for r in word_rows]
+    if not word_ids:
+        return []
 
     if len(word_ids) <= n:
         random.shuffle(word_ids)
@@ -31,6 +34,7 @@ def select_words(user_id: int, list_ids: list[int], n: int, db) -> list[int]:
             """SELECT session_id,
                       MAX(CASE WHEN attempt_number=1 AND correct=1 THEN 2
                                WHEN attempt_number=2 AND correct=1 THEN 1
+                               WHEN attempt_number=3 AND correct=1 THEN 1
                                ELSE 0 END) AS word_score
                FROM spelling_attempts
                WHERE user_id=? AND word_id=?

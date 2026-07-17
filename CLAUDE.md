@@ -46,7 +46,7 @@ spelling_app/
 ├── routers/
 │   ├── admin.py             # /admin/* — word lists, children, progress
 │   ├── child.py             # /child/* — dashboard, pick list, game wrapper
-│   └── spelling.py          # /test/* — start, word, results
+│   └── spelling.py          # /test/* — start, word, topup, results
 ├── services/
 │   ├── tts.py               # gTTS audio generation with file caching; get_audio_url() + get_sentence_audio_url()
 │   ├── word_selection.py    # Weighted adaptive word sampling
@@ -73,6 +73,14 @@ spelling_app/
 | Badge ⭐ | Session score ≥ 16/20 | Every qualifying session |
 | Medal 🏅 | ≥ 50% of list words spelled correctly first-try (cumulative) | Once per list |
 | Trophy 🏆 | ≥ 95% first-try correct + all remaining words second-try correct (cumulative) | Once per list; also unlocks next year group |
+
+After the 10-word test, a child scoring below 20 may top up: one bonus word at a
+time (+1 point each, single attempt, capped at 20) — words missed this session
+first, then fresh words from the weighted pool. Bonus attempts are recorded with
+`attempt_number=3` so they never count as first/second-try mastery, but the
+topped-up final score does count toward the badge. Awards are computed on
+`/test/results`, which also banks a one-shot game-play credit (score ≥ 10) that
+`/child/games/{file}` consumes.
 
 ## Homophone support
 
