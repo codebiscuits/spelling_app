@@ -99,8 +99,13 @@
   const DAMP = 0.992;
   const ITERS = 8;
   const POINT_R = 5;
-  const SEAM_MIN_BREAK = 24;
+  const SEAM_MIN_BREAK = 10;
   const EDGE_MIN_BREAK = 10;
+  // Heavy impacts split a block into four quadrant fragments instead of
+  // stretching it (box edges/diagonals themselves never break)
+  const FRAG_SPEED = 9;
+  const FRAG_MIN_SIZE = 24;
+  const MAX_BOXES = 44;
 
   const DEFAULT_BALL_MASS = 2.2;
   const BALL_MASS_MIN = 0.8, BALL_MASS_MAX = 6.0;
@@ -142,117 +147,168 @@
     return c;
   }
 
-  function seam(pA, pB) { return makeConstraint(pA, pB, 1.35, true); }
+  // Mortar seams glue neighbouring blocks until a knock separates them;
+  // each box tracks which boxes it is seamed to so resting contact between
+  // glued neighbours skips collision (they'd jitter against each other)
+  function seam(pA, pB) {
+    const c = makeConstraint(pA, pB, 1.35, true);
+    const A = pA.box, B = pB.box;
+    if (A && B && A !== B) {
+      c.boxA = A; c.boxB = B;
+      A.joints.set(B, (A.joints.get(B) || 0) + 1);
+      B.joints.set(A, (B.joints.get(A) || 0) + 1);
+    }
+    return c;
+  }
 
-  function makeBox(cx, cy, size, color) {
+  function unjoin(c) {
+    const A = c.boxA, B = c.boxB;
+    if (!A || !B) return;
+    const n = (A.joints.get(B) || 1) - 1;
+    if (n <= 0) { A.joints.delete(B); B.joints.delete(A); }
+    else { A.joints.set(B, n); B.joints.set(A, n); }
+  }
+
+  function makeBox(cx, cy, size, color, isFragment) {
     const hs = size / 2;
     const tl = makePoint(cx - hs, cy - hs);
     const tr = makePoint(cx + hs, cy - hs);
     const br = makePoint(cx + hs, cy + hs);
     const bl = makePoint(cx - hs, cy + hs);
     points.push(tl, tr, br, bl);
-    const cTop = makeConstraint(tl, tr, 2.0, false);
-    const cRight = makeConstraint(tr, br, 2.0, false);
-    const cBottom = makeConstraint(br, bl, 2.0, false);
-    const cLeft = makeConstraint(bl, tl, 2.0, false);
-    const cD1 = makeConstraint(tl, br, 1.9, false);
-    const cD2 = makeConstraint(tr, bl, 1.9, false);
-    const box = { points: [tl, tr, br, bl], color: color, size: size, cons: [cTop, cRight, cBottom, cLeft, cD1, cD2] };
+    // Edges and diagonals never break, so a block can compress a little
+    // under load but can't shear into a needle; damage = fragmentation
+    const cTop = makeConstraint(tl, tr, Infinity, false);
+    const cRight = makeConstraint(tr, br, Infinity, false);
+    const cBottom = makeConstraint(br, bl, Infinity, false);
+    const cLeft = makeConstraint(bl, tl, Infinity, false);
+    const cD1 = makeConstraint(tl, br, Infinity, false);
+    const cD2 = makeConstraint(tr, bl, Infinity, false);
+    const box = {
+      points: [tl, tr, br, bl], color: color, size: size,
+      cons: [cTop, cRight, cBottom, cLeft, cD1, cD2],
+      joints: new Map(), isFragment: !!isFragment,
+    };
+    tl.box = tr.box = br.box = bl.box = box;
     boxes.push(box);
     return box;
   }
 
   // ---------------------------------------------------------------------
-  // Yard construction
+  // Yard construction — three slots, each filled by a randomly chosen and
+  // randomly sized structure template, so every build has something to
+  // demolish but no two yards look the same.
   // ---------------------------------------------------------------------
-  function buildYard(randomize) {
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const randInt = (a, b) => Math.floor(rand(a, b + 1));
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+  function buildTower(cx, size, count, palette) {
+    let prevTL = null, prevTR = null, top = null;
+    let y = groundY - size / 2;
+    for (let i = 0; i < count; i++) {
+      const box = makeBox(cx, y, size, shade(palette, i / count));
+      if (prevTL) { seam(prevTL, box.points[3]); seam(prevTR, box.points[2]); }
+      prevTL = box.points[0]; prevTR = box.points[1];
+      top = box;
+      y -= size;
+    }
+    return top;
+  }
+
+  function buildWall(cx, cols, rows, size, palette) {
+    const originX = cx - (cols * size) / 2;
+    const rowBoxes = [];
+    for (let r = 0; r < rows; r++) {
+      const thisRow = [];
+      const y = groundY - size / 2 - r * size;
+      for (let cIdx = 0; cIdx < cols; cIdx++) {
+        const x = originX + cIdx * size + size / 2;
+        const box = makeBox(x, y, size, shade(palette, r / rows));
+        if (cIdx > 0) {
+          seam(thisRow[cIdx - 1].points[1], box.points[0]);
+          seam(thisRow[cIdx - 1].points[2], box.points[3]);
+        }
+        if (r > 0) {
+          seam(rowBoxes[r - 1][cIdx].points[0], box.points[3]);
+          seam(rowBoxes[r - 1][cIdx].points[1], box.points[2]);
+        }
+        thisRow.push(box);
+      }
+      rowBoxes.push(thisRow);
+    }
+  }
+
+  function buildPyramid(cx, base, size, palette) {
+    // Rows shrink by one box going up; only horizontal seams, so the upper
+    // rows rest on the lower ones and tumble freely once dislodged
+    for (let r = 0; r < base; r++) {
+      const n = base - r;
+      const y = groundY - size / 2 - r * size;
+      let prev = null;
+      for (let i = 0; i < n; i++) {
+        const x = cx + (i - (n - 1) / 2) * size;
+        const box = makeBox(x, y, size, shade(palette, r / base));
+        if (prev) { seam(prev.points[1], box.points[0]); seam(prev.points[2], box.points[3]); }
+        prev = box;
+      }
+    }
+  }
+
+  function buildBridge(pierAx, pierBx, pierCount, size) {
+    const pierA = buildTower(pierAx, size, pierCount, PALETTE.concrete);
+    const pierB = buildTower(pierBx, size, pierCount, PALETTE.concrete);
+    const topY = pierA.points[0].y + size / 2;
+    const span = pierBx - pierAx;
+    const bridgeCount = Math.max(3, Math.round(span / size));
+    const step = span / bridgeCount;
+    const boxW = Math.min(size, step * 0.98);
+    let last = null;
+    for (let i = 0; i < bridgeCount; i++) {
+      const cx = pierAx + step * (i + 0.5);
+      const box = makeBox(cx, topY, boxW, shade(PALETTE.wood, i / bridgeCount));
+      if (i === 0) { seam(pierA.points[1], box.points[0]); seam(pierA.points[2], box.points[3]); }
+      else { seam(last.points[1], box.points[0]); seam(last.points[2], box.points[3]); }
+      last = box;
+    }
+    seam(last.points[1], pierB.points[0]);
+    seam(last.points[2], pierB.points[3]);
+  }
+
+  let initialBoxCount = 0;
+
+  function buildYard() {
     points = []; constraints = []; boxes = [];
     dragBox = null; dragOffsets = null;
+    pendingSplits.length = 0;
     trauma = 0; hitStopTimer = 0; impactCooldown = 0; ambientTimer = 1;
     for (let i = 0; i < particles.length; i++) particles[i].active = false;
 
     groundY = h * 0.86;
-    const jitter = (v, amt) => randomize ? v + (Math.random() * 2 - 1) * amt : v;
 
-    // --- Tower: tall brick stack ---
-    (function () {
-      const size = jitter(36, 4);
-      const count = randomize ? 5 + Math.floor(Math.random() * 3) : 6;
-      const cx = jitter(w * 0.14, 12);
-      let prevTL = null, prevTR = null;
-      let y = groundY - size / 2;
-      for (let i = 0; i < count; i++) {
-        const box = makeBox(cx, y, size, shade(PALETTE.brick, i / count));
-        if (prevTL) { seam(prevTL, box.points[3]); seam(prevTR, box.points[2]); }
-        prevTL = box.points[0]; prevTR = box.points[1];
-        y -= size;
-      }
-    })();
+    // Left slot: tower or pyramid
+    if (Math.random() < 0.6) {
+      buildTower(rand(w * 0.10, w * 0.18), rand(32, 40), randInt(4, 7), pick([PALETTE.brick, PALETTE.concrete]));
+    } else {
+      buildPyramid(rand(w * 0.10, w * 0.18), randInt(3, 4), rand(28, 36), PALETTE.brick);
+    }
 
-    // --- Two concrete piers holding up a timber bridge ---
-    (function () {
-      const size = jitter(34, 3);
-      const pierCount = randomize ? 2 + Math.floor(Math.random() * 2) : 3;
-      const pierAx = jitter(w * 0.42, 10);
-      const pierBx = jitter(w * 0.64, 10);
+    // Middle slot: piers + bridge, or twin towers
+    if (Math.random() < 0.65) {
+      buildBridge(rand(w * 0.38, w * 0.46), rand(w * 0.60, w * 0.68), randInt(2, 4), rand(30, 36));
+    } else {
+      buildTower(rand(w * 0.40, w * 0.46), rand(30, 38), randInt(3, 6), pick([PALETTE.wood, PALETTE.brick]));
+      buildTower(rand(w * 0.58, w * 0.66), rand(30, 38), randInt(3, 6), pick([PALETTE.wood, PALETTE.concrete]));
+    }
 
-      function buildPier(cx) {
-        let prevTL = null, prevTR = null, y = groundY - size / 2, top = null;
-        for (let i = 0; i < pierCount; i++) {
-          const box = makeBox(cx, y, size, shade(PALETTE.concrete, i / pierCount));
-          if (prevTL) { seam(prevTL, box.points[3]); seam(prevTR, box.points[2]); }
-          prevTL = box.points[0]; prevTR = box.points[1];
-          top = box;
-          y -= size;
-        }
-        return top;
-      }
+    // Right slot: wall or pyramid
+    if (Math.random() < 0.6) {
+      buildWall(rand(w * 0.78, w * 0.86), randInt(2, 4), randInt(3, 5), rand(26, 32), PALETTE.glass);
+    } else {
+      buildPyramid(rand(w * 0.78, w * 0.86), randInt(3, 5), rand(26, 32), PALETTE.glass);
+    }
 
-      const pierA = buildPier(pierAx);
-      const pierB = buildPier(pierBx);
-      const topY = pierA.points[0].y + size / 2;
-      const span = pierBx - pierAx;
-      const bridgeCount = Math.max(3, Math.round(span / size));
-      const step = span / bridgeCount;
-      const boxW = Math.min(size, step * 0.98);
-      let last = null;
-      for (let i = 0; i < bridgeCount; i++) {
-        const cx = pierAx + step * (i + 0.5);
-        const box = makeBox(cx, topY, boxW, shade(PALETTE.wood, i / bridgeCount));
-        if (i === 0) { seam(pierA.points[1], box.points[0]); seam(pierA.points[2], box.points[3]); }
-        else { seam(last.points[1], box.points[0]); seam(last.points[2], box.points[3]); }
-        last = box;
-      }
-      seam(last.points[1], pierB.points[0]);
-      seam(last.points[2], pierB.points[3]);
-    })();
-
-    // --- Glassy wall ---
-    (function () {
-      const size = jitter(30, 3);
-      const cols = randomize ? 2 + Math.floor(Math.random() * 3) : 3;
-      const rows = randomize ? 3 + Math.floor(Math.random() * 3) : 4;
-      const originX = jitter(w * 0.82, 10) - (cols * size) / 2;
-      const rowBoxes = [];
-      for (let r = 0; r < rows; r++) {
-        const thisRow = [];
-        const y = groundY - size / 2 - r * size;
-        for (let cIdx = 0; cIdx < cols; cIdx++) {
-          const x = originX + cIdx * size + size / 2;
-          const box = makeBox(x, y, size, shade(PALETTE.glass, r / rows));
-          if (cIdx > 0) {
-            seam(thisRow[cIdx - 1].points[1], box.points[0]);
-            seam(thisRow[cIdx - 1].points[2], box.points[3]);
-          }
-          if (r > 0) {
-            seam(rowBoxes[r - 1][cIdx].points[0], box.points[3]);
-            seam(rowBoxes[r - 1][cIdx].points[1], box.points[2]);
-          }
-          thisRow.push(box);
-        }
-        rowBoxes.push(thisRow);
-      }
-    })();
+    initialBoxCount = boxes.length;
 
     // --- Wrecking ball on a rope, hanging from the cursor ---
     ballMass = DEFAULT_BALL_MASS;
@@ -320,7 +376,10 @@
     const dist = Math.hypot(dx, dy) || 0.0001;
     if (dist > c.breakLimit) {
       c.active = false;
-      if (c.isSeam) onSeamBreak((a.x + b.x) / 2, (a.y + b.y) / 2);
+      if (c.isSeam) {
+        onSeamBreak((a.x + b.x) / 2, (a.y + b.y) / 2);
+        unjoin(c);
+      }
       return;
     }
     const invSum = a.inv + b.inv;
@@ -344,9 +403,10 @@
     if (p.x > w - radius) { p.x = w - radius; p.px = p.x - (p.x - p.px) * 0.3; }
   }
 
-  let impactSpeedAccum = 0;
-  function registerImpact(speed, x, y) {
-    addTrauma(Math.min(0.5, speed * 0.01));
+  function registerImpact(speed, x, y, box) {
+    // Screen shake scales with ball mass: max shaking only at max mass
+    addTrauma(Math.min(0.5, speed * 0.01) * (ballMass / BALL_MASS_MAX));
+    if (speed > FRAG_SPEED && box) queueSplit(box);
     if (impactCooldown > 0) return;
     const BIG = 6;
     if (speed > BIG) {
@@ -380,10 +440,116 @@
           const speed = Math.hypot(ballVX, ballVY);
           p.px -= nx * speed * 0.55;
           p.py -= ny * speed * 0.55;
-          registerImpact(speed, (p.x + ball.x) / 2, (p.y + ball.y) / 2);
+          registerImpact(speed, (p.x + ball.x) / 2, (p.y + ball.y) / 2, boxes[bi]);
         }
       }
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Box-vs-box collision: point-in-quad pushout along the least-penetrated
+  // face. Blocks are independent bodies that rest on and tumble over each
+  // other; pairs still glued by a seam are skipped (mortar holds them).
+  // ---------------------------------------------------------------------
+  function pushPointsOut(A, B) {
+    const q = B.points;
+    const qcx = (q[0].x + q[2].x) / 2, qcy = (q[0].y + q[2].y) / 2;
+    for (let k = 0; k < 4; k++) {
+      const p = A.points[k];
+      let minDepth = Infinity, e0 = -1, sign = 0, inside = true;
+      for (let e = 0; e < 4; e++) {
+        const a = q[e], b = q[(e + 1) % 4];
+        const ex = b.x - a.x, ey = b.y - a.y;
+        const cross = ex * (p.y - a.y) - ey * (p.x - a.x);
+        const s = cross >= 0 ? 1 : -1;
+        if (e === 0) sign = s;
+        else if (s !== sign) { inside = false; break; }
+        const depth = Math.abs(cross) / (Math.hypot(ex, ey) || 0.0001);
+        if (depth < minDepth) { minDepth = depth; e0 = e; }
+      }
+      if (!inside) continue;
+      const a = q[e0], b = q[(e0 + 1) % 4];
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const len = Math.hypot(ex, ey) || 0.0001;
+      let nx = ey / len, ny = -ex / len;
+      if (nx * (a.x - qcx) + ny * (a.y - qcy) < 0) { nx = -nx; ny = -ny; }
+      const push = minDepth * 0.5;
+      p.x += nx * push; p.y += ny * push;
+      const t = clamp(((p.x - a.x) * ex + (p.y - a.y) * ey) / (len * len), 0, 1);
+      a.x -= nx * push * (1 - t); a.y -= ny * push * (1 - t);
+      b.x -= nx * push * t; b.y -= ny * push * t;
+    }
+  }
+
+  function boxCollideBoxes() {
+    for (let i = 0; i < boxes.length; i++) {
+      const A = boxes[i];
+      const apts = A.points;
+      const aMinX = Math.min(apts[0].x, apts[1].x, apts[2].x, apts[3].x);
+      const aMaxX = Math.max(apts[0].x, apts[1].x, apts[2].x, apts[3].x);
+      const aMinY = Math.min(apts[0].y, apts[1].y, apts[2].y, apts[3].y);
+      const aMaxY = Math.max(apts[0].y, apts[1].y, apts[2].y, apts[3].y);
+      for (let j = i + 1; j < boxes.length; j++) {
+        const B = boxes[j];
+        if (A.joints.get(B)) continue;
+        const bpts = B.points;
+        if (Math.min(bpts[0].x, bpts[1].x, bpts[2].x, bpts[3].x) > aMaxX) continue;
+        if (Math.max(bpts[0].x, bpts[1].x, bpts[2].x, bpts[3].x) < aMinX) continue;
+        if (Math.min(bpts[0].y, bpts[1].y, bpts[2].y, bpts[3].y) > aMaxY) continue;
+        if (Math.max(bpts[0].y, bpts[1].y, bpts[2].y, bpts[3].y) < aMinY) continue;
+        pushPointsOut(A, B);
+        pushPointsOut(B, A);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Fragmentation: a heavy hit splits a block into four quadrant pieces
+  // (queued so the box list is never mutated mid-iteration; capped for
+  // performance and only while the piece is still big enough to halve)
+  // ---------------------------------------------------------------------
+  const pendingSplits = [];
+  function queueSplit(box) {
+    if (box.dead || box.size < FRAG_MIN_SIZE || boxes.length >= MAX_BOXES) return;
+    box.dead = true;
+    pendingSplits.push(box);
+  }
+
+  function removeBox(box) {
+    const own = new Set(box.points);
+    for (let i = 0; i < constraints.length; i++) {
+      const c = constraints[i];
+      if ((own.has(c.p1) || own.has(c.p2)) && c.active && c.isSeam) unjoin(c);
+    }
+    constraints = constraints.filter(c => !(own.has(c.p1) || own.has(c.p2)));
+    points = points.filter(p => !own.has(p));
+    const idx = boxes.indexOf(box);
+    if (idx >= 0) boxes.splice(idx, 1);
+    for (const other of box.joints.keys()) other.joints.delete(box);
+  }
+
+  function fragmentBox(box) {
+    let vx = 0, vy = 0, cx = 0, cy = 0;
+    for (const p of box.points) { vx += p.x - p.px; vy += p.y - p.py; cx += p.x; cy += p.y; }
+    vx /= 4; vy /= 4; cx /= 4; cy /= 4;
+    const childSize = box.size * 0.46;
+    if (dragBox === box) { dragBox = null; dragOffsets = null; }
+    removeBox(box);
+    for (const [ox, oy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      const child = makeBox(cx + ox * box.size * 0.25, cy + oy * box.size * 0.25,
+        childSize, box.color, true);
+      for (const p of child.points) {
+        // inherit the parent's velocity plus a small outward pop
+        p.px = p.x - vx - ox * (0.4 + Math.random() * 0.8);
+        p.py = p.y - vy - oy * (0.4 + Math.random() * 0.8);
+      }
+    }
+    spawnDebrisBurst(cx, cy, REDUCED_MOTION ? 6 : 14);
+    playThud(14);
+  }
+
+  function processSplits() {
+    while (pendingSplits.length) fragmentBox(pendingSplits.pop());
   }
 
   function updateBallSquash(dt) {
@@ -401,7 +567,9 @@
         if (p.inv > 0) clampPoint(p, p === ball ? ball.radius : POINT_R);
       }
       ballCollideBoxes();
+      boxCollideBoxes();
     }
+    processSplits();
     updateParticles(dt);
     updateBallSquash(dt);
     trauma = Math.max(0, trauma - dt * 1.3);
@@ -436,7 +604,13 @@
       const c = constraints[i];
       if (!c.active || !c.isSeam) continue;
       const mx = (c.p1.x + c.p2.x) / 2, my = (c.p1.y + c.p2.y) / 2;
-      if (Math.hypot(mx - x, my - y) < RADIUS * 0.75) c.active = false;
+      if (Math.hypot(mx - x, my - y) < RADIUS * 0.75) { c.active = false; unjoin(c); }
+    }
+    // blocks at the heart of the blast shatter (processed next tick)
+    for (let i = 0; i < boxes.length; i++) {
+      const pts = boxes[i].points;
+      const bx = (pts[0].x + pts[2].x) / 2, by = (pts[0].y + pts[2].y) / 2;
+      if (Math.hypot(bx - x, by - y) < RADIUS * 0.5) queueSplit(boxes[i]);
     }
     addTrauma(0.65);
     triggerHitStop((REDUCED_MOTION ? 25 : 70));
@@ -656,15 +830,10 @@
   const soundValEl = document.getElementById('soundVal');
   function updateUIText() {
     massValEl.textContent = ballMass.toFixed(1);
-    let standing = 0;
-    for (let i = 0; i < boxes.length; i++) {
-      const cons = boxes[i].cons;
-      let ok = true;
-      for (let j = 0; j < cons.length; j++) if (!cons[j].active) { ok = false; break; }
-      if (ok) standing++;
-    }
-    standingValEl.textContent = standing;
-    totalValEl.textContent = boxes.length;
+    let intact = 0;
+    for (let i = 0; i < boxes.length; i++) if (!boxes[i].isFragment) intact++;
+    standingValEl.textContent = intact;
+    totalValEl.textContent = initialBoxCount;
     soundValEl.textContent = audioEnabled ? 'On' : 'Off';
   }
 
@@ -711,7 +880,7 @@
     ball.radius = BALL_BASE_RADIUS + (ballMass - 1) * 6;
   }, { passive: false });
 
-  window.addEventListener('resize', function () { fitCanvas(); buildYard(false); });
+  window.addEventListener('resize', function () { fitCanvas(); buildYard(); });
 
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden) last = performance.now();
@@ -725,7 +894,7 @@
   });
 
   document.getElementById('resetBtn').addEventListener('click', function () {
-    buildYard(true);
+    buildYard();
   });
 
   // ---------------------------------------------------------------------
@@ -755,7 +924,7 @@
   // ---------------------------------------------------------------------
   fitCanvas();
   initSprites();
-  buildYard(false);
+  buildYard();
   requestAnimationFrame(frame);
 })();
 </script>

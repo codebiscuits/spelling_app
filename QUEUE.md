@@ -14,11 +14,6 @@ Add items below; delete them when done.
   now implemented, so times tables can't become a way to avoid spellings.)
 
 I have manually tested the mini-games and have lots of things i would like to improve. We need to discuss each of these points until you understand enough to plan them all in detail
-- wrecking yard: 
-	- the blocks distort in very unrealistic ways, stretching out into long needle shapes. they should either break into smaller pieces or become smaller in one dimension whilst staying the same in other dimensions
-	- the blocks in each tower are stuck together, they don't separate from each other when you hit the tower
-	- the initial configuration of blocks is nice, but it would be even better if there were more than one initial state that could be cycled through when the reset button is pressed, or maybe even the initial state could be randomised each time the game starts (as long as there are some structures to demolish)
-	- the screen shake effect should be proportional to the mass of the wrecking ball, so maximum shaking only happens when the wrecking ball is at maximum mass
 - topple tower: 
 	- when blocks collide, their bounce velocity should be very slightly lower (`impact velocity * ~0.9`) than their impact velocity, it seems as though bounce velocity is set to a constant at the moment, but it should be derived from the speed with which the two blocks collided.
 	- gravity well feature immediately causes all blocks to fly off-screen and not return, not a very useful game mechanic, needs tweaking
