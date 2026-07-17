@@ -10,7 +10,7 @@
       §2 fixed timestep, DPR-aware canvas
       §3 verlet boxes (4 pts + 6 constraints), point-vs-OBB pushout, softened-gravity wells
       §4 cosine palette, pre-rendered additive glow sprites
-      §5 trauma² screenshake, squash-and-stretch, dust puffs, idle wobble, pentatonic sound (off by default)
+      §5 action-driven screenshake (follows the count of moving blocks), squash-and-stretch, dust puffs, idle wobble, pentatonic sound (off by default)
       §7 no fail states — collapsing is the toy
   -->
   <style>
@@ -80,14 +80,23 @@ const DAMPING = 0.985;
 const SLEEP_V = 0.4, SLEEP_FRAMES = 40;   // stacks sleep like a real engine: frozen until disturbed
 const ITERS = 8;                 // constraint + collision relaxation passes per step
 const WALL_MARGIN = 18;
-const WELL_G = 3200, WELL_EPS2 = 900, MAX_EXTRA_ACCEL = 3.2;
+// Gravity wells pull with a finite-radius, mid-peaked linear profile (zero
+// at the centre and the rim) plus extra drag inside the field, so blocks
+// drift into orbit and clump instead of slingshotting off-screen
+const WELL_RADIUS = 280, WELL_ACCEL = 0.9, WELL_FIELD_DAMP = 0.965;
+const MAX_EXTRA_ACCEL = 3.2;
 const PUSH_RADIUS = 110, PUSH_STRENGTH = 0.10;   // gentle: teeters the tower, never blasts it
 const WOBBLE_PX = REDUCED ? 0 : 0.7;             // idle wobble is render-only, never a physics force
 const BOUNCE_VN = 1.5;           // contacts slower than this are fully inelastic so stacks settle
 const IMPACT_VN = 3.0;
-const TRAUMA_DECAY = 1.6;
+const SURFACE_REST = 0.30;       // ground/wall bounce stays muted
+// Screen shake follows the amount of action: the number of moving blocks
+// beyond a threshold, up to a limit (spec'd in QUEUE.md)
+const SHAKE_THRESHOLD = 5, SHAKE_LIMIT = 10, FALLING_SPEED = 1.2;
 let gravity = 0.30;
-let restitution = 0.30;
+// Block-vs-block bounce is derived from relative impact velocity; 0.9
+// leaves collisions just slightly inelastic
+let restitution = 0.9;
 let time = 0;
 
 
@@ -309,7 +318,6 @@ function resolveBoxBox(a, b, iter) {
       }
       if (iter === 0 && pt.impactCooldown <= 0 && Math.abs(vn) > IMPACT_VN) {
         spawnDust(pt.x, pt.y);
-        trauma = Math.min(1, trauma + Math.min(0.3, Math.abs(vn) * 0.02));
         pt.impactCooldown = 12;
         maybeThump(Math.abs(vn));
       }
@@ -324,17 +332,16 @@ function resolveGround(iter) {
       if (p.y > groundY) {
         const vy = p.y - p.py, vx = p.x - p.px;
         p.y = groundY;
-        p.py = vy > BOUNCE_VN ? p.y + vy * restitution : p.y;   // slow contact = no bounce
+        p.py = vy > BOUNCE_VN ? p.y + vy * SURFACE_REST : p.y;   // slow contact = no bounce
         p.px = p.x - vx * 0.55;
         if (iter === 0 && p.impactCooldown <= 0 && vy > IMPACT_VN) {
           spawnDust(p.x, groundY);
-          trauma = Math.min(1, trauma + Math.min(0.4, vy * 0.025));
           p.impactCooldown = 14;
           maybeThump(vy);
         }
       }
-      if (p.x < WALL_MARGIN) { const vx = p.x - p.px; p.x = WALL_MARGIN; p.px = p.x + vx * restitution; }
-      if (p.x > w - WALL_MARGIN) { const vx = p.x - p.px; p.x = w - WALL_MARGIN; p.px = p.x + vx * restitution; }
+      if (p.x < WALL_MARGIN) { const vx = p.x - p.px; p.x = WALL_MARGIN; p.px = p.x + vx * SURFACE_REST; }
+      if (p.x > w - WALL_MARGIN) { const vx = p.x - p.px; p.x = w - WALL_MARGIN; p.px = p.x + vx * SURFACE_REST; }
     }
   }
 }
@@ -362,7 +369,6 @@ function explodeBox(box) {
   box.dead = true;
   box.isWell = false;
   for (const other of boxes) if (!other.dead) wakeBox(other);   // everything above tumbles
-  trauma = Math.min(1, trauma + 0.55);
   const n5 = (Math.random() * 5) | 0;
   tone(penta(320, n5), 90, 0.3, 0.18, 'square');
   tone(penta(150, n5), 40, 0.35, 0.14, 'sine', 0.03);
@@ -403,7 +409,7 @@ canvas.addEventListener('mousedown', e => {
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   const dir = Math.sign(e.deltaY);
-  if (e.shiftKey) restitution = clampNum(restitution - dir * 0.03, 0, 0.9);
+  if (e.shiftKey) restitution = clampNum(restitution - dir * 0.03, 0, 0.95);
   else gravity = clampNum(gravity - dir * 0.02, 0.05, 1.2);
 }, { passive: false });
 
@@ -463,13 +469,19 @@ function update(dt) {
       if (box.asleep) continue;             // frozen: no gravity, no integration
     }
     for (const p of box.pts) {
-      let ax = 0, ay = 0;
+      let ax = 0, ay = 0, damp = DAMPING;
       for (const well of wells) {
         if (well.box === box) continue;
         const dx = well.cx - p.x, dy = well.cy - p.y;
-        const d2 = dx * dx + dy * dy + WELL_EPS2;
-        const f = WELL_G / d2;
-        ax += dx * f; ay += dy * f;
+        const d = Math.hypot(dx, dy);
+        if (d < WELL_RADIUS && d > 0.001) {
+          // mid-peaked profile: zero pull at the rim AND the centre, so
+          // captured blocks settle into a clump instead of oscillating
+          const t = d / WELL_RADIUS;
+          const f = WELL_ACCEL * 4 * t * (1 - t);
+          ax += dx / d * f; ay += dy / d * f;
+          damp = WELL_FIELD_DAMP;   // extra drag inside the field
+        }
       }
       if (mouse.active) {
         const dx = p.x - mouse.x, dy = p.y - mouse.y;
@@ -482,7 +494,7 @@ function update(dt) {
       const exMag = Math.hypot(ax, ay);
       if (exMag > MAX_EXTRA_ACCEL) { const s = MAX_EXTRA_ACCEL / exMag; ax *= s; ay *= s; }
 
-      const vx = (p.x - p.px) * DAMPING, vy = (p.y - p.py) * DAMPING;
+      const vx = (p.x - p.px) * damp, vy = (p.y - p.py) * damp;
       p.px = p.x; p.py = p.y;
       p.x += vx + ax;
       p.y += vy + gravity + ay;
@@ -528,7 +540,17 @@ function update(dt) {
   }
 
   updateParticles(dt);
-  trauma = Math.max(0, trauma - TRAUMA_DECAY * dt);
+  // Shake tracks the action: count blocks in motion, apply the QUEUE.md
+  // formula, and ease toward it so the shake swells and fades smoothly
+  let falling = 0;
+  for (const box of boxes) {
+    if (box.dead || box.asleep) continue;
+    let sv = 0;
+    for (const p of box.pts) sv += Math.hypot(p.x - p.px, p.y - p.py);
+    if (sv * 0.25 > FALLING_SPEED) falling++;
+  }
+  const shakeTarget = clampNum(falling - SHAKE_THRESHOLD, 0, SHAKE_LIMIT) / SHAKE_LIMIT;
+  trauma += (shakeTarget - trauma) * (shakeTarget > trauma ? 0.25 : 0.06);
 }
 
 // ---- rendering ----
