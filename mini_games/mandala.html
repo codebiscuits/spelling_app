@@ -10,9 +10,11 @@
   stroke sample is mirrored into a live symmetry group of N rotations plus
   N reflections (a dihedral group, 2N stamps total) around the screen
   centre, so any scribble comes out as a rose window. Colour drifts along
-  a cosine palette (§4) as you paint. Glow strokes use pre-rendered
-  radial-gradient sprites with 'lighter' additive blending (§4) — never
-  ctx.shadowBlur per stamp. A faint red/blue offset copy of each stamp
+  a cosine palette (§4) as you paint. Strokes use pre-rendered
+  radial-gradient sprites (§4) — never ctx.shadowBlur per stamp; the stroke
+  body composites source-over (saturating at the palette colour) with faint
+  additive dispersion fringes on top. The paint buffer is a square covering
+  the viewport diagonal so rotation never shows an edge. A faint red/blue offset copy of each stamp
   gives cheap chromatic-dispersion fringing (§4). The whole piece drifts in
   a very slow turntable rotation; mouse coordinates are counter-rotated
   before stamping so painting still feels anchored to the cursor.
@@ -53,9 +55,11 @@
   <div class="param"><span class="key">Move</span><span class="val">Shimmer preview</span></div>
   <div class="param"><span class="key">Left drag</span><span class="val">Paint glow</span></div>
   <div class="param"><span class="key">Right drag</span><span class="val">Erase</span></div>
-  <div class="param"><span class="key">Scroll</span><span class="val">Change symmetry</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Brush size</span></div>
+  <div class="param"><span class="key">[ / ] keys</span><span class="val">Change symmetry</span></div>
   <br>
   <div class="param"><span class="key">Symmetry (N):</span><span class="val" id="nVal">8</span></div>
+  <div class="param"><span class="key">Brush:</span><span class="val" id="brushVal">20</span></div>
 </div>
 
 <button id="resetBtn">&#x21BA; Reset</button>
@@ -79,20 +83,27 @@ function fitCanvas() {
   const newDpr = Math.min(window.devicePixelRatio || 1, 2);
   const newW = window.innerWidth, newH = window.innerHeight;
   const newPW = Math.round(newW * newDpr), newPH = Math.round(newH * newDpr);
+  // The paint buffer is a centred square covering the full viewport
+  // diagonal, so the turntable rotation never reveals a buffer edge and
+  // symmetric stamp copies landing outside the viewport aren't clipped.
+  const newPS = Math.ceil(Math.hypot(newPW, newPH));
 
   // Rebuild the paint buffer at the new size, blitting the old content back
   // in centred so the artwork survives a resize without reloading.
   const fresh = document.createElement('canvas');
-  fresh.width = newPW; fresh.height = newPH;
+  fresh.width = newPS; fresh.height = newPS;
   const freshCtx = fresh.getContext('2d');
   if (paintCanvas.width > 0 && paintCanvas.height > 0) {
-    const dx = (newPW - paintCanvas.width) / 2;
-    const dy = (newPH - paintCanvas.height) / 2;
+    const dx = (newPS - paintCanvas.width) / 2;
+    const dy = (newPS - paintCanvas.height) / 2;
     freshCtx.drawImage(paintCanvas, dx, dy);
   }
   paintCanvas = fresh;
   paintCtx = freshCtx;
-  paintCtx.setTransform(newDpr, 0, 0, newDpr, 0, 0);
+  // Viewport user-space coordinates, with the viewport centre mapped onto
+  // the centre of the larger square buffer
+  paintCtx.setTransform(newDpr, 0, 0, newDpr,
+    newPS / 2 - (newW / 2) * newDpr, newPS / 2 - (newH / 2) * newDpr);
 
   canvas.width = newPW; canvas.height = newPH;
   canvas.style.width = newW + 'px'; canvas.style.height = newH + 'px';
@@ -192,8 +203,8 @@ function screenToWorld(x, y) {
 }
 
 // ------------------------------------------------------------- brushwork --
-const BASE_RADIUS = 20;
-const ERASE_RADIUS = 36;
+const MIN_BRUSH = 6, MAX_BRUSH = 60;
+let brushRadius = 20; // scroll-adjustable
 const SPACING = 5;
 const DISPERSE = 4;
 let hueAccum = 0;
@@ -212,12 +223,15 @@ function walkAndStamp(from, to, spacing, fn) {
 function paintStroke(from, to) {
   walkAndStamp(from, to, SPACING, p => {
     hueAccum += 0.006;
-    const radius = BASE_RADIUS * (0.85 + 0.15 * Math.sin(hueAccum * 8));
+    const radius = brushRadius * (0.85 + 0.15 * Math.sin(hueAccum * 8));
     const bucket = bucketOf(hueAccum);
     paintCtx.save();
-    stampSymmetry(paintCtx, p.x, p.y, paletteSprites[bucket], radius, 0, 1, 'lighter');
-    stampSymmetry(paintCtx, p.x, p.y, redSprite, radius * 0.9, DISPERSE, 0.30, 'lighter');
-    stampSymmetry(paintCtx, p.x, p.y, blueSprite, radius * 0.9, -DISPERSE, 0.30, 'lighter');
+    // The body of the stroke composites normally so overlapping paint
+    // saturates at the palette colour instead of summing to white; only the
+    // faint dispersion fringes stay additive for a hint of glow.
+    stampSymmetry(paintCtx, p.x, p.y, paletteSprites[bucket], radius, 0, 1, 'source-over');
+    stampSymmetry(paintCtx, p.x, p.y, redSprite, radius * 0.9, DISPERSE, 0.12, 'lighter');
+    stampSymmetry(paintCtx, p.x, p.y, blueSprite, radius * 0.9, -DISPERSE, 0.12, 'lighter');
     paintCtx.restore();
   });
 }
@@ -225,7 +239,7 @@ function paintStroke(from, to) {
 function eraseStroke(from, to) {
   walkAndStamp(from, to, SPACING * 1.4, p => {
     paintCtx.save();
-    stampSymmetry(paintCtx, p.x, p.y, eraseSprite, ERASE_RADIUS, 0, 1, 'destination-out');
+    stampSymmetry(paintCtx, p.x, p.y, eraseSprite, brushRadius * 1.8, 0, 1, 'destination-out');
     paintCtx.restore();
   });
 }
@@ -314,12 +328,21 @@ canvas.addEventListener('mousemove', e => {
 
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  N = Math.max(2, Math.min(16, N - Math.sign(e.deltaY)));
+  brushRadius = Math.max(MIN_BRUSH, Math.min(MAX_BRUSH, brushRadius - Math.sign(e.deltaY) * 2));
 }, { passive: false });
 
+window.addEventListener('keydown', e => {
+  if (e.key === '[') N = Math.max(2, N - 1);
+  if (e.key === ']') N = Math.min(16, N + 1);
+});
+
 function resetAll() {
+  paintCtx.save();
+  paintCtx.setTransform(1, 0, 0, 1, 0, 0);
   paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+  paintCtx.restore();
   N = 8;
+  brushRadius = 20;
   rotationAngle = 0;
   hueAccum = 0;
   particles.length = 0;
@@ -338,7 +361,8 @@ function update(dt) {
 }
 
 const nValEl = document.getElementById('nVal');
-let lastN = -1;
+const brushValEl = document.getElementById('brushVal');
+let lastN = -1, lastBrush = -1;
 
 function draw() {
   // background
@@ -351,7 +375,7 @@ function draw() {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate(rotationAngle);
-  ctx.drawImage(paintCanvas, -canvas.width / 2, -canvas.height / 2);
+  ctx.drawImage(paintCanvas, -paintCanvas.width / 2, -paintCanvas.height / 2);
   ctx.restore();
 
   // vignette (§4 cheap post-processing)
@@ -368,13 +392,14 @@ function draw() {
     const bucket = bucketOf(hueAccum + performance.now() * 0.0002);
     ctx.save();
     stampSymmetry(ctx, world.x, world.y, paletteSprites[bucket],
-      BASE_RADIUS * (0.5 + 0.15 * shimmer), 0, 0.10 + 0.10 * shimmer, 'lighter');
+      brushRadius * (0.5 + 0.15 * shimmer), 0, 0.10 + 0.10 * shimmer, 'lighter');
     ctx.restore();
   }
 
   drawParticles();
 
   if (N !== lastN) { nValEl.textContent = N; lastN = N; }
+  if (brushRadius !== lastBrush) { brushValEl.textContent = brushRadius; lastBrush = brushRadius; }
 }
 
 function frame(now) {

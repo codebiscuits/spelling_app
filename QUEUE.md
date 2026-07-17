@@ -14,10 +14,6 @@ Add items below; delete them when done.
   now implemented, so times tables can't become a way to avoid spellings.)
 
 I have manually tested the mini-games and have lots of things i would like to improve. We need to discuss each of these points until you understand enough to plan them all in detail
-- mandala maker:
-	- the in-game mandala canvas (not the technical html canvas object) should be larger than the viewport so that the user doesn't see the edges as it rotates
-	- there should be a way of controlling the brush width, the current setting fills the canvas with white much too quickly
-	- also, the color is too 'additive', by which i mean that overlapping points of color add up to white very quickly, so dragging a line almost always results in a mostly white line with just a hint of the color at the edges, the brightness of the colors should be set appropriately so that the brightness spectrum is more evenly distributed
 - firefly field needs firefly speed to be slightly faster or enable user control of firefly speed
 - splash bath: the constant shaking is too much. maybe change it so that the user can cause the screen shaking by pressing the space bar
 - pattern grower/reaction diffusion: left-drag and right-drag do basically the same thing, it would be nice if they each had a distinct effect on the game state
