@@ -86,7 +86,9 @@ const DUCK_D = [0.05, 0.15, 0.55]; // stays warm yellow/orange, never rainbows
 // ==================== WATER HEIGHTFIELD (§3) ====================
 const SPACING = 6;
 let N = 0, u = null, v = null; // height offset & velocity per column
-const TENSION = 0.28, DAMPING = 0.986, SPREAD = 0.028; // spread lets ripples travel sideways
+// DAMPING well below 1 so the pond visibly settles within a couple of
+// seconds once disturbances stop — ducks need near-calm water to bob on
+const TENSION = 0.28, DAMPING = 0.96, SPREAD = 0.028; // spread lets ripples travel sideways
 
 function initWater() {
   N = Math.max(24, Math.floor(w / SPACING) + 2);
@@ -299,8 +301,9 @@ function step() {
     const dx = mouseX - prevMouseX, dy = mouseY - prevMouseY;
     const speed = Math.hypot(dx, dy);
     const surf = waterY(mouseX);
-    if (mouseY > surf - 14 && speed > 0.5) {
-      poke(mouseX, Math.max(-14, Math.min(14, (dy * 0.5 + speed * 0.35))), 4);
+    // gentle wake only: a soft trail that fades, not waves that swamp ducks
+    if (mouseY > surf - 6 && speed > 1) {
+      poke(mouseX, Math.max(-2.5, Math.min(2.5, (dy * 0.12 + speed * 0.08))), 3);
     }
   }
   prevMouseX = mouseX; prevMouseY = mouseY;
@@ -321,7 +324,7 @@ function step() {
     d.y += d.vy * DT;
     const surf = waterY(d.x);
     if (d.y >= surf) {
-      poke(d.x, -Math.min(16, d.vy * 0.05 * (d.size / 4)), 2);
+      poke(d.x, -Math.min(10, d.vy * 0.05 * (d.size / 4)), 2);
       const n = 3 + (d.size | 0);
       for (let i = 0; i < n; i++) {
         const a = Math.PI + Math.random() * Math.PI;

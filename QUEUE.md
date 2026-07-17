@@ -14,7 +14,6 @@ Add items below; delete them when done.
   now implemented, so times tables can't become a way to avoid spellings.)
 
 I have manually tested the mini-games and have lots of things i would like to improve. We need to discuss each of these points until you understand enough to plan them all in detail
-- pond is very difficult to play, the water ripple simulation is quite extreme, i should do a q&a with claude to work out what's wrong there
 - puppet pets has a very low frame-rate, how can we improve rendering performance? maybe just reducing the default number of puppets to 1 would improve things? any other options would be welcome because it would have a big impact on the feel of the game
 - mandala maker:
 	- the in-game mandala canvas (not the technical html canvas object) should be larger than the viewport so that the user doesn't see the edges as it rotates
