@@ -14,10 +14,13 @@
       display: block;
     }
 
+    /* Top-centre: the games pin their own mute button top-right and their
+       controls pane top-left inside the iframe, so both corners are taken */
     #timer-overlay {
       position: fixed;
       top: 1rem;
-      right: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
       background: rgba(0,0,0,0.65);
       color: white;
       padding: 0.5rem 1rem;
