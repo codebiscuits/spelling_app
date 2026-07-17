@@ -394,6 +394,14 @@
   function clampPoint(p, radius) {
     const limitY = groundY - radius;
     if (p.y > limitY) {
+      const vy = p.y - p.py;
+      // ground thump: falling blocks rumble a little; the ball's slam scales
+      // with its mass like every other ball-driven shake
+      if (vy > 6) {
+        addTrauma(p === ball
+          ? Math.min(0.5, vy * 0.02 * (ballMass / BALL_MASS_MAX))
+          : Math.min(0.08, vy * 0.006));
+      }
       p.y = limitY;
       const vx = p.x - p.px;
       p.px = p.x - vx * 0.85;
@@ -404,8 +412,9 @@
   }
 
   function registerImpact(speed, x, y, box) {
-    // Screen shake scales with ball mass: max shaking only at max mass
-    addTrauma(Math.min(0.5, speed * 0.01) * (ballMass / BALL_MASS_MAX));
+    // The wrecking ball is the main shake driver, proportional to its mass:
+    // the same swing speed rocks the ground harder as the ball gets heavier
+    addTrauma(Math.min(0.6, speed * 0.02 * (ballMass / BALL_MASS_MAX)));
     if (speed > FRAG_SPEED && box) queueSplit(box);
     if (impactCooldown > 0) return;
     const BIG = 6;
@@ -545,6 +554,8 @@
       }
     }
     spawnDebrisBurst(cx, cy, REDUCED_MOTION ? 6 : 14);
+    // smashed blocks add a secondary rumble on top of the ball's shake
+    addTrauma(clamp(box.size * 0.004, 0.06, 0.18));
     playThud(14);
   }
 
