@@ -37,6 +37,7 @@
   <div class="param"><span class="key">Hold Left</span><span class="val">Lantern gathers them</span></div>
   <div class="param"><span class="key">Right Click</span><span class="val">Pulse, desyncs nearby</span></div>
   <div class="param"><span class="key">Scroll</span><span class="val">Swarm: <span id="countVal">0</span></span></div>
+  <div class="param"><span class="key">+ / - keys</span><span class="val">Speed: <span id="speedVal">&times;1.15</span></span></div>
   <br>
   <div class="param"><span class="key">Sync:</span><span class="val" id="syncVal">0%</span></div>
 </div>
@@ -113,6 +114,10 @@
   const MOUSE_INFLUENCE_R = 210, MOUSE_SLOW_THRESH = 55;
   const MOUSE_CURIOUS_ACCEL = 40, MOUSE_SCATTER_ACCEL_MAX = 380;
   const LANTERN_R = 260, LANTERN_ACCEL = 300;
+  // Global flight-speed multiplier: starts a touch brisker than the old
+  // default and is adjustable with the +/- keys
+  const SPEED_MIN = 0.6, SPEED_MAX = 2.0, SPEED_STEP = 0.15, SPEED_DEFAULT = 1.15;
+  let speedMul = SPEED_DEFAULT;
 
   let fireflies = [];
   function makeFirefly(x, y) {
@@ -176,6 +181,14 @@
       fireflies.length = targetCount;
     }
   }, { passive: false });
+  window.addEventListener('keydown', e => {
+    if (e.key === '+' || e.key === '=') {
+      speedMul = Math.min(SPEED_MAX, Math.round((speedMul + SPEED_STEP) * 100) / 100);
+    }
+    if (e.key === '-' || e.key === '_') {
+      speedMul = Math.max(SPEED_MIN, Math.round((speedMul - SPEED_STEP) * 100) / 100);
+    }
+  });
 
   // ---------- simulation state ----------
   let simTime = 0;
@@ -303,7 +316,7 @@
       if (sp > maxSpeed) { f.vx = (f.vx / sp) * maxSpeed; f.vy = (f.vy / sp) * maxSpeed; }
       else if (sp < minSpeed && sp > 1e-4) { f.vx = (f.vx / sp) * minSpeed; f.vy = (f.vy / sp) * minSpeed; }
 
-      f.x += f.vx * dt; f.y += f.vy * dt;
+      f.x += f.vx * dt * speedMul; f.y += f.vy * dt * speedMul;
       f.x = Math.max(0, Math.min(w, f.x));
       f.y = Math.max(0, Math.min(h, f.y));
 
@@ -455,6 +468,7 @@
   function updateUI() {
     document.getElementById('countVal').textContent = fireflies.length;
     document.getElementById('syncVal').textContent = Math.round(syncPercent * 100) + '%';
+    document.getElementById('speedVal').textContent = '×' + speedMul.toFixed(2);
   }
 
   // ---------- reset ----------
@@ -465,6 +479,7 @@
     lantern.active = false;
     cursorSpeed = 0;
     simTime = 0;
+    speedMul = SPEED_DEFAULT;
     for (const b of grass) { b.bend = 0; b.bendVel = 0; }
   });
 
