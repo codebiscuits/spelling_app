@@ -86,8 +86,9 @@ const WALL_MARGIN = 18;
 const WELL_RADIUS = 280, WELL_ACCEL = 0.9, WELL_FIELD_DAMP = 0.965;
 const MAX_EXTRA_ACCEL = 3.2;
 const PUSH_RADIUS = 110, PUSH_STRENGTH = 0.10;   // gentle: teeters the tower, never blasts it
+const BLAST_RADIUS = 170, BLAST_KICK = 18;       // exploding block hurls neighbours outward
 const WOBBLE_PX = REDUCED ? 0 : 0.7;             // idle wobble is render-only, never a physics force
-const BOUNCE_VN = 1.5;           // contacts slower than this are fully inelastic so stacks settle
+const BOUNCE_VN = 2.5;           // contacts slower than this are fully inelastic so stacks settle
 const IMPACT_VN = 3.0;
 const SURFACE_REST = 0.30;       // ground/wall bounce stays muted
 // Screen shake follows the amount of action: the number of moving blocks
@@ -291,7 +292,7 @@ function resolveBoxBox(a, b, iter) {
       // depth along the chosen face, clamped so deep transient overlap can't
       // convert into a launch (pushout below injects velocity by design)
       let pen = useX ? obb.halfW - Math.sign(lax || 1) * lx : obb.halfH - Math.sign(lay || 1) * ly;
-      pen = clampNum(pen, 0, 6);
+      pen = clampNum(pen, 0, 3);
       if (pen <= 0) continue;
       // b's velocity (mean of its points) — impulses must use RELATIVE velocity,
       // or a stack falling as one bounces off itself and popcorns apart
@@ -306,9 +307,11 @@ function resolveBoxBox(a, b, iter) {
       pt.x += nx * pen * wPt; pt.y += ny * pen * wPt;
       if (wB > 0) for (const c of b.pts) { c.x -= nx * pen * wB; c.y -= ny * pen * wB; }
       if (vn < 0) {
-        // extra bounce only on real impacts (relative speed above threshold)
+        // extra bounce only on real impacts, and only on the speed in EXCESS
+        // of the threshold — bouncing the full vn made resting neighbours
+        // clatter apart at the slightest nudge
         if (-vn > BOUNCE_VN) {
-          const jn = restitution * vn;
+          const jn = restitution * (vn + BOUNCE_VN);
           pt.px += nx * jn * 0.5; pt.py += ny * jn * 0.5;
           if (!b.asleep) for (const c of b.pts) { c.px -= nx * jn * 0.125; c.py -= ny * jn * 0.125; }
         }
@@ -368,6 +371,20 @@ function explodeBox(box) {
   }
   box.dead = true;
   box.isWell = false;
+  // the blast itself throws nearby blocks outward — a radial velocity kick
+  // per point (with falloff), so close blocks fly and also pick up spin
+  for (const other of boxes) {
+    if (other.dead || other === box) continue;
+    for (const p of other.pts) {
+      const dx = p.x - cx, dy = p.y - cy;
+      const d = Math.hypot(dx, dy);
+      if (d < BLAST_RADIUS && d > 0.001) {
+        const kick = (1 - d / BLAST_RADIUS) * BLAST_KICK;
+        p.px -= (dx / d) * kick;
+        p.py -= (dy / d) * kick;
+      }
+    }
+  }
   for (const other of boxes) if (!other.dead) wakeBox(other);   // everything above tumbles
   const n5 = (Math.random() * 5) | 0;
   tone(penta(320, n5), 90, 0.3, 0.18, 'square');
