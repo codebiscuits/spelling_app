@@ -2,29 +2,32 @@ import math
 from datetime import datetime, timezone
 
 
-def check_and_award(user_id: int, list_id: int, session_id: int, session_score: int, db) -> dict:
-    """
-    Evaluate and award badges, medals, and trophies.
+def award_session_badge(user_id: int, session_id: int, session_score: int, db) -> bool:
+    """Badge — scored >= 16/20 on this session (unlimited, but exactly one
+    per session regardless of how many lists the session touched)."""
+    if session_score < 16:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
+        (user_id, session_id, now),
+    )
+    return True
 
-    Badge  — scored >= 16/20 on this session (unlimited, per session)
+
+def check_and_award(user_id: int, list_id: int, db) -> dict:
+    """
+    Evaluate and award per-list medals and trophies.
+
     Medal  — >= 50% of list words spelled correctly first-try at least once (once per list)
     Trophy — next list unlocked: >= 95% first-try correct + all remaining second-try correct (once per list)
     """
     now = datetime.now(timezone.utc).isoformat()
     result = {
-        "badge_awarded": False,
         "medal_awarded": False,
         "trophy_awarded": False,
         "lists_unlocked": [],
     }
-
-    # --- Badge: score >= 16 on this session ---
-    if session_score >= 16:
-        db.execute(
-            "INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
-            (user_id, session_id, now),
-        )
-        result["badge_awarded"] = True
 
     existing_user_badges = {
         r["badge_type"]

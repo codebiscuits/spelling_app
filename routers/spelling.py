@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from database import get_db
 from auth import require_child
 from services.word_selection import select_words
-from services.gamification import check_and_award
+from services.gamification import award_session_badge, check_and_award
 from services.game_rewards import check_and_unlock, unlocked_files, next_locked, badges_until_next
 from services.tts import get_audio_url, get_sentence_audio_url
 from templates_env import templates, CLASSIC_GAMES, REWARD_GAMES
@@ -191,9 +191,11 @@ def results(request: Request, user=Depends(require_child)):
         ).fetchall()
 
         gamification = {"badge_awarded": False, "medal_awarded": False, "trophy_awarded": False, "lists_unlocked": []}
+        gamification["badge_awarded"] = award_session_badge(
+            user_id, session_id, session["score"], db
+        )
         for row in distinct_list_ids:
-            result = check_and_award(user_id, row["list_id"], session_id, session["score"], db)
-            gamification["badge_awarded"] = gamification["badge_awarded"] or result["badge_awarded"]
+            result = check_and_award(user_id, row["list_id"], db)
             gamification["medal_awarded"] = gamification["medal_awarded"] or result["medal_awarded"]
             gamification["trophy_awarded"] = gamification["trophy_awarded"] or result["trophy_awarded"]
             gamification["lists_unlocked"].extend(result["lists_unlocked"])

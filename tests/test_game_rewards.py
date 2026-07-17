@@ -320,6 +320,24 @@ def test_celebration_card_present_on_unlocking_session(child_client):
     assert game["description"] in resp.text
 
 
+def test_qualifying_multi_list_session_awards_exactly_one_badge(child_client):
+    """Regression: the badge used to be inserted once per list touched by the
+    session, so a 20/20 session drawing words from several lists inflated the
+    lifetime star count and fired the every-3-stars game unlock early."""
+    child_id = child_client.child_id
+    setup_practice_list(child_id, ["apple", "banana", "carrot", "dolphin", "eagle"],
+                        name="List A")
+    setup_practice_list(child_id, ["forest", "garden", "harbor", "island", "jungle"],
+                        name="List B")
+    resp = run_full_session(child_client)  # 10 words -> both lists touched
+    assert resp.status_code == 200
+    with app_db() as db:
+        count = db.execute(
+            "SELECT COUNT(*) AS c FROM test_badges WHERE user_id=?", (child_id,)
+        ).fetchone()["c"]
+    assert count == 1
+
+
 def test_locked_reward_game_names_never_leak_on_results_page(child_client):
     child_id = child_client.child_id
     setup_practice_list(child_id, PRACTICE_WORDS)

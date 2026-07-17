@@ -32,8 +32,9 @@ def badges_until_next(user_id: int, db) -> int:
 
 
 def check_and_unlock(user_id: int, award: dict, db) -> dict | None:
-    """Apply the §1.3 earning ladder given the dict returned by
-    gamification.check_and_award() (aggregated across a whole session).
+    """Apply the §1.3 earning ladder given the session's aggregated award
+    dict (badge from gamification.award_session_badge(), medal/trophy
+    aggregated across the per-list gamification.check_and_award() calls).
 
     Trigger order: trophy this session -> medal this session -> badge this
     session AND lifetime badge count is a multiple of BADGE_STEP. At most
