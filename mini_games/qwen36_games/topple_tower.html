@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Topple Tower</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: radial-gradient(ellipse at 50% 100%, #1a1230, #0a0818); }
+canvas { display: block; }
+#controls {
+  position: fixed; top: 16px; left: 16px;
+  background: rgba(12,12,30,0.75);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px; padding: 12px 16px;
+  color: #ccc; font: 13px/1.6 monospace;
+  pointer-events: none; user-select: none;
+  min-width: 190px;
+}
+#controls b { color: #fff; }
+#controls span { color: #f0c060; }
+#reset-btn {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: rgba(255,255,255,0.08);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 20px; padding: 8px 28px;
+  color: #ddd; font: 14px/1 monospace;
+  cursor: pointer; pointer-events: auto;
+  transition: background 0.2s;
+}
+#reset-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+  <b>Topple Tower</b><br>
+  Move — stir the tower<br>
+  <span>LMB</span> — explode block<br>
+  <span>RMB</span> — gravity well<br>
+  <span>Scroll</span> — gravity <span id="grav-val">1.0×</span><br>
+  <span>R</span> — reset
+</div>
+<button id="reset-btn">Reset</button>
+
+<script>
+// ============================================================
+//  TOPPLE TOWER v2 — Verlet boxes stacked as a tower,
+//  collapse under gravity, per-block gravity wells.
+//  Pure toppling catharsis.
+//  Performance-optimized: particle pool, spatial hashing,
+//  batched drawing, zero allocation in hot loop (§6).
+// ============================================================
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// --- House Standards §2.2: DPR-aware canvas ---
+let W, H, dpr;
+function fitCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // Resize bloom offscreen to full CSS resolution for sharp compositing
+  bloomOff.width = W;
+  bloomOff.height = H;
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+// --- House Standards §2.1: Fixed timestep ---
+const DT = 1 / 60;
+const GRAVITY = 600;
+const DAMPING = 0.998;
+const CONSTRAINT_ITER = 10;
+let acc = 0, lastTime = performance.now();
+let hitStopTimer = 0;
+let gravMul = 1.0;
+
+// --- Trauma screenshake §5 ---
+let trauma = 0;
+let shakeAngle = 0;
+let shakeAngleVel = 0;
+
+// --- Easing functions §5 ---
+function easeOutBack(t) {
+  const c1 = 1.70158, c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+function easeOutElastic(t) {
+  if (t === 0 || t === 1) return t;
+  return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1;
+}
+function easeOutBounce(t) {
+  const n1 = 7.5625, d1 = 2.75;
+  if (t < 1 / d1) return n1 * t * t;
+  else if (t < 2 / d1) return n1 * (t -= 1.5 / d1) * t + 0.75;
+  else if (t < 2.5 / d1) return n1 * (t -= 2.25 / d1) * t + 0.9375;
+  else return n1 * (t -= 2.625 / d1) * t + 0.984375;
+}
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+// --- Mouse state §2.3 ---
+let mouseX = 0, mouseY = 0;
+let mousedown = false;
+let mouseDownTime = 0;
+
+// --- Cosine palette §4.1 ---
+const palette = (t) => {
+  const a = [.5,.5,.5], b = [.5,.5,.5], c = [1,.7,.4], d = [0,.15,.20];
+  return [
+    (a[0]+b[0]*Math.cos(6.28318*(c[0]*t+d[0]))),
+    (a[1]+b[1]*Math.cos(6.28318*(c[1]*t+d[1]))),
+    (a[2]+b[2]*Math.cos(6.28318*(c[2]*t+d[2])))
+  ];
+};
+function rgb(t, bright) {
+  const c = palette(t);
+  return `rgb(${Math.round(c[0]*255*bright)},${Math.round(c[1]*255*bright)},${Math.round(c[2]*255*bright)})`;
+}
+
+// --- Glow sprite (pre-rendered once) §4.2 ---
+const glowSpr = document.createElement('canvas');
+glowSpr.width = glowSpr.height = 64;
+const gCtx = glowSpr.getContext('2d');
+const sprGrad = gCtx.createRadialGradient(32,32,0,32,32,32);
+sprGrad.addColorStop(0, 'rgba(255,220,140,1)');
+sprGrad.addColorStop(0.3, 'rgba(255,160,60,0.4)');
+sprGrad.addColorStop(1, 'rgba(255,100,30,0)');
+gCtx.fillStyle = sprGrad;
+gCtx.fillRect(0,0,64,64);
+
+// --- Glow sprite for blocks (colour-tinted, pre-rendered) §4.2 ---
+const blockGlowSpr = document.createElement('canvas');
+blockGlowSpr.width = 128; blockGlowSpr.height = 64;
+const bgCtx = blockGlowSpr.getContext('2d');
+const bgGrad = bgCtx.createRadialGradient(64,32,0,64,32,64);
+bgGrad.addColorStop(0, 'rgba(255,220,160,0.9)');
+bgGrad.addColorStop(0.4, 'rgba(255,160,80,0.35)');
+bgGrad.addColorStop(1, 'rgba(255,100,40,0)');
+bgCtx.fillStyle = bgGrad;
+bgCtx.fillRect(0,0,128,64);
+
+// --- Offscreen canvas for bloom post-processing §4.4 ---
+const bloomOff = document.createElement('canvas');
+bloomOff.width = 1; bloomOff.height = 1;
+const bCtx = bloomOff.getContext('2d');
+
+// ============================================================
+//  PERFORMANCE §6.2: Zero allocation in hot loop
+// ============================================================
+
+// --- Particle pool (freelist) ---
+// Pre-allocate MAX_PARTICLES entries. Revive/kill instead of push/splice.
+const MAX_PARTICLES = 512;
+const particlePool = {
+  data: new Float32Array(MAX_PARTICLES * 8), // x,y,vx,vy,life,decay,size,colorT
+  alive: new Uint8Array(MAX_PARTICLES),       // 1 = alive, 0 = dead
+  freeList: [],                                // stack of free indices
+  count: 0,
+
+  init() {
+    for (let i = MAX_PARTICLES - 1; i >= 0; i--) this.freeList.push(i);
+  },
+
+  spawn(x, y, vx, vy, life, decay, size, colorT) {
+    if (this.freeList.length === 0) return;
+    const i = this.freeList.pop();
+    const o = i * 8;
+    this.data[o]   = x;    // 0: x
+    this.data[o+1] = y;    // 1: y
+    this.data[o+2] = vx;   // 2: vx
+    this.data[o+3] = vy;   // 3: vy
+    this.data[o+4] = life; // 4: life
+    this.data[o+5] = decay;// 5: decay
+    this.data[o+6] = size; // 6: size
+    this.data[o+7] = colorT;// 7: colorT
+    this.alive[i] = 1;
+    this.count++;
+  },
+
+  kill(idx) {
+    if (this.alive[idx]) {
+      this.alive[idx] = 0;
+      this.freeList.push(idx);
+      this.count--;
+    }
+  },
+
+  update() {
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+      if (!this.alive[i]) continue;
+      const o = i * 8;
+      const x = this.data[o], y = this.data[o+1];
+      const vx = this.data[o+2], vy = this.data[o+3];
+      const life = this.data[o+4], decay = this.data[o+5];
+      this.data[o]   = x + vx * DT;
+      this.data[o+1] = y + vy * DT + 200 * DT;
+      this.data[o+4] = life - decay;
+      if (this.data[o+4] <= 0) this.kill(i);
+    }
+  },
+
+  // Batch draw: iterate alive particles, draw with minimal state changes
+  draw(ctx, sprite) {
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+      if (!this.alive[i]) continue;
+      const o = i * 8;
+      ctx.globalAlpha = this.data[o+4] * 0.8;
+      ctx.drawImage(sprite, this.data[o] - 32, this.data[o+1] - 32, 64, 64);
+    }
+    ctx.globalAlpha = 1;
+  }
+};
+particlePool.init();
+
+// --- Spatial hash for box-box collision (O(n) broad phase) ---
+// Grid cell size: 60px (larger than a typical block).
+// Each box hashes to 4 cells (its AABB corners). Only check boxes
+// that share at least one cell.
+const SPATIAL_CELL = 60;
+const spatialGrid = {
+  cells: new Map(),  // string "cx,cy" → Array of box indices
+
+  clear() { this.cells.clear(); },
+
+  hash(cx, cy) { return cx + ',' + cy; },
+
+  insert(boxIdx, minX, minY, maxX, maxY) {
+    const cx0 = Math.floor(minX / SPATIAL_CELL);
+    const cy0 = Math.floor(minY / SPATIAL_CELL);
+    const cx1 = Math.floor(maxX / SPATIAL_CELL);
+    const cy1 = Math.floor(maxY / SPATIAL_CELL);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const key = this.hash(cx, cy);
+        let cell = this.cells.get(key);
+        if (!cell) { cell = []; this.cells.set(key, cell); }
+        cell.push(boxIdx);
+      }
+    }
+  },
+
+  // Get unique neighbor indices for a box at given AABB
+  query(minX, minY, maxX, maxY, out) {
+    out.length = 0;
+    const cx0 = Math.floor(minX / SPATIAL_CELL);
+    const cy0 = Math.floor(minY / SPATIAL_CELL);
+    const cx1 = Math.floor(maxX / SPATIAL_CELL);
+    const cy1 = Math.floor(maxY / SPATIAL_CELL);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const cell = this.cells.get(this.hash(cx, cy));
+        if (cell) {
+          for (let k = 0; k < cell.length; k++) {
+            if (out.indexOf(cell[k]) === -1) out.push(cell[k]);
+          }
+        }
+      }
+    }
+  }
+};
+
+// Scratch arrays for AABB computation — zero allocation per frame
+const _aabb = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+const _queryBuf = []; // reused for spatial hash queries
+
+// --- Physics: Verlet points + rigid boxes ---
+function makePoint(x, y) {
+  return { x, y, px: x, py: y };
+}
+
+function makeBox(x, y, w, h) {
+  const hw = w/2, hh = h/2;
+  const pts = [
+    makePoint(x-hw, y-hh),
+    makePoint(x+hw, y-hh),
+    makePoint(x+hw, y+hh),
+    makePoint(x-hw, y+hh)
+  ];
+  const diag = Math.hypot(w, h);
+  return {
+    pts, w, h,
+    rest: [[0,1,w],[1,2,h],[2,3,w],[3,0,h],[0,2,diag],[1,3,diag]],
+    color: Math.random(),
+    alive: true,
+    prevAngle: 0,
+    vx: 0, vy: 0
+  };
+}
+
+let boxes = [];
+let gravityWells = [];
+
+// ─── Build tower ───────────────────────────────────────────
+function buildTower() {
+  boxes = [];
+  gravityWells = [];
+  trauma = 0;
+  hitStopTimer = 0;
+  // Kill all particles via pool reset
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    if (particlePool.alive[i]) particlePool.kill(i);
+  }
+
+  const cols = 3;
+  const rows = 14;
+  const spacingX = 40;
+  const spacingY = 21;
+  const startX = W/2 - (cols * spacingX)/2 + spacingX/2;
+  const startY = H - 50;
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const bx = startX + col * spacingX + (row % 2 === 1 ? spacingX/2 : 0);
+      const by = startY - row * spacingY;
+      if (bx < 30 || bx > W - 30) continue;
+      const w = (col === 0 && col === cols-1) ? 55 : 36;
+      const box = makeBox(bx, by, w, 18);
+      box.color = row / rows;
+      boxes.push(box);
+    }
+  }
+}
+buildTower();
+
+// ─── Constraint solver (Gauss-Seidel) §3.1 ────────────────
+function solveConstraints() {
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const box = boxes[bi];
+    if (!box.alive) continue;
+    for (let iter = 0; iter < CONSTRAINT_ITER; iter++) {
+      for (let ri = 0; ri < box.rest.length; ri++) {
+        const rest = box.rest[ri];
+        const a = box.pts[rest[0]], b = box.pts[rest[1]];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy) || 0.001;
+        const diff = (dist - rest[2]) / dist * 0.5;
+        a.x += dx * diff; a.y += dy * diff;
+        b.x -= dx * diff; b.y -= dy * diff;
+      }
+    }
+  }
+}
+
+// ─── Collision: ground + walls + box-box (spatial hashed) ──
+function resolveCollisions() {
+  const groundY = H - 4;
+  const wallL = 4, wallR = W - 4;
+
+  // Ground & walls
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const box = boxes[bi];
+    if (!box.alive) continue;
+    for (let pi = 0; pi < 4; pi++) {
+      const p = box.pts[pi];
+      if (p.y > groundY) {
+        const impactVy = Math.abs(p.y - p.py);
+        p.y = groundY;
+        p.py = p.y + (p.y - p.py) * 0.3;
+        p.px = p.x - (p.x - p.px) * 0.85;
+        if (impactVy > 50) {
+          particlePool.spawn(p.x, groundY, 0, 0, 1, 0.015 + Math.random() * 0.025, 3 + Math.random() * 5, 0.5);
+          playLand(impactVy);
+          shake(0.05 * Math.min(1, impactVy / 200));
+        }
+      }
+      if (p.x < wallL) {
+        const impactVx = Math.abs(p.x - p.px);
+        p.x = wallL;
+        p.px = p.x + (p.x - p.px) * 0.3;
+        if (impactVx > 50) {
+          particlePool.spawn(wallL, p.y, 0, 0, 1, 0.015 + Math.random() * 0.025, 3 + Math.random() * 5, 0.6);
+          playCollision(impactVx);
+        }
+      }
+      if (p.x > wallR) {
+        const impactVx = Math.abs(p.x - p.px);
+        p.x = wallR;
+        p.px = p.x + (p.x - p.px) * 0.3;
+        if (impactVx > 50) {
+          particlePool.spawn(wallR, p.y, 0, 0, 1, 0.015 + Math.random() * 0.025, 3 + Math.random() * 5, 0.6);
+          playCollision(impactVx);
+        }
+      }
+    }
+  }
+
+  // ─── Spatial hash broad phase for box-box ────────────────
+  spatialGrid.clear();
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const box = boxes[bi];
+    if (!box.alive) continue;
+    let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+    for (let pi = 0; pi < 4; pi++) {
+      const p = box.pts[pi];
+      if(p.x<minX) minX=p.x; if(p.x>maxX) maxX=p.x;
+      if(p.y<minY) minY=p.y; if(p.y>maxY) maxY=p.y;
+    }
+    spatialGrid.insert(bi, minX, minY, maxX, maxY);
+  }
+
+  // ─── Narrow phase: only check spatially-hashed neighbors ─
+  _queryBuf.length = 0;
+  for (let ai = 0; ai < boxes.length; ai++) {
+    const a = boxes[ai];
+    if (!a.alive) continue;
+
+    let aMinX=Infinity, aMaxX=-Infinity, aMinY=Infinity, aMaxY=-Infinity;
+    for (let pi = 0; pi < 4; pi++) {
+      const p = a.pts[pi];
+      if(p.x<aMinX) aMinX=p.x; if(p.x>aMaxX) aMaxX=p.x;
+      if(p.y<aMinY) aMinY=p.y; if(p.y>aMaxY) aMaxY=p.y;
+    }
+
+    spatialGrid.query(aMinX, aMinY, aMaxX, aMaxY, _queryBuf);
+
+    for (let qi = 0; qi < _queryBuf.length; qi++) {
+      const bi = _queryBuf[qi];
+      if (bi <= ai) continue; // skip self and already-checked pairs
+      const b = boxes[bi];
+      if (!b.alive) continue;
+
+      let bMinX=Infinity, bMaxX=-Infinity, bMinY=Infinity, bMaxY=-Infinity;
+      for (let pi = 0; pi < 4; pi++) {
+        const p = b.pts[pi];
+        if(p.x<bMinX) bMinX=p.x; if(p.x>bMaxX) bMaxX=p.x;
+        if(p.y<bMinY) bMinY=p.y; if(p.y>bMaxY) bMaxY=p.y;
+      }
+
+      if (aMaxX < bMinX || bMaxX < aMinX || aMaxY < bMinY || bMaxY < aMinY) continue;
+      const ox = Math.min(aMaxX-bMinX, bMaxX-aMinX);
+      const oy = Math.min(aMaxY-bMinY, bMaxY-aMinY);
+      const push = Math.min(ox, oy) * 0.4;
+      if (ox < oy) {
+        for (let pi = 0; pi < 4; pi++) a.pts[pi].x += push;
+        for (let pi = 0; pi < 4; pi++) b.pts[pi].x -= push;
+      } else {
+        for (let pi = 0; pi < 4; pi++) a.pts[pi].y += push;
+        for (let pi = 0; pi < 4; pi++) b.pts[pi].y -= push;
+      }
+      const relVx = Math.abs(a.vx - b.vx);
+      const relVy = Math.abs(a.vy - b.vy);
+      const impact = Math.hypot(relVx, relVy);
+      if (impact > 80) {
+        // Dedup: only play each pair once per frame (§6.2)
+        const pairKey = `${ai}-${bi}`;
+        if (!collisionSet.has(pairKey)) {
+          playCollision(impact);
+          collisionSet.add(pairKey);
+        }
+        const cx = (aMinX + bMinX) / 2 + ox / 2;
+        const cy = (aMinY + bMinY) / 2 + oy / 2;
+        particlePool.spawn(cx, cy, 0, 0, 1, 0.015 + Math.random() * 0.025, 3 + Math.random() * 5, 0.3);
+      }
+    }
+  }
+}
+
+// ─── Integration ───────────────────────────────────────────
+function integrate() {
+  const grav = GRAVITY * gravMul * DT;
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const box = boxes[bi];
+    if (!box.alive) continue;
+    for (let pi = 0; pi < 4; pi++) {
+      const p = box.pts[pi];
+      const vx = (p.x - p.px) * DAMPING;
+      const vy = (p.y - p.py) * DAMPING;
+      p.px = p.x; p.py = p.y;
+      p.x += vx; p.y += vy + grav;
+
+      // Gravity wells — iterate with precomputed length
+      for (let wi = 0; wi < gravityWells.length; wi++) {
+        const gw = gravityWells[wi];
+        const dx = gw.x - p.x, dy = gw.y - p.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const force = gw.strength / (dist * 0.3 + 1);
+        p.x += (dx / dist) * force * DT;
+        p.y += (dy / dist) * force * DT;
+      }
+    }
+    // Track velocity for squash/stretch
+    const cx = (box.pts[0].x + box.pts[2].x) / 2;
+    const cy = (box.pts[0].y + box.pts[2].y) / 2;
+    box.vx = (cx - (box.pts[0]._lastCx || cx)) / DT;
+    box.vy = (cy - (box.pts[0]._lastCy || cy)) / DT;
+    box.pts[0]._lastCx = cx; box.pts[0]._lastCy = cy;
+  }
+}
+
+// ─── Spawn helper (uses particle pool) ─────────────────────
+function spawnParticles(x, y, count, colorT) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 100 + Math.random() * 300;
+    particlePool.spawn(
+      x, y,
+      Math.cos(angle) * speed,
+      Math.sin(angle) * speed - 150,
+      1,
+      0.015 + Math.random() * 0.025,
+      3 + Math.random() * 5,
+      colorT + Math.random() * 0.15
+    );
+  }
+}
+
+// ─── Gravity wells ─────────────────────────────────────────
+function updateGravityWells() {
+  for (let i = gravityWells.length - 1; i >= 0; i--) {
+    gravityWells[i].life -= 0.008;
+    if (gravityWells[i].life <= 0) gravityWells.splice(i, 1);
+  }
+}
+
+// ─── Screenshake §5: trauma² with rotation ────────────────
+function shake(intensity) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  trauma = Math.min(1, trauma + intensity);
+  shakeAngleVel += (Math.random() - 0.5) * intensity * 5;
+}
+
+// --- Audio: ZzFX-style sound engine §5 ---
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { return null; }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+// Pre-rendered noise buffer for land thuds — allocated once, reused (§6.2)
+let noiseBuffer = null;
+function getNoiseBuffer() {
+  if (!noiseBuffer) {
+    const ctx = getAudioCtx();
+    if (!ctx) return null;
+    const sr = ctx.sampleRate;
+    const len = Math.floor(sr * 0.08);
+    const buf = ctx.createBuffer(1, len, sr);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    noiseBuffer = buf;
+  }
+  return noiseBuffer;
+}
+
+// Per-frame collision dedup — only play each box pair once per frame
+let collisionFrame = 0;
+const collisionSet = new Set();
+
+// ZzFX sound generator
+function zzfx(volume, pitch, pitchSlide, noise, attack, sustain, decay, waveType, repeatDelay, repeatSlide) {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const sampleRate = ctx.sampleRate;
+  const length = Math.min(sampleRate * 2, Math.floor(sampleRate * (attack + sustain + decay)));
+  const buffer = ctx.createBuffer(1, length, sampleRate);
+  const data = buffer.getChannelData(0);
+  const freq = (pitch || 0) * 100 + 440;
+  let phase = 0;
+  for (let i = 0; i < length; i++) {
+    const t = i / sampleRate;
+    const env = i < attack * sampleRate
+      ? i / (attack * sampleRate)
+      : i < (attack + sustain) * sampleRate
+        ? 1
+        : 1 - (i - (attack + sustain) * sampleRate) / (decay * sampleRate);
+    const f = freq + pitchSlide * i;
+    let sample = 0;
+    switch (waveType || 0) {
+      case 0: sample = Math.sin(2 * Math.PI * phase); break;
+      case 1: sample = phase < 0.5 ? 1 : -1; break;
+      case 2: sample = 2 * (phase - Math.floor(phase + 0.5)); break;
+      case 3: sample = 1 - 4 * Math.abs(Math.round(phase) - phase); break;
+    }
+    sample *= env * (volume || 0.5);
+    if (noise) sample += (Math.random() * 2 - 1) * noise * env;
+    data[i] = sample;
+    phase += f / sampleRate;
+    if (phase > 1) phase -= 1;
+  }
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(ctx.destination);
+  source.start();
+}
+
+// --- Designed sounds for Topple Tower events ---
+
+// Block pop / removal — bright pentatonic pop
+function playBlockPop(colorT) {
+  const pentatonic = [0, 2, 4, 7, 9];
+  const note = pentatonic[Math.floor(colorT * 5) % 5];
+  const baseFreq = 220 * Math.pow(2, note / 12);
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(baseFreq, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(baseFreq * 1.5, ctx.currentTime + 0.05);
+  osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.5, ctx.currentTime + 0.15);
+  gain.gain.setValueAtTime(0.08, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.start(); osc.stop(ctx.currentTime + 0.15);
+}
+
+// Block land on ground — soft thud (§6.2: pre-rendered noise buffer)
+function playLand(impactSpeed) {
+  const intensity = Math.min(1, impactSpeed / 400);
+  if (intensity < 0.05) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const buf = getNoiseBuffer();
+  if (buf) {
+    const noise = ctx.createBufferSource();
+    noise.buffer = buf;
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(intensity * 0.15, ctx.currentTime);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+    noise.connect(noiseGain); noiseGain.connect(ctx.destination);
+    noise.start();
+  }
+  const osc = ctx.createOscillator();
+  const oscGain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(80 + intensity * 40, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.1);
+  oscGain.gain.setValueAtTime(intensity * 0.12, ctx.currentTime);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+  osc.connect(oscGain); oscGain.connect(ctx.destination);
+  osc.start(); osc.stop(ctx.currentTime + 0.1);
+}
+
+// Gravity well creation — rising chime
+function playWellCreate() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(440, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.1);
+  gain.gain.setValueAtTime(0.06, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.start(); osc.stop(ctx.currentTime + 0.15);
+}
+
+// Collision — muted click
+function playCollision(impact) {
+  const intensity = Math.min(1, impact / 300);
+  if (intensity < 0.05) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(120 + intensity * 200, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(60, ctx.currentTime + 0.04);
+  gain.gain.setValueAtTime(intensity * 0.06, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.04);
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.start(); osc.stop(ctx.currentTime + 0.04);
+}
+
+// ─── Rendering ─────────────────────────────────────────────
+function draw() {
+  const bw = bloomOff.width, bh = bloomOff.height;
+
+  // ── Step 1: Fade trails on offscreen canvas ────────────────
+  bCtx.globalCompositeOperation = 'destination-out';
+  bCtx.fillStyle = hitStopTimer > 0 ? 'rgba(0,0,0,1)' : 'rgba(0,0,0,0.08)';
+  bCtx.fillRect(0, 0, bw, bh);
+
+  // ── Step 2: Draw scene to offscreen canvas ─────────────────
+  bCtx.globalCompositeOperation = 'source-over';
+  bCtx.strokeStyle = 'rgba(255,255,255,0.06)';
+  bCtx.lineWidth = 1;
+  bCtx.beginPath();
+  bCtx.moveTo(0, H - 4);
+  bCtx.lineTo(W, H - 4);
+  bCtx.stroke();
+
+  // Gravity wells with easeOutElastic spawn
+  bCtx.globalCompositeOperation = 'lighter';
+  for (let wi = 0; wi < gravityWells.length; wi++) {
+    const gw = gravityWells[wi];
+    const spawnAge = (performance.now() - gw.spawnTime) / 1000;
+    const spawnEase = Math.min(1, spawnAge * 3);
+    const easedScale = easeOutElastic(spawnEase);
+    const fadeEase = easeOutCubic(gw.life);
+    const r = (50 + (1 - gw.life) * 40) * easedScale;
+    const alpha = gw.life * fadeEase * easedScale;
+    const grad = bCtx.createRadialGradient(gw.x, gw.y, 0, gw.x, gw.y, r);
+    grad.addColorStop(0, `rgba(180,100,255,${alpha * 0.5})`);
+    grad.addColorStop(0.5, `rgba(120,60,200,${alpha * 0.2})`);
+    grad.addColorStop(1, 'rgba(80,30,150,0)');
+    bCtx.fillStyle = grad;
+    bCtx.fillRect(gw.x - r, gw.y - r, r*2, r*2);
+    bCtx.globalCompositeOperation = 'source-over';
+    bCtx.strokeStyle = `rgba(200,150,255,${alpha * 0.6})`;
+    bCtx.lineWidth = 2;
+    bCtx.beginPath();
+    bCtx.arc(gw.x, gw.y, r * 0.5 * (0.8 + 0.2 * Math.sin(performance.now() * 0.005)), 0, Math.PI * 2);
+    bCtx.stroke();
+    bCtx.globalCompositeOperation = 'lighter';
+  }
+
+  // Blocks with ambient breathing and death animation §5
+  for (let bi = 0; bi < boxes.length; bi++) {
+    const box = boxes[bi];
+    if (!box.alive) continue;
+
+    const dx = box.pts[1].x - box.pts[0].x;
+    const dy = box.pts[1].y - box.pts[0].y;
+    const angle = Math.atan2(dy, dx);
+
+    const speed = Math.hypot(box.vx, box.vy);
+    const squashAmt = Math.min(0.15, speed * 0.0003);
+    const squashY = 1 + squashAmt;
+    const squashX = 1 / squashY;
+
+    const isResting = speed < 5;
+    const breatheT = performance.now() * 0.001 + box.color * 10;
+    const breatheAmt = isResting ? 0.008 : 0;
+    const breatheScale = 1 + Math.sin(breatheT * 1.5) * breatheAmt;
+
+    bCtx.save();
+    bCtx.translate(
+      (box.pts[0].x + box.pts[2].x) / 2,
+      (box.pts[0].y + box.pts[2].y) / 2
+    );
+    bCtx.rotate(angle);
+    bCtx.scale(squashX * breatheScale, squashY * breatheScale);
+
+    const hw = box.w / 2, hh = box.h / 2;
+    const bright = 0.55 + box.color * 0.45;
+    const fillCol = rgb(box.color, bright);
+    const edgeCol = `rgba(255,255,255,${0.1 + box.color * 0.1})`;
+
+    bCtx.drawImage(blockGlowSpr, -hw * 2, -hh, hw * 4, hh * 2);
+    bCtx.fillStyle = fillCol;
+    bCtx.fillRect(-hw, -hh, box.w, box.h);
+    bCtx.strokeStyle = edgeCol;
+    bCtx.lineWidth = 1;
+    bCtx.strokeRect(-hw, -hh, box.w, box.h);
+    bCtx.fillStyle = `rgba(255,255,255,0.08)`;
+    bCtx.fillRect(-hw, -hh, box.w, 2);
+
+    bCtx.restore();
+  }
+
+  // ── Batched particle drawing (pre-rendered sprite) ────────
+  particlePool.draw(bCtx, glowSpr);
+
+  // Ambient floating particles — enhanced ambient life §5
+  const t = performance.now() * 0.001;
+  for (let i = 0; i < 20; i++) {
+    const ax = (Math.sin(t * 0.3 + i * 1.7) * 0.5 + 0.5) * W;
+    const ay = (Math.cos(t * 0.2 + i * 2.3) * 0.5 + 0.5) * H;
+    bCtx.globalAlpha = 0.12 + Math.sin(t * 0.5 + i * 0.7) * 0.04;
+    bCtx.drawImage(glowSpr, ax - 16, ay - 16, 32, 32);
+  }
+  // Cursor glow
+  bCtx.globalAlpha = 0.06 + Math.sin(t * 2) * 0.02;
+  bCtx.drawImage(glowSpr, mouseX - 32, mouseY - 32, 64, 64);
+  bCtx.globalAlpha = 1;
+
+  // ── Step 3: Composite offscreen → main canvas ──────────────
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.drawImage(bloomOff, 0, 0, bw, bh, 0, 0, W, H);
+
+  // ── Step 4: Bloom pass ─────────────────────────────────────
+  ctx.filter = 'blur(8px)';
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.4;
+  ctx.drawImage(bloomOff, 0, 0, bw, bh, 0, 0, W, H);
+  ctx.globalAlpha = 1;
+  ctx.filter = 'none';
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ── Step 5: Trauma² screenshake §5 ─────────────────────────
+  if (trauma > 0.01) {
+    const intensity = trauma * trauma * 12;
+    const sx = (Math.random() - 0.5) * intensity;
+    const sy = (Math.random() - 0.5) * intensity;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(shakeAngle);
+    ctx.drawImage(bloomOff, 0, 0, bw, bh, 0, 0, W, H);
+    ctx.filter = 'blur(8px)';
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.4;
+    ctx.drawImage(bloomOff, 0, 0, bw, bh, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+    ctx.filter = 'none';
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
+}
+
+// ─── Input ─────────────────────────────────────────────────
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+canvas.addEventListener('mousedown', e => {
+  e.preventDefault();
+  mousedown = true;
+  mouseDownTime = performance.now();
+
+  if (e.button === 0) {
+    // Left click: explode block under cursor
+    let closest = null, closestDist = 35;
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const box = boxes[bi];
+      if (!box.alive) continue;
+      const cx = (box.pts[0].x + box.pts[2].x) / 2;
+      const cy = (box.pts[0].y + box.pts[2].y) / 2;
+      const d = Math.hypot(mouseX - cx, mouseY - cy);
+      if (d < closestDist) { closestDist = d; closest = box; }
+    }
+    if (closest) {
+      const cx = (closest.pts[0].x + closest.pts[2].x) / 2;
+      const cy = (closest.pts[0].y + closest.pts[2].y) / 2;
+      closest.alive = false;
+      spawnParticles(cx, cy, 45, closest.color);
+      playBlockPop(closest.color);
+      shake(0.5);
+      hitStopTimer = 6;
+      // Blast neighbors
+      for (let bi = 0; bi < boxes.length; bi++) {
+        const box2 = boxes[bi];
+        if (!box2.alive || box2 === closest) continue;
+        const cx2 = (box2.pts[0].x + box2.pts[2].x) / 2;
+        const cy2 = (box2.pts[0].y + box2.pts[2].y) / 2;
+        const d = Math.hypot(cx - cx2, cy - cy2);
+        if (d < 90 && d > 0) {
+          const force = (90 - d) / 90 * 12;
+          for (let pi = 0; pi < 4; pi++) {
+            box2.pts[pi].x += ((cx2 - cx) / d) * force;
+            box2.pts[pi].y += ((cy2 - cy) / d) * force;
+          }
+        }
+      }
+    }
+  } else if (e.button === 2) {
+    gravityWells.push({ x: mouseX, y: mouseY, strength: 250, life: 1, spawnTime: performance.now() });
+    spawnParticles(mouseX, mouseY, 18, 0.75);
+    playWellCreate();
+  }
+});
+
+window.addEventListener('mouseup', e => {
+  mousedown = false;
+});
+
+canvas.addEventListener('mousemove', e => {
+  mouseX = e.clientX; mouseY = e.clientY;
+  if (mousedown && e.buttons === 2 && gravityWells.length > 0) {
+    const gw = gravityWells[gravityWells.length - 1];
+    gw.x = mouseX; gw.y = mouseY;
+  }
+  // Idle cursor stirs nearby blocks
+  if (!mousedown) {
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const box = boxes[bi];
+      if (!box.alive) continue;
+      const cx = (box.pts[0].x + box.pts[2].x) / 2;
+      const cy = (box.pts[0].y + box.pts[2].y) / 2;
+      const d = Math.hypot(mouseX - cx, mouseY - cy);
+      if (d < 60 && d > 5) {
+        const force = (60 - d) / 60 * 0.5;
+        const dx = cx - mouseX, dy = cy - mouseY;
+        for (let pi = 0; pi < 4; pi++) {
+          box.pts[pi].x += (dx / d) * force;
+          box.pts[pi].y += (dy / d) * force;
+        }
+      }
+    }
+  }
+});
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const dir = -Math.sign(e.deltaY);
+  gravMul = Math.max(0.1, Math.min(5, gravMul + dir * 0.1));
+  document.getElementById('grav-val').textContent = gravMul.toFixed(1) + '×';
+}, { passive: false });
+
+// ─── Reset ─────────────────────────────────────────────────
+function doReset() {
+  buildTower();
+  gravMul = 1.0;
+  document.getElementById('grav-val').textContent = '1.0×';
+}
+document.getElementById('reset-btn').addEventListener('click', doReset);
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') doReset();
+});
+
+// ─── Main loop ─────────────────────────────────────────────
+function frame(now) {
+  requestAnimationFrame(frame);
+
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+
+  // Hit stop §5
+  if (hitStopTimer > 0) {
+    hitStopTimer--;
+    draw();
+    return;
+  }
+
+  acc += dt;
+  while (acc >= DT) {
+    integrate();
+    solveConstraints();
+    resolveCollisions();
+    acc -= DT;
+  }
+
+  particlePool.update();
+  updateGravityWells();
+
+  // Decay trauma
+  trauma *= 0.93;
+  shakeAngle += shakeAngleVel;
+  shakeAngleVel *= 0.9;
+
+  // Block count
+  let aliveCount = 0;
+  for (let bi = 0; bi < boxes.length; bi++) if (boxes[bi].alive) aliveCount++;
+
+  draw();
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Worm Trails v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Worm Trails</b><br>
+Move — steer<br>
+Left drag — spawn trail<br>
+Right drag — fade<br>
+Scroll — colour shift
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+const state={};let w,h;
+function fitCanvas(){const dpr=Math.min(window.devicePixelRatio||1,2);w=window.innerWidth;h=window.innerHeight;canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+fitCanvas();window.addEventListener('resize',fitCanvas);
+document.getElementById('reset').addEventListener('click',()=>reset());
+let mouse={x:0,y:0,left:false,right:false,buttons:0,px:0,py:0};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.px=mouse.x;mouse.py=mouse.y;mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.buttons=e.buttons;mouse.left=!!(mouse.buttons&1);mouse.right=!!(mouse.buttons&2);});
+canvas.addEventListener('mousedown',e=>{if(e.button===0)mouse.left=true;if(e.button===2)mouse.right=true;});
+window.addEventListener('mouseup',e=>{if(e.button===0)mouse.left=false;if(e.button===2)mouse.right=false;});
+canvas.addEventListener('wheel',e=>{e.preventDefault();state.wheel=-Math.sign(e.deltaY);},{passive:false});
+const DT=1/60;let acc=0,last=performance.now();
+function frame(now){acc+=Math.min((now-last)/1000,0.1);last=now;while(acc>=DT){update(DT);acc-=DT;}draw(acc/DT);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+canvas.style.background='#0a0a10';
+
+function reset(){
+  trail=[];
+  hue=0;
+}
+let trail=[],hue=0;
+window.addEventListener('wheel',e=>{if(e.target===canvas){e.preventDefault();hue+=Math.sign(e.deltaY)*5;if(hue>360)hue-=360;if(hue<0)hue+=360;}},{passive:false});
+
+function update(dt){
+  if(mouse.left){
+    const a=Math.random()*Math.PI*2;
+    trail.push({x:mouse.x,y:mouse.y,vx:Math.cos(a)*2,vy:Math.sin(a)*2,life:1,hue:hue});
+  }
+  for(const t of trail){
+    t.x+=t.vx;t.y+=t.vy;t.life-=dt*0.5;
+    if(mouse.right)t.life-=dt*2;
+  }
+  trail=trail.filter(t=>t.life>0);
+}
+
+function draw(alpha){
+  ctx.globalCompositeOperation='lighter';
+  for(const t of trail){
+    const g=ctx.createRadialGradient(t.x,t.y,0,t.x,t.y,10*t.life);
+    g.addColorStop(0,`hsla(${t.hue},90%,60%,${t.life})`);g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g;ctx.fillRect(t.x-10,t.y-10,20,20);
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+reset();
+
+</script>
+</body>
+</html>

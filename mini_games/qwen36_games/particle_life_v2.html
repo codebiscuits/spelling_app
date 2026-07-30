@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Particle Life v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Particle Life</b><br>
+Move — nudge<br>
+Left drag — attract to cursor<br>
+Right drag — repel<br>
+Scroll — time speed
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+const state={};let w,h;
+function fitCanvas(){const dpr=Math.min(window.devicePixelRatio||1,2);w=window.innerWidth;h=window.innerHeight;canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+fitCanvas();window.addEventListener('resize',fitCanvas);
+document.getElementById('reset').addEventListener('click',()=>reset());
+let mouse={x:0,y:0,left:false,right:false,buttons:0,px:0,py:0};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.px=mouse.x;mouse.py=mouse.y;mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.buttons=e.buttons;mouse.left=!!(mouse.buttons&1);mouse.right=!!(mouse.buttons&2);});
+canvas.addEventListener('mousedown',e=>{if(e.button===0)mouse.left=true;if(e.button===2)mouse.right=true;});
+window.addEventListener('mouseup',e=>{if(e.button===0)mouse.left=false;if(e.button===2)mouse.right=false;});
+canvas.addEventListener('wheel',e=>{e.preventDefault();state.wheel=-Math.sign(e.deltaY);},{passive:false});
+const DT=1/60;let acc=0,last=performance.now();
+function frame(now){acc+=Math.min((now-last)/1000,0.1);last=now;while(acc>=DT){update(DT);acc-=DT;}draw(acc/DT);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+canvas.style.background='#0a0a0e';
+
+function reset(){
+  const species=5;const n=600;
+  constraints=[];
+  for(let i=0;i&lt;species;i++)for(let j=0;j&lt;species;j++){
+    constraints.push({a:i,b:j,f:(Math.random()-0.5)*2});
+  }
+  particles=[];
+  for(let i=0;i&lt;n;i++){
+    particles.push({x:Math.random()*w,y:Math.random()*h,px:Math.random()*w,py:Math.random()*h,s:Math.floor(Math.random()*species),r:3});
+  }
+  cell=12;
+}
+let particles,constraints,cell;
+
+function update(dt){
+  const speed=1;
+  for(const p of particles){
+    // mouse
+    const dx=mouse.x-p.x,dy=mouse.y-p.y;const d=Math.hypot(dx,dy)||1;
+    if(d&lt;160){
+      const s=Math.min(1,(160-d)/160)*0.5;
+      if(mouse.left){p.x+=dx/d*s*3;p.y+=dy/d*s*3;}
+      if(mouse.right){p.x-=dx/d*s*3;p.y-=dy/d*s*3;}
+    }
+    const vx=(p.x-p.px)*0.98;const vy=(p.y-p.py)*0.98;
+    p.px=p.x;p.py=p.y;
+    p.x+=vx;p.y+=vy;
+  }
+  // spatial hash interactions
+  const grid=new Map();
+  const key=(x,y)=>((x/cell)|0)*73856093^((y/cell)|0)*19349663;
+  for(const p of particles){const k=key(p.x,p.y);if(!grid.has(k))grid.set(k,[]);grid.get(k).push(p);}
+  for(const p of particles){
+    const cx=(p.x/cell)|0,cy=(p.y/cell)|0;
+    for(let j=-1;j<=1;j++)for(let i=-1;i<=1;i++){
+      const k=((cx+i)*73856093^((cy+j)*19349663));
+      const bucket=grid.get(k);if(!bucket)continue;
+      for(const q of bucket){
+        if(p===q)continue;
+        const dx=p.x-q.x,dy=p.y-q.y;const d=Math.hypot(dx,dy)||0.01;
+        if(d>50)continue;
+        const f=constraints[p.s*5+q.s].f*(1-d/50)*0.05;
+        p.x+=dx/d*f;p.y+=dy/d*f;
+      }
+    }
+  }
+}
+
+function draw(alpha){
+  ctx.clearRect(0,0,w,h);
+  ctx.globalCompositeOperation='lighter';
+  const cols=[[255,80,80],[80,255,80],[80,80,255],[255,255,80],[255,80,255]];
+  for(const p of particles){
+    const c=cols[p.s];ctx.fillStyle=`rgba(${c[0]},${c[1]},${c[2]},0.8)`;
+    ctx.fillRect(p.x,p.y,2,2);
+  }
+  ctx.globalCompositeOperation='source-over';
+}
+reset();
+
+</script>
+</body>
+</html>

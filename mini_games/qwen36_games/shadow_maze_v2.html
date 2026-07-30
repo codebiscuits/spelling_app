@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Shadow Maze v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Shadow Maze</b><br>
+Move — flashlight<br>
+Left drag — reveal<br>
+Right drag — extinguish<br>
+Scroll — light radius
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+const state={};let w,h;
+function fitCanvas(){const dpr=Math.min(window.devicePixelRatio||1,2);w=window.innerWidth;h=window.innerHeight;canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+fitCanvas();window.addEventListener('resize',fitCanvas);
+document.getElementById('reset').addEventListener('click',()=>reset());
+let mouse={x:0,y:0,left:false,right:false,buttons:0,px:0,py:0};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.px=mouse.x;mouse.py=mouse.y;mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.buttons=e.buttons;mouse.left=!!(mouse.buttons&1);mouse.right=!!(mouse.buttons&2);});
+canvas.addEventListener('mousedown',e=>{if(e.button===0)mouse.left=true;if(e.button===2)mouse.right=true;});
+window.addEventListener('mouseup',e=>{if(e.button===0)mouse.left=false;if(e.button===2)mouse.right=false;});
+canvas.addEventListener('wheel',e=>{e.preventDefault();state.wheel=-Math.sign(e.deltaY);},{passive:false});
+const DT=1/60;let acc=0,last=performance.now();
+function frame(now){acc+=Math.min((now-last)/1000,0.1);last=now;while(acc>=DT){update(DT);acc-=DT;}draw(acc/DT);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+canvas.style.background='#07060a';
+
+function reset(){
+  obstacles=[];
+  for(let i=0;i&lt;12;i++){
+    obstacles.push({x:100+Math.random()*(w-200),y:100+Math.random()*(h-200),w:20+Math.random()*80,h:20+Math.random()*80});
+  }
+  gems=[];
+  for(let i=0;i&lt;8;i++){
+    gems.push({x:60+Math.random()*(w-120),y:60+Math.random()*(h-120),col:`hsl(${Math.floor(Math.random()*360)},90%,65%)`});
+  }
+}
+let lightR=180;
+window.addEventListener('wheel',e=>{if(e.target===canvas){e.preventDefault();lightR=Math.max(60,Math.min(360,lightR-Math.sign(e.deltaY)*20));}},{passive:false});
+
+function visibilityPoly(px,py){
+  // simple radial occlusion counts
+  const rays=120;const segs=[];
+  for(let i=0;i&lt;rays;i++){
+    const a=i/rays*Math.PI*2;
+    const wx=Math.cos(a),wy=Math.sin(a);
+    let dist=lightR;
+    for(const o of obstacles){
+      // AABB vs ray
+      let tmin=0,tmax=1e9;
+      if(wx!==0){t1=(-o.x+px)/wx;t2=(-o.x-o.w+px)/wx;tmin=Math.max(0,Math.min(tmin,t1,t2));tmax=Math.min(tmax,Math.max(t1,t2));}
+      if(wy!==0){t1=(-o.y+py)/wy;t2=(-o.y-o.h+py)/wy;tmin=Math.max(0,Math.min(tmin,t1,t2));tmax=Math.min(tmax,Math.max(t1,t2));}
+      if(wx!==0){t1=(-o.x+px+o.w)/wx;t2=(-o.x-o.w+px+o.w)/wx;}
+      if(tmin&lt;tmax&&tmin>0&&tmin&lt;dist)dist=tmin;
+    }
+    segs.push({x:px+wx*dist,y:py+wy*dist});
+  }
+  return segs;
+}
+
+function update(dt){}
+
+function draw(alpha){
+  ctx.fillStyle='#07060a';ctx.fillRect(0,0,w,h);
+  const poly=visibilityPoly(mouse.x,mouse.y);
+  ctx.beginPath();
+  ctx.moveTo(poly[0].x,poly[0].y);
+  for(let i=1;i&lt;poly.length;i++)ctx.lineTo(poly[i].x,poly[i].y);
+  ctx.closePath();ctx.clip();
+  // lit interior
+  const g=ctx.createRadialGradient(mouse.x,mouse.y,0,mouse.x,mouse.y,lightR);
+  g.addColorStop(0,'rgba(255,240,200,0.95)');g.addColorStop(1,'rgba(60,80,100,0.6)');
+  ctx.fillStyle=g;ctx.fillRect(0,0,w,h);
+  // obstacles
+  ctx.fillStyle='#1c1a22';
+  for(const o of obstacles){ctx.fillRect(o.x,o.y,o.w,o.h);}
+  // gems
+  for(const g2 of gems){
+    ctx.fillStyle=g2.col;ctx.beginPath();ctx.arc(g2.x,g2.y,5,0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
+  // overlay darkness
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='#07060a';ctx.fillRect(0,0,w,h);
+  // draw visibility again as hole
+  ctx.save();ctx.globalCompositeOperation='destination-out';
+  ctx.beginPath();ctx.moveTo(poly[0].x,poly[0].y);
+  for(let i=1;i&lt;poly.length;i++)ctx.lineTo(poly[i].x,poly[i].y);
+  ctx.closePath();ctx.fillStyle='rgba(0,0,0,1)';ctx.fill();
+  ctx.restore();
+}
+reset();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,1364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Wrecking Yard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { overflow: hidden; background: #14181f; }
+  body { cursor: default; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    background: rgba(10, 10, 20, 0.75); border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px; padding: 14px 18px; backdrop-filter: blur(10px);
+    color: #ccc; font-size: 13px; line-height: 1.7; min-width: 236px;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .k { color: #888; white-space: nowrap; }
+  #ui .v { color: #f5a25d; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 10;
+    padding: 10px 28px; font-size: 14px; font-family: inherit;
+    color: #ccc; background: rgba(10, 10, 20, 0.80); border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(40, 40, 80, 0.90); color: #fff; border-color: rgba(255, 255, 255, 0.30); }
+  #muteBtn {
+    position: fixed; top: 16px; right: 16px; z-index: 10; width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(10, 10, 20, 0.80); border: 1px solid rgba(255, 255, 255, 0.15); color: #ccc;
+    font-size: 19px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #muteBtn:hover { background: rgba(40, 40, 80, 0.90); color: #fff; border-color: rgba(255, 255, 255, 0.30); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>&#x1F3D7;&#xFE0F; Wrecking Yard</h3>
+  <div class="row"><span class="k">Move mouse</span><span class="v">Swing the ball</span></div>
+  <div class="row"><span class="k">Left drag</span><span class="v">Grab &amp; fling a block</span></div>
+  <div class="row"><span class="k">Right click</span><span class="v">Blast an explosion</span></div>
+  <div class="row"><span class="k">Scroll</span><span class="v">Ball mass <span id="massVal">2.2</span></span></div>
+  <div class="row"><span class="k">Blocks intact</span><span class="v"><span id="standingVal">0</span>/<span id="totalVal">0</span></span></div>
+  <div class="row"><span class="k">Sound</span><span class="v"><span id="soundVal">Off</span></span></div>
+</div>
+<button id="muteBtn" title="Toggle sound">&#x1F507;</button>
+<button id="resetBtn">&#x21BA; Rebuild Yard</button>
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // Canvas + fixed timestep (Handbook §2)
+  // ---------------------------------------------------------------------
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let w = 0, h = 0, dpr = 1;
+
+  function fitCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  const REDUCED_MOTION = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+  // ---------------------------------------------------------------------
+  // Utility (in-place helpers to avoid allocations)
+  // ---------------------------------------------------------------------
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  // In-place spring step — avoids allocating {pos, vel} every frame (§6.2 zero alloc)
+  function springStepOut(pos, vel, target, omega, dt, outPos, outVel) {
+    outVel[0] += (target - pos) * omega * omega * dt;
+    outVel[0] *= Math.exp(-2 * omega * dt);
+    outPos[0] = pos + outVel[0] * dt;
+  }
+  // Cosine gradient palette (Iñigo Quilez §4.1) — replaces flat HSL rainbows
+  // with smooth, perceptually-tasteful colour ramps.
+  // Each palette is [a, b, c, d] vec4 params per channel.
+  function cosinePal(t, a, b, c, d) {
+    t = clamp(t, 0, 1);
+    return [0, 1, 2].map(function (i) {
+      return Math.round(255 * (a[i] + b[i] * Math.cos(6.28318 * (c[i] * t + d[i]))));
+    });
+  }
+  function palStr(t, a, b, c, d) {
+    var rgb = cosinePal(t, a, b, c, d);
+    return 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+  }
+  // Brick: warm reds to burnt umber
+  var PAL_BRICK_A = [.55,.35,.25], PAL_BRICK_B = [.45,.40,.35], PAL_BRICK_C = [1,.8,.6], PAL_BRICK_D = [0,.30,.60];
+  // Concrete: cool greys
+  var PAL_CONC_A = [.55,.55,.55], PAL_CONC_B = [.40,.40,.40], PAL_CONC_C = [1,.9,.7], PAL_CONC_D = [0,.33,.67];
+  // Wood: amber to dark brown
+  var PAL_WOOD_A = [.55,.40,.25], PAL_WOOD_B = [.45,.40,.30], PAL_WOOD_C = [1,.7,.5], PAL_WOOD_D = [0,.20,.40];
+  // Glass: steel blue to teal
+  var PAL_GLASS_A = [.45,.50,.55], PAL_GLASS_B = [.45,.40,.35], PAL_GLASS_C = [1,.8,.6], PAL_GLASS_D = [0,.25,.50];
+  function shade(type, t) {
+    switch (type) {
+      case 'brick':  return palStr(t, PAL_BRICK_A,  PAL_BRICK_B,  PAL_BRICK_C,  PAL_BRICK_D);
+      case 'concrete': return palStr(t, PAL_CONC_A, PAL_CONC_B, PAL_CONC_C, PAL_CONC_D);
+      case 'wood':   return palStr(t, PAL_WOOD_A,  PAL_WOOD_B,  PAL_WOOD_C,  PAL_WOOD_D);
+      case 'glass':  return palStr(t, PAL_GLASS_A, PAL_GLASS_B, PAL_GLASS_C, PAL_GLASS_D);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Easing helpers (Handbook §5: easing everywhere, §3.2 springs)
+  // ---------------------------------------------------------------------
+  // easeOutBack — overshoot then settle, great for pop-in and deaths
+  function easeOutBack(t) {
+    var c1 = 1.70158, c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+  // easeOutElastic — bouncy settle
+  function easeOutElastic(t) {
+    if (t === 0 || t === 1) return t;
+    return Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1;
+  }
+
+  // ---------------------------------------------------------------------
+  // Typed arrays for points (Handbook §6.2: zero alloc in hot loop)
+  // Structure-of-arrays: x, y, px, py, inv as Float32Arrays — no pointer
+  // chasing, no GC, SIMD-friendly.
+  // ---------------------------------------------------------------------
+  const MAX_POINTS = 512; // enough for boxes + rope + anchor
+  const pxArr = new Float32Array(MAX_POINTS);  // x
+  const pyArr = new Float32Array(MAX_POINTS);  // y
+  const ppxArr = new Float32Array(MAX_POINTS); // prev x
+  const ppyArr = new Float32Array(MAX_POINTS); // prev y
+  const pinvArr = new Float32Array(MAX_POINTS);// inverse mass
+  let pointCount = 0;
+
+  function makePoint(x, y, inv) {
+    const i = pointCount++;
+    pxArr[i] = x; pyArr[i] = y;
+    ppxArr[i] = x; ppyArr[i] = y;
+    pinvArr[i] = inv || 0;
+    return i; // return index into typed arrays
+  }
+
+  // Map from point index → box object (for seam tracking)
+  const pointBoxMap = new Array(MAX_POINTS);
+
+  // Reusable temp arrays to avoid allocations
+  const _sqPos = [0], _sqVel = [0]; // for squash spring updates
+
+  // ---------------------------------------------------------------------
+  // World state
+  // ---------------------------------------------------------------------
+  const GRAVITY = 0.55;
+  const DAMP = 0.992;
+  const ITERS = 8;
+  const POINT_R = 5;
+  const SEAM_MIN_BREAK = 10;
+  const EDGE_MIN_BREAK = 10;
+  // Heavy impacts split a block into four quadrant fragments instead of
+  // stretching it (box edges/diagonals themselves never break)
+  const FRAG_SPEED = 9;
+  const FRAG_MIN_SIZE = 24;
+  const MAX_BOXES = 44;
+
+  const DEFAULT_BALL_MASS = 2.2;
+  const BALL_MASS_MIN = 0.8, BALL_MASS_MAX = 6.0;
+  const BALL_BASE_RADIUS = 16;
+  const ROPE_SEGS = 7, SEG_LEN = 26;
+  const ANCHOR_OMEGA = 11;
+
+  // Points stored as indices into typed arrays
+  let points = [];
+  let constraints = [];
+  let boxes = [];
+  let ropePoints = [];
+  let anchor = null, ball = null;
+  let groundY = 0;
+  let ballMass = DEFAULT_BALL_MASS;
+  let anchorVX = 0, anchorVY = 0;
+
+  const mouse = { x: 0, y: 0 };
+  let dragBox = null;
+  // Pre-allocated drag offset array (reused, never GC'd)
+  const dragOffsets = [{ dx: 0, dy: 0 }, { dx: 0, dy: 0 }, { dx: 0, dy: 0 }, { dx: 0, dy: 0 }];
+
+  let trauma = 0;
+  let hitStopTimer = 0;
+  let impactCooldown = 0;
+  let noiseTime = 0;
+  let ambientTimer = 1;
+  let ambientWobble = 0;
+
+  let audioEnabled = false;
+  let actx = null;
+
+  function makeConstraint(p1, p2, breakFactor, isSeam, restOverride) {
+    const rest = restOverride != null ? restOverride : Math.hypot(pxArr[p2] - pxArr[p1], pyArr[p2] - pyArr[p1]);
+    const floor = isSeam ? SEAM_MIN_BREAK : EDGE_MIN_BREAK;
+    const breakLimit = Math.max(rest * breakFactor, rest + floor, floor);
+    const c = { p1: p1, p2: p2, rest: rest, breakLimit: breakLimit, isSeam: !!isSeam, active: true };
+    constraints.push(c);
+    return c;
+  }
+
+  // Mortar seams glue neighbouring blocks until a knock separates them;
+  // each box tracks which boxes it is seamed to so resting contact between
+  // glued neighbours skips collision (they'd jitter against each other)
+  function seam(pA, pB) {
+    const c = makeConstraint(pA, pB, 1.35, true);
+    const A = pointBoxMap[pA], B = pointBoxMap[pB];
+    if (A && B && A !== B) {
+      c.boxA = A; c.boxB = B;
+      A.joints.set(B, (A.joints.get(B) || 0) + 1);
+      B.joints.set(A, (B.joints.get(A) || 0) + 1);
+    }
+    return c;
+  }
+
+  function unjoin(c) {
+    const A = c.boxA, B = c.boxB;
+    if (!A || !B) return;
+    const n = (A.joints.get(B) || 1) - 1;
+    if (n <= 0) { A.joints.delete(B); B.joints.delete(A); }
+    else { A.joints.set(B, n); B.joints.set(A, n); }
+  }
+
+  function makeBox(cx, cy, size, color, isFragment) {
+    const hs = size / 2;
+    const tl = makePoint(cx - hs, cy - hs);
+    const tr = makePoint(cx + hs, cy - hs);
+    const br = makePoint(cx + hs, cy + hs);
+    const bl = makePoint(cx - hs, cy + hs);
+    // Edges and diagonals never break, so a block can compress a little
+    // under load but can't shear into a needle; damage = fragmentation
+    const cTop = makeConstraint(tl, tr, Infinity, false);
+    const cRight = makeConstraint(tr, br, Infinity, false);
+    const cBottom = makeConstraint(br, bl, Infinity, false);
+    const cLeft = makeConstraint(bl, tl, Infinity, false);
+    const cD1 = makeConstraint(tl, br, Infinity, false);
+    const cD2 = makeConstraint(tr, bl, Infinity, false);
+    const box = {
+      points: [tl, tr, br, bl], color: color, size: size,
+      cons: [cTop, cRight, cBottom, cLeft, cD1, cD2],
+      joints: new Map(), isFragment: !!isFragment,
+      // §5 ambient life: blink state per block
+      blinkTimer: Math.random() * 3, blinkOpen: true, blinkDuration: 0,
+      // §5 squash/stretch: velocity-driven deformation
+      squashX: 1, squashY: 1, squashVelX: 0, squashVelY: 0,
+      squashTargetX: 1, squashTargetY: 1,
+      // §5 Build animation: pop-in with easeOutBack
+      buildAnim: 0,
+    };
+    pointBoxMap[tl] = box;
+    pointBoxMap[tr] = box;
+    pointBoxMap[br] = box;
+    pointBoxMap[bl] = box;
+    boxes.push(box);
+    return box;
+  }
+
+  // ---------------------------------------------------------------------
+  // Yard construction — three slots, each filled by a randomly chosen and
+  // randomly sized structure template, so every build has something to
+  // demolish but no two yards look the same.
+  // ---------------------------------------------------------------------
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const randInt = (a, b) => Math.floor(rand(a, b + 1));
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+
+  function buildTower(cx, size, count, palette) {
+    let prevTL = null, prevTR = null, top = null;
+    let y = groundY - size / 2;
+    for (let i = 0; i < count; i++) {
+      const box = makeBox(cx, y, size, shade(palette, i / count));
+      if (prevTL) { seam(prevTL, box.points[3]); seam(prevTR, box.points[2]); }
+      prevTL = box.points[0]; prevTR = box.points[1];
+      top = box;
+      // §5 Build sparkle burst on each block appearing
+      if (!REDUCED_MOTION) {
+        for (let s = 0; s < 5; s++) {
+          const ang = Math.random() * Math.PI * 2;
+          const spd = 20 + Math.random() * 40;
+          spawnParticle(cx, y + size / 2, Math.cos(ang) * spd, Math.sin(ang) * spd - 20,
+            0.4 + Math.random() * 0.3, 2 + Math.random() * 3, sparkSprite, 0.7);
+        }
+      }
+      y -= size;
+    }
+    return top;
+  }
+
+  function buildWall(cx, cols, rows, size, palette) {
+    const originX = cx - (cols * size) / 2;
+    const rowBoxes = [];
+    for (let r = 0; r < rows; r++) {
+      const thisRow = [];
+      const y = groundY - size / 2 - r * size;
+      for (let cIdx = 0; cIdx < cols; cIdx++) {
+        const x = originX + cIdx * size + size / 2;
+        const box = makeBox(x, y, size, shade(palette, r / rows));
+        if (cIdx > 0) {
+          seam(thisRow[cIdx - 1].points[1], box.points[0]);
+          seam(thisRow[cIdx - 1].points[2], box.points[3]);
+        }
+        if (r > 0) {
+          seam(rowBoxes[r - 1][cIdx].points[0], box.points[3]);
+          seam(rowBoxes[r - 1][cIdx].points[1], box.points[2]);
+        }
+        thisRow.push(box);
+        // §5 Build sparkle
+        if (!REDUCED_MOTION) {
+          for (let s = 0; s < 5; s++) {
+            const ang = Math.random() * Math.PI * 2;
+            const spd = 20 + Math.random() * 40;
+            spawnParticle(x, y + size / 2, Math.cos(ang) * spd, Math.sin(ang) * spd - 20,
+              0.4 + Math.random() * 0.3, 2 + Math.random() * 3, sparkSprite, 0.7);
+          }
+        }
+      }
+      rowBoxes.push(thisRow);
+    }
+  }
+
+  function buildPyramid(cx, base, size, palette) {
+    // Rows shrink by one box going up; only horizontal seams, so the upper
+    // rows rest on the lower ones and tumble freely once dislodged
+    for (let r = 0; r < base; r++) {
+      const n = base - r;
+      const y = groundY - size / 2 - r * size;
+      let prev = null;
+      for (let i = 0; i < n; i++) {
+        const x = cx + (i - (n - 1) / 2) * size;
+        const box = makeBox(x, y, size, shade(palette, r / base));
+        if (prev) { seam(prev.points[1], box.points[0]); seam(prev.points[2], box.points[3]); }
+        prev = box;
+        // §5 Build sparkle
+        if (!REDUCED_MOTION) {
+          for (let s = 0; s < 5; s++) {
+            const ang = Math.random() * Math.PI * 2;
+            const spd = 20 + Math.random() * 40;
+            spawnParticle(x, y + size / 2, Math.cos(ang) * spd, Math.sin(ang) * spd - 20,
+              0.4 + Math.random() * 0.3, 2 + Math.random() * 3, sparkSprite, 0.7);
+          }
+        }
+      }
+    }
+  }
+
+  function buildBridge(pierAx, pierBx, pierCount, size) {
+    const pierA = buildTower(pierAx, size, pierCount, 'concrete');
+    const pierB = buildTower(pierBx, size, pierCount, 'concrete');
+    const topY = pyArr[pierA.points[0]] - size / 2; // top of pier A
+    const span = pierBx - pierAx;
+    const bridgeCount = Math.max(3, Math.round(span / size));
+    const step = span / bridgeCount;
+    const boxW = Math.min(size, step * 0.98);
+    let last = null;
+    for (let i = 0; i < bridgeCount; i++) {
+      const cx = pierAx + step * (i + 0.5);
+      const box = makeBox(cx, topY, boxW, shade('wood', i / bridgeCount));
+      if (i === 0) { seam(pierA.points[1], box.points[0]); seam(pierA.points[2], box.points[3]); }
+      else { seam(last.points[1], box.points[0]); seam(last.points[2], box.points[3]); }
+      last = box;
+      // §5 Build sparkle
+      if (!REDUCED_MOTION) {
+        for (let s = 0; s < 5; s++) {
+          const ang = Math.random() * Math.PI * 2;
+          const spd = 20 + Math.random() * 40;
+          spawnParticle(cx, topY + size / 2, Math.cos(ang) * spd, Math.sin(ang) * spd - 20,
+            0.4 + Math.random() * 0.3, 2 + Math.random() * 3, sparkSprite, 0.7);
+        }
+      }
+    }
+    seam(last.points[1], pierB.points[0]);
+    seam(last.points[2], pierB.points[3]);
+  }
+
+  let initialBoxCount = 0;
+
+  function buildYard() {
+    points = []; constraints = []; boxes = [];
+    pointCount = 0;
+    dragBox = null;
+    pendingSplits.length = 0;
+    trauma = 0; hitStopTimer = 0; impactCooldown = 0; ambientTimer = 1;
+    for (let i = 0; i < particles.length; i++) particles[i].active = false;
+
+    groundY = h * 0.86;
+
+    // Left slot: tower or pyramid
+    if (Math.random() < 0.6) {
+      buildTower(rand(w * 0.10, w * 0.18), rand(32, 40), randInt(4, 7), pick(['brick', 'concrete']));
+    } else {
+      buildPyramid(rand(w * 0.10, w * 0.18), randInt(3, 4), rand(28, 36), 'brick');
+    }
+
+    // Middle slot: piers + bridge, or twin towers
+    if (Math.random() < 0.65) {
+      buildBridge(rand(w * 0.38, w * 0.46), rand(w * 0.60, w * 0.68), randInt(2, 4), rand(30, 36));
+    } else {
+      buildTower(rand(w * 0.40, w * 0.46), rand(30, 38), randInt(3, 6), pick(['wood', 'brick']));
+      buildTower(rand(w * 0.58, w * 0.66), rand(30, 38), randInt(3, 6), pick(['wood', 'concrete']));
+    }
+
+    // Right slot: wall or pyramid
+    if (Math.random() < 0.6) {
+      buildWall(rand(w * 0.78, w * 0.86), randInt(2, 4), randInt(3, 5), rand(26, 32), 'glass');
+    } else {
+      buildPyramid(rand(w * 0.78, w * 0.86), randInt(3, 5), rand(26, 32), 'glass');
+    }
+
+    initialBoxCount = boxes.length;
+
+    // --- Wrecking ball on a rope, hanging from the cursor ---
+    ballMass = DEFAULT_BALL_MASS;
+    anchor = makePoint(w * 0.5, h * 0.12, 0);
+    anchorVX = 0; anchorVY = 0;
+    ropePoints = [anchor];
+    let prev = anchor;
+    for (let i = 1; i <= ROPE_SEGS; i++) {
+      const isLast = i === ROPE_SEGS;
+      const p = makePoint(pxArr[anchor], pyArr[anchor] + i * SEG_LEN, isLast ? 1 / ballMass : 1);
+      points.push(p);
+      makeConstraint(prev, p, Infinity, false, SEG_LEN);
+      ropePoints.push(p);
+      prev = p;
+    }
+    ball = { idx: prev, radius: BALL_BASE_RADIUS + (ballMass - 1) * 6, squash: 1, inv: 1 / ballMass };
+  }
+
+  // ---------------------------------------------------------------------
+  // Physics step
+  // ---------------------------------------------------------------------
+  function updateAnchor(dt) {
+    anchorVX += (mouse.x - pxArr[anchor]) * ANCHOR_OMEGA * ANCHOR_OMEGA * dt;
+    anchorVY += (mouse.y - pyArr[anchor]) * ANCHOR_OMEGA * ANCHOR_OMEGA * dt;
+    const decay = Math.exp(-2 * ANCHOR_OMEGA * dt);
+    anchorVX *= decay; anchorVY *= decay;
+    pxArr[anchor] += anchorVX * dt;
+    pyArr[anchor] += anchorVY * dt;
+  }
+
+  function integratePoints() {
+    for (let i = 0; i < pointCount; i++) {
+      if (pinvArr[i] === 0) continue;
+      const vx = (pxArr[i] - ppxArr[i]) * DAMP;
+      const vy = (pyArr[i] - ppyArr[i]) * DAMP;
+      ppxArr[i] = pxArr[i]; ppyArr[i] = pyArr[i];
+      pxArr[i] += vx;
+      pyArr[i] += vy + GRAVITY;
+    }
+  }
+
+  function applyDrag() {
+    if (!dragBox) return;
+    for (let i = 0; i < 4; i++) {
+      const p = dragBox.points[i];
+      const tx = mouse.x + dragOffsets[i].dx;
+      const ty = mouse.y + dragOffsets[i].dy;
+      pxArr[p] += (tx - pxArr[p]) * 0.5;
+      pyArr[p] += (ty - pyArr[p]) * 0.5;
+    }
+    // §5 Sound: creak while dragging
+    if (audioEnabled && Math.random() < 0.03) playCreak();
+  }
+
+  function onSeamBreak(x, y) {
+    spawnDebrisBurst(x, y, REDUCED_MOTION ? 1 : 3);
+    addTrauma(0.03);
+    playPop();
+  }
+
+  function resolveConstraint(c) {
+    if (!c.active) return;
+    const a = c.p1, b = c.p2;
+    const dx = pxArr[b] - pxArr[a], dy = pyArr[b] - pyArr[a];
+    const dist = Math.hypot(dx, dy) || 0.0001;
+    if (dist > c.breakLimit) {
+      c.active = false;
+      if (c.isSeam) {
+        onSeamBreak((pxArr[a] + pxArr[b]) / 2, (pyArr[a] + pyArr[b]) / 2);
+        unjoin(c);
+      }
+      return;
+    }
+    const invSum = pinvArr[a] + pinvArr[b];
+    if (invSum <= 0) return;
+    const diff = (dist - c.rest) / dist;
+    const corrA = diff * (pinvArr[a] / invSum);
+    const corrB = diff * (pinvArr[b] / invSum);
+    pxArr[a] += dx * corrA; pyArr[a] += dy * corrA;
+    pxArr[b] -= dx * corrB; pyArr[b] -= dy * corrB;
+  }
+
+  function clampPoint(p, radius) {
+    const limitY = groundY - radius;
+    if (pyArr[p] > limitY) {
+      const vy = pyArr[p] - ppyArr[p];
+      // ground thump: falling blocks rumble a little; the ball's slam scales
+      // with its mass like every other ball-driven shake
+      if (vy > 6) {
+        addTrauma(p === ball.idx
+          ? Math.min(0.5, vy * 0.02 * (ballMass / BALL_MASS_MAX))
+          : Math.min(0.08, vy * 0.006));
+      }
+      // §5 Particles on box ground impact
+      if (vy > 4 && p !== ball.idx) {
+        spawnParticle(pxArr[p], groundY, (Math.random() - 0.5) * 30, -Math.random() * vy * 0.3,
+          0.2 + Math.random() * 0.2, 2 + Math.random() * 3, dustSprite, 0.5);
+      }
+      pyArr[p] = limitY;
+      const vx = pxArr[p] - ppxArr[p];
+      ppxArr[p] = pxArr[p] - vx * 0.85;
+      ppyArr[p] = pyArr[p];
+    }
+    if (pxArr[p] < radius) { pxArr[p] = radius; ppxArr[p] = pxArr[p] - (pxArr[p] - ppxArr[p]) * 0.3; }
+    if (pxArr[p] > w - radius) { pxArr[p] = w - radius; ppxArr[p] = pxArr[p] - (pxArr[p] - ppxArr[p]) * 0.3; }
+  }
+
+  function registerImpact(speed, x, y, box) {
+    addTrauma(Math.min(0.6, speed * 0.02 * (ballMass / BALL_MASS_MAX)));
+    if (speed > FRAG_SPEED && box) queueSplit(box);
+    if (impactCooldown > 0) return;
+    const BIG = 6;
+    if (speed > BIG) {
+      impactCooldown = 0.1;
+      triggerHitStop(clamp(speed * 4, 40, 80) * (REDUCED_MOTION ? 0.3 : 1));
+      spawnDebrisBurst(x, y, clamp(Math.round(speed * 1.1), 6, REDUCED_MOTION ? 10 : 22));
+      ball.squash = Math.max(0.55, ball.squash - speed * 0.02);
+      playThud(speed);
+    }
+  }
+
+  function ballCollideBoxes() {
+    const rr = ball.radius;
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const pts = boxes[bi].points;
+      for (let i = 0; i < 4; i++) {
+        const p = pts[i];
+        const dx = pxArr[p] - ball.x, dy = pyArr[p] - ball.y;
+        const d = Math.hypot(dx, dy) || 0.0001;
+        const minD = rr + POINT_R;
+        if (d < minD) {
+          const nx = dx / d, ny = dy / d;
+          const overlap = minD - d;
+          const invSum = ball.inv + pinvArr[p];
+          if (invSum <= 0) continue;
+          const moveBall = overlap * (ball.inv / invSum);
+          const moveP = overlap * (pinvArr[p] / invSum);
+          ball.x -= nx * moveBall; ball.y -= ny * moveBall;
+          pxArr[p] += nx * moveP; pyArr[p] += ny * moveP;
+          const ballVX = ball.x - ball.px, ballVY = ball.y - ball.py;
+          const speed = Math.hypot(ballVX, ballVY);
+          ppxArr[p] -= nx * speed * 0.55;
+          ppyArr[p] -= ny * speed * 0.55;
+          registerImpact(speed, (pxArr[p] + ball.x) / 2, (pyArr[p] + ball.y) / 2, boxes[bi]);
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Spatial hashing for box-vs-box collision (Handbook §3.3)
+  // O(n²) → O(n) with uniform grid. Cell size = max box diagonal.
+  // ---------------------------------------------------------------------
+  const CELL_SIZE = 120;
+  let gridCols = 0, gridRows = 0;
+  // Flat array for grid buckets (reused, zero alloc per frame)
+  let gridBuckets = null;
+  let gridCapacity = 0;
+
+  function initGrid() {
+    gridCols = Math.ceil(w / CELL_SIZE);
+    gridRows = Math.ceil(h / CELL_SIZE);
+    gridCapacity = gridCols * gridRows;
+    // Each bucket: typed array of box indices, pre-allocated
+    if (gridBuckets === null || gridBuckets.length !== gridCapacity) {
+      gridBuckets = new Array(gridCapacity);
+      for (let i = 0; i < gridCapacity; i++) gridBuckets[i] = [];
+    }
+    // Clear
+    for (let i = 0; i < gridCapacity; i++) gridBuckets[i].length = 0;
+  }
+
+  function hashBox(box) {
+    const pts = box.points;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let k = 0; k < 4; k++) {
+      const xi = pts[k];
+      const x = pxArr[xi], y = pyArr[xi];
+      if (x < minX) minX = x; if (y < minY) minY = y;
+      if (x > maxX) maxX = x; if (y > maxY) maxY = y;
+    }
+    const c0 = (minX / CELL_SIZE) | 0;
+    const r0 = (minY / CELL_SIZE) | 0;
+    const c1 = (maxX / CELL_SIZE) | 0;
+    const r1 = (maxY / CELL_SIZE) | 0;
+    // Insert box into all cells it overlaps
+    for (let r = r0; r <= r1 && r < gridRows; r++) {
+      for (let c = c0; c <= c1 && c < gridCols; c++) {
+        gridBuckets[r * gridCols + c].push(box);
+      }
+    }
+  }
+
+  function boxCollideBoxes() {
+    // Build spatial hash
+    for (let i = 0; i < gridCapacity; i++) gridBuckets[i].length = 0;
+    for (let bi = 0; bi < boxes.length; bi++) hashBox(boxes[bi]);
+
+    // Only check boxes in neighboring cells
+    const checked = new Uint8Array(boxes.length); // avoid duplicate checks
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const A = boxes[bi];
+      const apts = A.points;
+      let aMinX = Infinity, aMinY = Infinity, aMaxX = -Infinity, aMaxY = -Infinity;
+      for (let k = 0; k < 4; k++) {
+        const xi = apts[k];
+        const xv = pxArr[xi], yv = pyArr[xi];
+        if (xv < aMinX) aMinX = xv; if (yv < aMinY) aMinY = yv;
+        if (xv > aMaxX) aMaxX = xv; if (yv > aMaxY) aMaxY = yv;
+      }
+
+      const c0 = (aMinX / CELL_SIZE) | 0;
+      const r0 = (aMinY / CELL_SIZE) | 0;
+      const c1 = (aMaxX / CELL_SIZE) | 0;
+      const r1 = (aMaxY / CELL_SIZE) | 0;
+
+      for (let r = r0; r <= r1 && r < gridRows; r++) {
+        for (let c = c0; c <= c1 && c < gridCols; c++) {
+          const bucket = gridBuckets[r * gridCols + c];
+          for (let bi2 = 0; bi2 < bucket.length; bi2++) {
+            const B = bucket[bi2];
+            if (B === A) continue;
+            if (checked[bi2]) continue;
+            if (A.joints.get(B)) continue;
+            // Quick AABB check
+            const bpts = B.points;
+            let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+            for (let k2 = 0; k2 < 4; k2++) {
+              const xi2 = bpts[k2];
+              const xv2 = pxArr[xi2], yv2 = pyArr[xi2];
+              if (xv2 < bMinX) bMinX = xv2; if (yv2 < bMinY) bMinY = yv2;
+              if (xv2 > bMaxX) bMaxX = xv2; if (yv2 > bMaxY) bMaxY = yv2;
+            }
+            if (bMinX > aMaxX || bMaxX < aMinX) continue;
+            if (bMinY > aMaxY || bMaxY < aMinY) continue;
+            pushPointsOut(A, B);
+            pushPointsOut(B, A);
+            checked[bi2] = 1;
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Fragmentation: a heavy hit splits a block into four quadrant pieces
+  // (queued so the box list is never mutated mid-iteration; capped for
+  // performance and only while the piece is still big enough to halve)
+  // ---------------------------------------------------------------------
+  const pendingSplits = [];
+  function queueSplit(box) {
+    if (box.dead || box.size < FRAG_MIN_SIZE || boxes.length >= MAX_BOXES) return;
+    box.dead = true;
+    pendingSplits.push(box);
+  }
+
+  function removeBox(box) {
+    const own = new Set(box.points);
+    for (let i = 0; i < constraints.length; i++) {
+      const c = constraints[i];
+      if ((own.has(c.p1) || own.has(c.p2)) && c.active && c.isSeam) unjoin(c);
+    }
+    constraints = constraints.filter(c => !(own.has(c.p1) || own.has(c.p2)));
+    points = points.filter(p => !own.has(p));
+    const idx = boxes.indexOf(box);
+    if (idx >= 0) boxes.splice(idx, 1);
+    for (const other of box.joints.keys()) other.joints.delete(box);
+  }
+
+  function fragmentBox(box) {
+    let vx = 0, vy = 0, cx = 0, cy = 0;
+    for (let k = 0; k < 4; k++) {
+      const p = box.points[k];
+      vx += pxArr[p] - ppxArr[p]; vy += pyArr[p] - ppyArr[p];
+      cx += pxArr[p]; cy += pyArr[p];
+    }
+    vx /= 4; vy /= 4; cx /= 4; cy /= 4;
+    const childSize = box.size * 0.46;
+    if (dragBox === box) { dragBox = null; }
+    removeBox(box);
+    for (let qi = 0; qi < 4; qi++) {
+      const ox = qi === 0 || qi === 3 ? -1 : 1;
+      const oy = qi < 2 ? -1 : 1;
+      const child = makeBox(cx + ox * box.size * 0.25, cy + oy * box.size * 0.25,
+        childSize, box.color, true);
+      for (let k = 0; k < 4; k++) {
+        const p = child.points[k];
+        // inherit the parent's velocity plus a small outward pop
+        ppxArr[p] = pxArr[p] - vx - ox * (0.4 + Math.random() * 0.8);
+        ppyArr[p] = pyArr[p] - vy - oy * (0.4 + Math.random() * 0.8);
+      }
+    }
+    spawnDebrisBurst(cx, cy, REDUCED_MOTION ? 6 : 14);
+    addTrauma(clamp(box.size * 0.004, 0.06, 0.18));
+    playThud(14);
+  }
+
+  function processSplits() {
+    while (pendingSplits.length) fragmentBox(pendingSplits.pop());
+  }
+
+  function updateBallSquash(dt) {
+    ball.squash += (1 - ball.squash) * (1 - Math.exp(-10 * dt));
+  }
+
+  // §5 Box squash/stretch driven by velocity (Disney's first principle)
+  // Volume-preserving: scaleY = 1 + vy*0.02, scaleX = 1/scaleY
+  // Zero-allocation: uses pre-allocated _sqPos/_sqVel arrays
+  function updateBoxSquash(dt) {
+    for (var bi = 0; bi < boxes.length; bi++) {
+      var box = boxes[bi];
+      var pts = box.points;
+      // Compute average velocity
+      var avgVX = 0, avgVY = 0;
+      for (var k = 0; k < 4; k++) {
+        const xi = pts[k];
+        avgVX += (pxArr[xi] - ppxArr[xi]);
+        avgVY += (pyArr[xi] - ppyArr[xi]);
+      }
+      avgVX /= 4; avgVY /= 4;
+      // Squash: flatten along velocity direction when moving fast
+      var targetSquashY = 1 + avgVY * 0.025;
+      var targetSquashX = 1 / targetSquashY;
+      // Clamp to reasonable range
+      targetSquashX = clamp(targetSquashX, 0.7, 1.4);
+      targetSquashY = clamp(targetSquashY, 0.7, 1.4);
+      // Spring toward target (Handbook §3.2) — in-place, zero alloc
+      springStepOut(box.squashX, box.squashVelX, targetSquashX, 12, dt, _sqPos, _sqVel);
+      box.squashX = _sqPos[0]; box.squashVelX = _sqVel[0];
+      springStepOut(box.squashY, box.squashVelY, targetSquashY, 12, dt, _sqPos, _sqVel);
+      box.squashY = _sqPos[0]; box.squashVelY = _sqVel[0];
+      // §5 Build animation: easeOutBack pop-in
+      if (box.buildAnim < 1) {
+        box.buildAnim = Math.min(1, box.buildAnim + dt * 4);
+      }
+      // Trigger blink randomly (ambient life)
+      box.blinkTimer -= dt;
+      if (box.blinkTimer <= 0 && !box.blinking) {
+        box.blinking = true;
+        box.blinkDuration = 0.12 + Math.random() * 0.08;
+        box.blinkTimer = 2 + Math.random() * 4;
+      }
+      if (box.blinking) {
+        box.blinkDuration -= dt;
+        if (box.blinkDuration <= 0) {
+          box.blinking = false;
+          box.blinkOpen = !box.blinkOpen;
+        }
+      }
+    }
+  }
+
+  function update(dt) {
+    updateAnchor(dt);
+    integratePoints();
+    applyDrag();
+    for (let iter = 0; iter < ITERS; iter++) {
+      for (let i = 0; i < constraints.length; i++) resolveConstraint(constraints[i]);
+      for (let i = 0; i < pointCount; i++) {
+        if (pinvArr[i] > 0) clampPoint(i, i === ball.idx ? ball.radius : POINT_R);
+      }
+      ballCollideBoxes();
+      boxCollideBoxes();
+    }
+    processSplits();
+    updateParticles(dt);
+    updateBallSquash(dt);
+    updateBoxSquash(dt);
+    trauma = Math.max(0, trauma - dt * 1.3);
+    impactCooldown = Math.max(0, impactCooldown - dt);
+    noiseTime += dt;
+
+    ambientTimer -= dt;
+    if (ambientTimer <= 0) {
+      ambientTimer = 1.2 + Math.random() * 1.5;
+      spawnParticle(Math.random() * w, groundY - Math.random() * 30,
+        Math.random() * 20 - 10, -10 - Math.random() * 10,
+        2 + Math.random(), 2 + Math.random() * 3, dustSprite, 0.35);
+    }
+
+    // §5 Ambient idle wobble — micro-motion so nothing is ever perfectly still
+    ambientWobble += dt;
+    if (boxes.length > 0 && ambientWobble > 0.05) {
+      // Subtle noise-based wobble on a few random points
+      for (let wobble = 0; wobble < 3; wobble++) {
+        const ri = Math.floor(Math.random() * pointCount);
+        if (ri < pointCount && pinvArr[ri] > 0 && ri !== ball) {
+          const w = Math.sin(ambientWobble * 2 + ri) * 0.08;
+          pxArr[ri] += w;
+        }
+      }
+      ambientWobble = 0;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Explosion (right click)
+  // ---------------------------------------------------------------------
+  function explode(x, y) {
+    const RADIUS = 150, FORCE = 30;
+    for (let i = 0; i < pointCount; i++) {
+      if (pinvArr[i] <= 0) continue;
+      const dx = pxArr[i] - x, dy = pyArr[i] - y, d = Math.hypot(dx, dy) || 0.001;
+      if (d < RADIUS) {
+        const f = (1 - d / RADIUS) * FORCE;
+        pxArr[i] += (dx / d) * f;
+        pyArr[i] += (dy / d) * f - f * 0.3;
+      }
+    }
+    for (let i = 0; i < constraints.length; i++) {
+      const c = constraints[i];
+      if (!c.active || !c.isSeam) continue;
+      const mx = (pxArr[c.p1] + pxArr[c.p2]) / 2, my = (pyArr[c.p1] + pyArr[c.p2]) / 2;
+      if (Math.hypot(mx - x, my - y) < RADIUS * 0.75) { c.active = false; unjoin(c); }
+    }
+    // blocks at the heart of the blast shatter (processed next tick)
+    for (let i = 0; i < boxes.length; i++) {
+      const pts = boxes[i].points;
+      const bx = (pxArr[pts[0]] + pxArr[pts[2]]) / 2, by = (pyArr[pts[0]] + pyArr[pts[2]]) / 2;
+      if (Math.hypot(bx - x, by - y) < RADIUS * 0.5) queueSplit(boxes[i]);
+    }
+    addTrauma(0.65);
+    triggerHitStop((REDUCED_MOTION ? 25 : 70));
+    spawnDebrisBurst(x, y, REDUCED_MOTION ? 10 : 26);
+    playThud(35);
+  }
+
+  // ---------------------------------------------------------------------
+  // Screenshake + hit-stop (Handbook §5)
+  // ---------------------------------------------------------------------
+  function addTrauma(t) { trauma = Math.min(1, trauma + t); }
+  function triggerHitStop(ms) { hitStopTimer = Math.max(hitStopTimer, ms / 1000); }
+
+  function shakeTransform() {
+    const s = trauma * trauma * (REDUCED_MOTION ? 0.15 : 1);
+    const t = noiseTime;
+    const ox = (Math.sin(t * 37.1) * 0.5 + Math.sin(t * 19.7 + 1.3) * 0.5) * 18 * s;
+    const oy = (Math.sin(t * 29.3 + 2.1) * 0.5 + Math.sin(t * 13.1 + 0.7) * 0.5) * 18 * s;
+    const rot = (Math.sin(t * 17.3 + 0.5) * 0.5 + Math.sin(t * 8.9 + 2.2) * 0.5) * 0.06 * s;
+    return { ox: ox, oy: oy, rot: rot };
+  }
+
+  // ---------------------------------------------------------------------
+  // Particles (Handbook §4/§5 - pool, 'lighter' blend, pre-rendered sprites)
+  // ---------------------------------------------------------------------
+  const MAX_PARTICLES = 260;
+  const particles = [];
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    particles.push({ x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, size: 4, sprite: null, alphaMul: 1, active: false });
+  }
+  let pIdx = 0;
+  function spawnParticle(x, y, vx, vy, life, size, sprite, alphaMul) {
+    const p = particles[pIdx];
+    pIdx = (pIdx + 1) % MAX_PARTICLES;
+    p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.life = life; p.maxLife = life;
+    p.size = size; p.sprite = sprite; p.alphaMul = alphaMul === undefined ? 1 : alphaMul; p.active = true;
+  }
+  function spawnDebrisBurst(x, y, n) {
+    for (let i = 0; i < n; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = 40 + Math.random() * 160;
+      spawnParticle(x, y, Math.cos(ang) * spd, Math.sin(ang) * spd - 60,
+        0.35 + Math.random() * 0.45, 3 + Math.random() * 6,
+        Math.random() < 0.65 ? dustSprite : sparkSprite, 1);
+    }
+  }
+  function updateParticles(dt) {
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (!p.active) continue;
+      p.vy += 500 * dt;
+      p.vx *= 0.985;
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.life -= dt;
+      if (p.y > groundY + 10 && p.vy > 0) { p.vy *= -0.3; p.vx *= 0.6; }
+      if (p.life <= 0) p.active = false;
+    }
+  }
+  function drawParticles() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    // Batch by sprite type to reduce state changes
+    for (let s = 0; s < 2; s++) { // 0 = dust, 1 = spark
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        if (!p.active || p.sprite !== (s === 0 ? dustSprite : sparkSprite)) continue;
+        const a = clamp(p.life / p.maxLife, 0, 1) * p.alphaMul;
+        ctx.globalAlpha = a;
+        const sz = p.size * 2;
+        ctx.drawImage(p.sprite, p.x - sz / 2, p.y - sz / 2, sz, sz);
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  let dustSprite, sparkSprite;
+  function makeSprite(inner, outer) {
+    const s = 64;
+    const off = document.createElement('canvas');
+    off.width = s; off.height = s;
+    const octx = off.getContext('2d');
+    const g = octx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+    g.addColorStop(0, inner); g.addColorStop(1, outer);
+    octx.fillStyle = g;
+    octx.beginPath(); octx.arc(s / 2, s / 2, s / 2, 0, Math.PI * 2); octx.fill();
+    return off;
+  }
+  function initSprites() {
+    // §4.2 glow sprites — pre-rendered radial gradients, not shadowBlur (perf trap)
+    // Dust: warm beige with soft falloff
+    dustSprite = makeSprite('rgba(220,200,170,0.95)', 'rgba(200,180,150,0)');
+    // Sparks: bright white core → amber → orange → transparent
+    sparkSprite = makeSprite('rgba(255,240,180,1)', 'rgba(255,120,30,0)');
+  }
+
+  // ---------------------------------------------------------------------
+  // Sound (Handbook §5 - ZzFX public-domain sound synth, off by default)
+  // ZzFX: Ultra-lightweight sound synthesis — paste inline, no assets needed
+  // ---------------------------------------------------------------------
+  function ensureAudio() {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+  }
+
+  // Minimal ZzFX-compatible synth (KilledByAPixel, public domain)
+  // zfxSound(r, t, d, v, p, w, s, n) — each param maps to a ZzFX parameter
+  function zfxSound(rate, type, decay, vol, pitch, pitchSlide, detune, noiseMix) {
+    if (!audioEnabled) return;
+    ensureAudio();
+    const now = actx.currentTime;
+    const osc = actx.createOscillator();
+    const noise = actx.createBufferSource();
+    const gain = actx.createGain();
+    const noiseGain = actx.createGain();
+
+    // Create noise buffer
+    const bufferSize = actx.sampleRate * Math.max(decay, 0.01);
+    const noiseBuffer = actx.createBuffer(1, bufferSize, actx.sampleRate);
+    const noiseData = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) noiseData[i] = Math.random() * 2 - 1;
+    noise.buffer = noiseBuffer;
+
+    // Oscillator
+    osc.type = type || 'sine';
+    const baseFreq = rate || 220;
+    osc.frequency.setValueAtTime(baseFreq, now);
+    if (pitchSlide) osc.frequency.exponentialRampToValueAtTime(Math.max(20, baseFreq + pitchSlide), now + decay);
+
+    // Gain envelope
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(Math.min(vol || 0.3, 0.5), now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + decay);
+
+    // Noise mix
+    noiseGain.gain.setValueAtTime((noiseMix || 0) * 0.15, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + decay * 0.5);
+
+    osc.connect(gain);
+    noise.connect(noiseGain);
+    gain.connect(actx.destination);
+    noiseGain.connect(actx.destination);
+
+    osc.start(now); osc.stop(now + decay + 0.01);
+    noise.start(now); noise.stop(now + decay + 0.01);
+  }
+
+  // ZzFX-style thud — low sine burst with noise
+  function playThud(speed) {
+    const vol = clamp(0.06 + speed * 0.008, 0.06, 0.45);
+    const freq = 50 + (1 - speed / 35) * 30; // heavier hits = lower
+    const decay = 0.2 + speed * 0.01;
+    zfxSound(freq, 'sine', clamp(decay, 0.1, 0.45), vol, 0, -freq * 0.7, 0, clamp(speed / 25, 0, 0.6));
+  }
+
+  // ZzFX-style pop — for seam breaks
+  function playPop() {
+    zfxSound(440, 'sine', 0.06, 0.08, 0, 200, 0, 0);
+  }
+
+  // ZzFX-style creak — for dragging blocks
+  function playCreak() {
+    zfxSound(180, 'sawtooth', 0.12, 0.04, 0, -40, 0, 0.3);
+  }
+
+  // ZzFX-style chime — for ambient life / milestone
+  function playChime() {
+    const pentatonic = [523.25, 587.33, 659.25, 783.99, 880]; // C5 pentatonic
+    const freq = pentatonic[Math.floor(Math.random() * pentatonic.length)];
+    zfxSound(freq, 'sine', 0.3, 0.04, 0, 0, 0, 0);
+  }
+
+  // ---------------------------------------------------------------------
+  // Post-processing: vignette + noise grain (§4.4)
+  // ---------------------------------------------------------------------
+  var vignetteCanvas, vignetteCtx;
+  var noiseCanvas, noiseCtx;
+  function initPostProcessing() {
+    // Vignette: radial gradient, multiply-style (dark edges)
+    vignetteCanvas = document.createElement('canvas');
+    vignetteCanvas.width = w;
+    vignetteCanvas.height = h;
+    vignetteCtx = vignetteCanvas.getContext('2d');
+    var vg = vignetteCtx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.75);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(0.6, 'rgba(0,0,0,0.05)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.45)');
+    vignetteCtx.fillStyle = vg;
+    vignetteCtx.fillRect(0, 0, w, h);
+
+    // Noise grain: pre-rendered, overlay at low alpha
+    noiseCanvas = document.createElement('canvas');
+    noiseCanvas.width = 256;
+    noiseCanvas.height = 256;
+    noiseCtx = noiseCanvas.getContext('2d');
+    var imgData = noiseCtx.createImageData(256, 256);
+    for (var i = 0; i < imgData.data.length; i += 4) {
+      var v = Math.random() * 255;
+      imgData.data[i] = v;
+      imgData.data[i + 1] = v;
+      imgData.data[i + 2] = v;
+      imgData.data[i + 3] = 30; // ~12% alpha when composited
+    }
+    noiseCtx.putImageData(imgData, 0, 0);
+  }
+
+  // ---------------------------------------------------------------------
+  // Drawing
+  // ---------------------------------------------------------------------
+  function drawBackground() {
+    var g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#1b2436'); g.addColorStop(0.7, '#2c3446'); g.addColorStop(1, '#3c3220');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+
+    // Ground with hash marks (§4.5 procedural texture)
+    var gg = ctx.createLinearGradient(0, groundY, 0, h);
+    gg.addColorStop(0, '#5a4632'); gg.addColorStop(1, '#241c12');
+    ctx.fillStyle = gg;
+    ctx.fillRect(0, groundY, w, h - groundY);
+
+    // Grass strip
+    ctx.fillStyle = 'rgba(90,140,60,0.55)';
+    ctx.fillRect(0, groundY - 4, w, 6);
+
+    // Ground hash marks — diagonal lines for texture (§4.5)
+    ctx.save();
+    ctx.globalAlpha = 0.08;
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    var hashSpacing = 24;
+    var startY = groundY + 12;
+    for (var row = startY; row < h - 8; row += hashSpacing) {
+      var offset = (Math.floor(row / hashSpacing) % 2) * (hashSpacing / 2);
+      for (var x = -hashSpacing + offset; x < w + hashSpacing; x += hashSpacing * 2) {
+        ctx.beginPath();
+        ctx.moveTo(x, row);
+        ctx.lineTo(x + 10, row + 8);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawPostProcessing() {
+    // §4.4 vignette — adds depth and graded look
+    ctx.drawImage(vignetteCanvas, 0, 0);
+    // §4.4 noise grain — subtle overlay texture
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.globalAlpha = 0.35;
+    ctx.drawImage(noiseCanvas, 0, 0, w, h);
+    ctx.restore();
+  }
+
+  function drawBoxes() {
+    for (let bi = 0; bi < boxes.length; bi++) {
+      const box = boxes[bi];
+      const tl = box.points[0], tr = box.points[1], br = box.points[2], bl = box.points[3];
+      // §5 Box squash/stretch: transform around center
+      const cx = (pxArr[tl] + pxArr[br]) / 2, cy = (pyArr[tl] + pyArr[br]) / 2;
+      const sq = box.squashX, sy = box.squashY;
+      // §5 Build animation: easeOutBack scale
+      const buildScale = box.buildAnim < 1 ? easeOutBack(box.buildAnim) : 1;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(sq * buildScale, sy * buildScale);
+      ctx.translate(-cx, -cy);
+
+      ctx.beginPath();
+      ctx.moveTo(pxArr[tl], pyArr[tl]); ctx.lineTo(pxArr[tr], pyArr[tr]);
+      ctx.lineTo(pxArr[br], pyArr[br]); ctx.lineTo(pxArr[bl], pyArr[bl]);
+      ctx.closePath();
+      ctx.fillStyle = box.color;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+      ctx.beginPath(); ctx.moveTo(pxArr[tl], pyArr[tl]); ctx.lineTo(pxArr[tr], pyArr[tr]); ctx.stroke();
+      let anyBroken = false;
+      for (let i = 0; i < box.cons.length; i++) {
+        const c = box.cons[i];
+        if (!c.active) {
+          anyBroken = true;
+          ctx.strokeStyle = 'rgba(15,8,4,0.65)';
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(pxArr[c.p1], pyArr[c.p1]); ctx.lineTo(pxArr[c.p2], pyArr[c.p2]); ctx.stroke();
+        }
+      }
+      if (anyBroken) {
+        ctx.fillStyle = 'rgba(0,0,0,0.12)';
+        ctx.beginPath();
+        ctx.moveTo(pxArr[tl], pyArr[tl]); ctx.lineTo(pxArr[tr], pyArr[tr]);
+        ctx.lineTo(pxArr[br], pyArr[br]); ctx.lineTo(pxArr[bl], pyArr[bl]);
+        ctx.closePath(); ctx.fill();
+      }
+
+      // §5 Ambient life: blinking eyes on blocks (not fragments, not too small)
+      if (!box.isFragment && box.size >= 30) {
+        const eyeSize = Math.max(2, box.size * 0.07);
+        const eyeSpacing = box.size * 0.2;
+        const eyeY = cy - box.size * 0.15;
+        const eyeLx = cx - eyeSpacing;
+        const eyeRx = cx + eyeSpacing;
+        const eyeOpen = box.blinkOpen || !box.blinking;
+        const eyeAlpha = box.blinking ? clamp(box.blinkDuration / 0.12, 0, 1) : 1;
+
+        ctx.save();
+        ctx.globalAlpha = 0.45 * eyeAlpha;
+        ctx.fillStyle = '#fff';
+        if (eyeOpen) {
+          // Open eyes
+          ctx.beginPath(); ctx.arc(eyeLx, eyeY, eyeSize, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(eyeRx, eyeY, eyeSize, 0, Math.PI * 2); ctx.fill();
+          // Pupils - look toward mouse
+          const lookDx = mouse.x - cx, lookDy = mouse.y - eyeY;
+          const lookDist = Math.hypot(lookDx, lookDy);
+          const pupilR = eyeSize * 0.45;
+          const pupilOff = eyeSize * 0.3;
+          const pnx = lookDist > 0.5 ? (lookDx / lookDist) * pupilOff : 0;
+          const pny = lookDist > 0.5 ? (lookDy / lookDist) * pupilOff : 0;
+          ctx.fillStyle = '#1a1a2e';
+          ctx.beginPath(); ctx.arc(eyeLx + pnx, eyeY + pny, pupilR, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(eyeRx + pnx, eyeY + pny, pupilR, 0, Math.PI * 2); ctx.fill();
+        } else {
+          // Closed eyes - thin horizontal lines
+          ctx.strokeStyle = '#1a1a2e';
+          ctx.lineWidth = eyeSize * 0.6;
+          ctx.beginPath(); ctx.moveTo(eyeLx - eyeSize, eyeY); ctx.lineTo(eyeLx + eyeSize, eyeY); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(eyeRx - eyeSize, eyeY); ctx.lineTo(eyeRx + eyeSize, eyeY); ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawRopeAndBall() {
+    ctx.strokeStyle = '#54565c';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(pxArr[ropePoints[0]], pyArr[ropePoints[0]]);
+    for (let i = 1; i < ropePoints.length; i++) {
+      ctx.lineTo(pxArr[ropePoints[i]], pyArr[ropePoints[i]]);
+    }
+    ctx.stroke();
+    ctx.fillStyle = '#3a3b40';
+    for (let i = 0; i < ropePoints.length - 1; i++) {
+      ctx.beginPath(); ctx.arc(pxArr[ropePoints[i]], pyArr[ropePoints[i]], 4, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(pxArr[anchor], pyArr[anchor], 6, 0, Math.PI * 2); ctx.stroke();
+
+    var vx = ball.x - ball.px, vy = ball.y - ball.py;
+    var speed = Math.hypot(vx, vy);
+    var angle = speed > 0.5 ? Math.atan2(vy, vx) : 0;
+    var stretch = 1 + Math.min(0.3, speed * 0.015);
+
+    // §4.2 motion glow — additive trail behind fast-moving ball
+    if (speed > 2 && !REDUCED_MOTION) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      var trailLen = Math.min(60, speed * 0.4);
+      var gx = ball.x - Math.cos(angle) * trailLen * 0.5;
+      var gy = ball.y - Math.sin(angle) * trailLen * 0.5;
+      var trailGrad = ctx.createRadialGradient(gx, gy, 0, gx, gy, trailLen * 0.6);
+      trailGrad.addColorStop(0, 'rgba(160,170,190,0.35)');
+      trailGrad.addColorStop(0.5, 'rgba(100,110,130,0.12)');
+      trailGrad.addColorStop(1, 'rgba(60,65,80,0)');
+      ctx.fillStyle = trailGrad;
+      ctx.beginPath();
+      ctx.arc(gx, gy, trailLen * 0.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(ball.x, ball.y);
+    ctx.rotate(angle);
+    ctx.scale(stretch, ball.squash / stretch);
+    var grad = ctx.createRadialGradient(-ball.radius * 0.3, -ball.radius * 0.3, ball.radius * 0.1, 0, 0, ball.radius);
+    grad.addColorStop(0, '#9096a0'); grad.addColorStop(0.6, '#4a4e57'); grad.addColorStop(1, '#202128');
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(0, 0, ball.radius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.restore();
+  }
+
+  function draw() {
+    var sh = shakeTransform();
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(sh.rot);
+    ctx.translate(-w / 2 + sh.ox, -h / 2 + sh.oy);
+    drawBackground();
+    drawBoxes();
+    drawRopeAndBall();
+    drawParticles();
+    ctx.restore();
+    // Post-processing after shake restore so vignette/grain stay screen-fixed
+    drawPostProcessing();
+  }
+
+  // ---------------------------------------------------------------------
+  // UI text (pre-allocated strings to reduce GC)
+  // ---------------------------------------------------------------------
+  const massValEl = document.getElementById('massVal');
+  const standingValEl = document.getElementById('standingVal');
+  const totalValEl = document.getElementById('totalVal');
+  const soundValEl = document.getElementById('soundVal');
+  // Pre-allocated number formatting buffer
+  let _massStr = '';
+
+  function updateUIText() {
+    //toFixed(1) produces a new string each time — unavoidable but cheap
+    massValEl.textContent = ballMass.toFixed(1);
+    let intact = 0;
+    for (let i = 0; i < boxes.length; i++) if (!boxes[i].isFragment) intact++;
+    standingValEl.textContent = intact;
+    totalValEl.textContent = initialBoxCount;
+    soundValEl.textContent = audioEnabled ? 'On' : 'Off';
+  }
+
+  // ---------------------------------------------------------------------
+  // Input (Handbook §2 mouse wiring)
+  // ---------------------------------------------------------------------
+  function findNearestBox(x, y, maxDist) {
+    let best = null, bestD = maxDist * maxDist;
+    for (let i = 0; i < boxes.length; i++) {
+      const pts = boxes[i].points;
+      const cx = (pxArr[pts[0]] + pxArr[pts[2]]) / 2, cy = (pyArr[pts[0]] + pyArr[pts[2]]) / 2;
+      const d = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+      if (d < bestD) { bestD = d; best = boxes[i]; }
+    }
+    return best;
+  }
+
+  canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+  window.addEventListener('mousemove', function (e) {
+    mouse.x = e.clientX; mouse.y = e.clientY;
+  });
+
+  canvas.addEventListener('mousedown', function (e) {
+    if (e.button === 0) {
+      const box = findNearestBox(mouse.x, mouse.y, 80);
+      if (box) {
+        dragBox = box;
+        // Reuse pre-allocated dragOffsets array — zero alloc
+        for (let i = 0; i < 4; i++) {
+          const p = box.points[i];
+          dragOffsets[i].dx = pxArr[p] - mouse.x;
+          dragOffsets[i].dy = pyArr[p] - mouse.y;
+        }
+      }
+    } else if (e.button === 2) {
+      explode(mouse.x, mouse.y);
+    }
+  });
+
+  window.addEventListener('mouseup', function (e) {
+    if (e.button === 0) { dragBox = null; }
+  });
+
+  canvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    ballMass = clamp(ballMass - Math.sign(e.deltaY) * 0.2, BALL_MASS_MIN, BALL_MASS_MAX);
+    ball.inv = 1 / ballMass;
+    ball.radius = BALL_BASE_RADIUS + (ballMass - 1) * 6;
+  }, { passive: false });
+
+  window.addEventListener('resize', function () { fitCanvas(); initPostProcessing(); buildYard(); });
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) last = performance.now();
+  });
+
+  const muteBtn = document.getElementById('muteBtn');
+  muteBtn.addEventListener('click', function () {
+    audioEnabled = !audioEnabled;
+    muteBtn.textContent = audioEnabled ? '🔊' : '🔇';
+    if (audioEnabled) ensureAudio();
+  });
+
+  document.getElementById('resetBtn').addEventListener('click', function () {
+    buildYard();
+  });
+
+  // ---------------------------------------------------------------------
+  // Main loop
+  // ---------------------------------------------------------------------
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+  function frame(now) {
+    const frameDt = Math.min((now - last) / 1000, 0.1);
+    last = now;
+    if (hitStopTimer > 0) {
+      hitStopTimer -= frameDt;
+      draw();
+      updateUIText();
+      requestAnimationFrame(frame);
+      return;
+    }
+    acc += frameDt;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    draw();
+    updateUIText();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------
+  fitCanvas();
+  initPostProcessing();
+  initSprites();
+  buildYard();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

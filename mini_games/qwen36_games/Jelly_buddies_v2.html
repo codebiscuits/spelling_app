@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jelly Buddies v2</title>
+<!--
+  v2 setup build for Jelly Buddies.
+  Matches house standards from HANDBOOK.md / HANDBOOK_SMALL.md §0:
+    - mouse-first/mouse-only controls
+    - controls pane fixed top-left
+    - pill reset button bottom-centre
+    - no touch support, contextmenu prevented
+  Engine bones from §2:
+    - fixed timestep with interpolation
+    - DPR-aware canvas
+    - robust mouse wiring (buttons/mouseup on window/wheel normalised)
+  Physics from §3:
+    - Verlet soft-body blobs with pressure constraint
+  Art from §4:
+    - cosine palette
+    - additive glow sprite particles
+  Juice from §5 & §7:
+    - spring pop-in on spawn
+    - screenshake on pop
+    - blinking eyes
+    - ambient bokeh
+    - pentatonic synth (muted by default)
+    - reduced-motion hint preserved
+-->
+
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:#0c0c1e; overflow:hidden; font-family: system-ui,-apple-system,Segoe UI,sans-serif; color:#ddd; }
+  canvas { display:block; touch-action:none; cursor:crosshair; }
+
+  #ui {
+    position:fixed; top:16px; left:16px;
+    background: rgba(10,10,20,0.78);
+    backdrop-filter: blur(10px);
+    border:1px solid rgba(255,255,255,0.08);
+    border-radius:14px;
+    padding:14px 18px;
+    pointer-events:none;
+    z-index:10;
+    font-size:13px;
+    line-height:1.7;
+    min-width:240px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+  }
+  #ui h3 { color:#fff; margin-bottom:6px; font-size:14px; letter-spacing:0.4px; }
+  #ui .row { display:flex; justify-content:space-between; gap:12px; }
+  #ui .key { color:#999; }
+  #ui .val { color:#6cf; font-weight:600; font-variant-numeric:tabular-nums; }
+
+  #resetBtn, #muteBtn {
+    position:fixed; z-index:10;
+    padding:10px 22px; border-radius:999px;
+    border:1px solid rgba(255,255,255,0.2);
+    background: rgba(10,10,20,0.78);
+    color:#ccc; cursor:pointer;
+    backdrop-filter: blur(10px);
+    font:600 13px system-ui;
+    box-shadow:0 6px 24px rgba(0,0,0,0.35);
+    transition: background .2s, color .2s, border-color .2s;
+  }
+  #resetBtn:hover, #muteBtn:hover { background: rgba(40,40,80,0.85); color:#fff; border-color:rgba(255,255,255,0.35); }
+  #resetBtn { bottom:24px; left:50%; transform:translateX(-50%); }
+  #muteBtn { top:16px; right:16px; padding: 10px 14px; font-size: 16px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #cursorTrack { display:none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="cursorTrack" style="position:fixed; pointer-events:none; border-radius:50%; transform:translate(-50%,-50%); z-index:8; width:10px; height:10px; background:rgba(120,200,255,0.25); box-shadow:0 0 14px 1px rgba(120,200,255,0.15); mix-blend-mode:screen; display:none;"></div>
+<div id="ui">
+  <h3>Jelly Buddies v2</h3>
+  <div class="row"><span class="key">Move</span><span class="val">Stir / attract</span></div>
+  <div class="row"><span class="key">Left drag</span><span class="val">Grab &amp; fling</span></div>
+  <div class="row"><span class="key">Right click</span><span class="val">Pop buddy</span></div>
+  <div class="row"><span class="key">Scroll</span><span class="val">Squish: <span id="sv">1.00</span></span></div>
+  <div class="row"><span class="key">Space</span><span class="val">Reset</span></div>
+  <div class="row"><span class="key">M</span><span class="val">Mute: <span id="mv">on</span></span></div>
+  <div class="row"><span class="key">Buddies</span><span class="val" id="bc">0</span>/<span id="maxC">-</span></div>
+</div>
+<button id="muteBtn" aria-label="Toggle sound">&#x1F50A;</button>
+<button id="resetBtn">&#x21BA; Reset</button>
+<script>
+'use strict';
+
+// ---------- Engine ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const cursor = document.getElementById('cursorTrack');
+const svEl = document.getElementById('sv');
+const bcEl = document.getElementById('bc');
+const maxCEl = document.getElementById('maxC');
+const mvEl = document.getElementById('mv');
+
+let w = 0, h = 0;
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buildBokeh();
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+const DT = 1 / 60;
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  draw(acc / DT);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- Tuning ----------
+const N_PTS = 18;
+const ITERS = 5;
+const GRAVITY = 0.22;
+const DAMP = 0.986;
+const MAX_BLOBS = 10;
+const FLOOR_PAD = 8;
+let squish = 1.0;
+
+// ---------- Palette (cosine) ----------
+function cosPalette(t) {
+  const d = [0.00, 0.25, 0.55];
+  const c = new Array(3);
+  for (let i = 0; i < 3; i++) c[i] = 0.55 + 0.40 * Math.cos(6.28318 * (0.9 * t + d[i]));
+  return c;
+}
+function rgb(c, mul, add) {
+  return 'rgb(' + c.map(v => Math.round(Math.min(1, v * mul + add) * 255)).join(',') + ')';
+}
+
+// ---------- Audio (pentatonic, muted by default) ----------
+let AC = null, muted = true;
+function ensureAudio() { if (muted) return; if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === 'suspended') AC.resume(); }
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'triangle';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0,2,4,7,9];
+const penta = (base,i) => base * Math.pow(2, (PENTA[i%5] + 12*((i/5)|0)) / 12);
+
+// ---------- Particles (pooled) ----------
+const glowSprite = document.createElement('canvas');
+glowSprite.width = glowSprite.height = 64;
+{
+  const g = glowSprite.getContext('2d');
+  const grad = g.createRadialGradient(32,32,0,32,32,32);
+  grad.addColorStop(0,'rgba(255,255,255,1)');
+  grad.addColorStop(0.35,'rgba(255,255,255,0.35)');
+  grad.addColorStop(1,'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0,0,64,64);
+}
+const POOL = 260;
+const parts = new Array(POOL);
+for (let i=0;i<POOL;i++) parts[i]={x:0,y:0,vx:0,vy:0,life:0,max:1,size:8,color:'#fff'};
+let pHead = 0;
+function spawnPart(x,y,vx,vy,size,color,life){
+  const p=parts[pHead]; pHead=(pHead+1)%POOL;
+  p.x=x;p.y=y;p.vx=vx;p.vy=vy;p.size=size;p.color=color;p.life=p.max=life;
+}
+
+// ---------- Screenshake ----------
+let trauma = 0;
+
+// ---------- Bokeh ----------
+const bokehCanvas = document.createElement('canvas');
+let bokehCtx = null;
+let bokehStars = [];
+function buildBokeh(){
+  bokehCanvas.width = w; bokehCanvas.height = h;
+  bokehCtx = bokehCanvas.getContext('2d');
+  bokehStars = [];
+  for (let i=0;i<55;i++){
+    bokehStars.push({
+      x: Math.random()*w,
+      y: Math.random()*h,
+      r: 14 + Math.random()*70,
+      hue: 200 + Math.random()*120,
+      phase: Math.random()*Math.PI*2,
+      speed: 0.1 + Math.random()*0.45
+    });
+  }
+}
+
+// ---------- Blobs ----------
+const blobs = [];
+function makeBlob(x,y,r){
+  const ringRest = 2*r*Math.sin(Math.PI/N_PTS);
+  const bendRest = 2*r*Math.sin(2*Math.PI/N_PTS);
+  const pts=[];
+  for(let i=0;i<N_PTS;i++){
+    const a=(i/N_PTS)*Math.PI*2;
+    const px=x+Math.cos(a)*r, py=y+Math.sin(a)*r;
+    pts.push({x:px,y:py,px,py,grabbed:false});
+  }
+  const paletteT = Math.random()*Math.PI*2;
+  const c3 = cosPalette(paletteT);
+  const b={
+    r,
+    pts,
+    ringRest,
+    bendRest,
+    restArea: Math.PI*r*r,
+    base: rgb(c3,1,0),
+    light: rgb(c3,1,0.35),
+    dark: rgb(c3,0.55,0),
+    s:0.25, sv:0,
+    cx:x, cy:y, vx:0, vy:0,
+    blinkT: 1+Math.random()*4,
+    eyeOff: Math.random()*Math.PI*2,
+    age:0,
+    paletteT
+  };
+  blobs.push(b);
+  return b;
+}
+function popBlob(b,cx,cy){
+  const idx=blobs.indexOf(b); if(idx<0) return;
+  for(const p of b.pts){
+    const dx=p.x-cx,dy=p.y-cy;
+    const d=Math.hypot(dx,dy)||1;
+    spawnPart(p.x,p.y,dx/d*(2+Math.random()*4)+b.vx,dy/d*(2+Math.random()*4)+b.vy,
+              5+Math.random()*9,b.light,0.5+Math.random()*0.4);
+  }
+  trauma = Math.min(1, trauma + 0.3);
+  tone(700,180,0.25,0.18,'square');
+  tone(300,60,0.35,0.12,'sine',0.03);
+  blobs.splice(idx,1);
+  updateCount();
+}
+function resetBuddies(){
+  blobs.length = 0;
+  for(let i=0;i<5;i++){
+    const r = 38 + Math.random()*28;
+    makeBlob(w*(0.25+0.17*i), h*0.25 + Math.random()*h*0.2, r);
+  }
+  updateCount();
+}
+function updateCount(){ bcEl.textContent = blobs.length; }
+
+// ---------- Input ----------
+const mouse = {x:-9999,y:-9999,lx:-9999,ly:-9999,left:false,right:false};
+const grabs = new Map();
+
+canvas.addEventListener('contextmenu', e=> e.preventDefault());
+
+canvas.addEventListener('mousemove', e=>{
+  const r=canvas.getBoundingClientRect();
+  mouse.lx=mouse.x; mouse.ly=mouse.y;
+  mouse.x=e.clientX-r.left;
+  mouse.y=e.clientY-r.top;
+  mouse.left=!!(e.buttons&1);
+  mouse.right=!!(e.buttons&2);
+  cursor.style.left = mouse.x+'px';
+  cursor.style.top = mouse.y+'px';
+});
+canvas.addEventListener('mousedown', e=>{
+  ensureAudio();
+  if(e.button===0){
+    mouse.left=true;
+    const b=blobAt(mouse.x,mouse.y);
+    if(b){
+      let best=0,bd=Infinity;
+      for(let i=0;i<b.pts.length;i++){
+        const d=Math.hypot(b.pts[i].x-mouse.x, b.pts[i].y-mouse.y);
+        if(d<bd){bd=d;best=i;}
+      }
+      grabs.set(b, {idx:best, ox:mouse.x, oy:mouse.y});
+    }
+  }
+  if(e.button===2){
+    mouse.right=true;
+    const b=blobAt(mouse.x,mouse.y);
+    if(b) popBlob(b,mouse.x,mouse.y);
+  }
+});
+window.addEventListener('mouseup', e=>{
+  if(e.button===0){
+    mouse.left=false;
+    grabs.clear();
+  }
+  if(e.button===2) mouse.right=false;
+});
+canvas.addEventListener('wheel', e=>{
+  e.preventDefault();
+  squish = Math.max(0.5, Math.min(2.0, squish - Math.sign(e.deltaY) * 0.05));
+  svEl.textContent = squish.toFixed(2);
+}, {passive:false});
+window.addEventListener('keydown', e=>{
+  if(e.code==='Space') resetBuddies();
+  if(e.code==='KeyM') toggleMute();
+});
+
+function blobAt(x,y){
+  let best=null, bd=Infinity;
+  for(const b of blobs){
+    const dx=b.cx-x, dy=b.cy-y;
+    const d=Math.hypot(dx,dy);
+    if(d < b.r*1.6 && d<bd){ bd=d; best=b; }
+  }
+  return best;
+}
+function toggleMute(){
+  muted = !muted;
+  mvEl.textContent = muted ? 'on' : 'off';
+  document.getElementById('muteBtn').textContent = muted ? '\u{1F50A}' : '\u{1F507}';
+  if(!muted) ensureAudio();
+}
+
+// ---------- Physics ----------
+function update(dt){
+  const time = performance.now()*0.001;
+  // integrate + spring scale
+  for(const b of blobs){
+    const pts=b.pts;
+    for(const p of pts){
+      const vx=(p.x-p.px)*DAMP;
+      const vy=(p.y-p.py)*DAMP;
+      p.px=p.x; p.py=p.y;
+      p.x+=vx; p.y+=vy+GRAVITY*dt*60;
+    }
+    // springy spawn scale
+    b.s += (1 - b.s) * Math.min(1, 6*dt);
+    // age
+    b.age += dt;
+    // blink
+    b.blinkT -= dt;
+    if(b.blinkT <= 0) b.blinkT = 1.5 + Math.random()*3.5;
+
+    const n=pts.length;
+    for(let iter=0;iter<ITERS;iter++){
+      // perimeter distance constraints
+      for(let i=0;i<n;i++){
+        const a=pts[i], c=pts[(i+1)%n];
+        const dx=c.x-a.x, dy=c.y-a.y;
+        const d=Math.hypot(dx,dy)||0.001;
+        const rest = b.ringRest * squish;
+        const diff=(d-rest)/d*0.5;
+        a.x+=dx*diff; a.y+=dy*diff;
+        c.x-=dx*diff; c.y-=dy*diff;
+      }
+      // bending constraints
+      for(let i=0;i<n;i++){
+        const a=pts[i], c=pts[(i+2)%n];
+        const dx=c.x-a.x, dy=c.y-a.y;
+        const d=Math.hypot(dx,dy)||0.001;
+        const diff=(d-b.bendRest)/d*0.25;
+        a.x+=dx*diff; a.y+=dy*diff;
+        c.x-=dx*diff; c.y-=dy*diff;
+      }
+      // radial pressure
+      const poly=[];
+      for(let i=0;i<n;i++) poly.push([pts[i].x, pts[i].y]);
+      let area=0;
+      for(let i=0;i<n;i++){
+        const j=(i+1)%n;
+        area += poly[i][0]*poly[j][1] - poly[j][0]*poly[i][1];
+      }
+      area = Math.abs(area)/2;
+      const pressure = (b.restArea - area)*0.005;
+      for(let i=0;i<n;i++){
+        const j=(i+1)%n, prev=(i-1+n)%n;
+        const nx=poly[j][1]-poly[prev][1];
+        const ny=poly[prev][0]-poly[j][0];
+        const len=Math.hypot(nx,ny)||1;
+        pts[i].x += nx/len*pressure;
+        pts[i].y += ny/len*pressure;
+      }
+    }
+    // tracker point for simplicity
+    b.cx = pts.reduce((s,p)=>s+p.x,0)/n;
+    b.cy = pts.reduce((s,p)=>s+p.y,0)/n;
+  }
+
+  // mouse interaction
+  // attraction / gentle drag in grab mode
+  if(grabs.size){
+    for(const [b, g] of grabs){
+      const p = b.pts[g.idx];
+      const dx = mouse.x - p.x, dy = mouse.y - p.y;
+      const throwVx = (mouse.x - mouse.lx);
+      const throwVy = (mouse.y - mouse.ly);
+      // spring to mouse
+      p.x += dx*0.25;
+      p.y += dy*0.25;
+      // a bit of fling via prevPos
+      p.px -= throwVx*0.6;
+      p.py -= throwVy*0.6;
+    }
+  } else if(mouse.left){
+    for(const b of blobs){
+      const dx = mouse.x - b.cx, dy = mouse.y - b.cy;
+      const d = Math.hypot(dx,dy)||1;
+      if(d < 160){
+        const f = 0.6*(1-d/160);
+        b.vx += f*dx/d*12;
+        b.vy += f*dy/d*12;
+      }
+    }
+  }
+
+  // inter-blob separation
+  for(let i=0;i<blobs.length;i++){
+    for(let j=i+1;j<blobs.length;j++){
+      const a=blobs[i], b=blobs[j];
+      const dx=a.cx-b.cx, dy=a.cy-b.cy;
+      const dd=Math.hypot(dx,dy)||1;
+      const minD = (a.r+b.r)*1.05;
+      if(dd < minD){
+        const overlap = minD-dd;
+        const nx=dx/dd, ny=dy/dd;
+        for(const p of a.pts){ p.x += nx*overlap*0.5; p.y += ny*overlap*0.5; }
+        for(const p of b.pts){ p.x -= nx*overlap*0.5; p.y -= ny*overlap*0.5; }
+      }
+    }
+  }
+
+  // floor / walls
+  for(const b of blobs){
+    for(const p of b.pts){
+      if(p.y > h - FLOOR_PAD){ p.y = h - FLOOR_PAD; const vy=(p.y-p.py); p.py = p.y - vy*0.35; }
+      if(p.x < FLOOR_PAD){ p.x = FLOOR_PAD; const vx=(p.x-p.px); p.px = p.x - vx*0.35; }
+      if(p.x > w - FLOOR_PAD){ p.x = w - FLOOR_PAD; const vx=(p.x-p.px); p.px = p.x - vx*0.35; }
+    }
+  }
+
+  // trauma decay
+  trauma *= Math.exp(-3.5*dt);
+}
+
+// ---------- Render ----------
+function draw(alpha){
+  const time = performance.now()*0.001;
+  const shakeX = (Math.random()-0.5)*trauma*18;
+  const shakeY = (Math.random()-0.5)*trauma*18;
+
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
+  // background glow
+  const bg = ctx.createRadialGradient(w/2,h/2,Math.min(w,h)*0.18,w/2,h/2,Math.max(w,h)*0.85);
+  bg.addColorStop(0,'#14102a');
+  bg.addColorStop(1,'#080714');
+  ctx.fillStyle = bg;
+  ctx.fillRect(-40,-40,w+80,h+80);
+
+  // bokeh
+  if(bokehCtx){
+    ctx.globalCompositeOperation = 'lighter';
+    for(const s of bokehStars){
+      const a = 0.08 + 0.07*Math.sin(time*s.speed + s.phase);
+      const x = s.x + Math.sin(time*0.3 + s.phase)*18;
+      const y = s.y + Math.cos(time*0.25 + s.phase)*14;
+      const rg = ctx.createRadialGradient(x,y,0,x,y,s.r);
+      rg.addColorStop(0, `hsla(${s.hue},70%,70%,${a})`);
+      rg.addColorStop(1, `hsla(${s.hue},70%,70%,0)`);
+      ctx.fillStyle = rg;
+      ctx.fillRect(x-s.r,y-s.r,s.r*2,s.r*2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // blobs
+  for(const b of blobs){
+    const pts = b.pts;
+    const scale = 0.5 + 0.5*alpha;
+    // shadow
+    ctx.shadowColor = b.base;
+    ctx.shadowBlur = 18;
+    ctx.beginPath();
+    ctx.moveTo((pts[0].x+pts[pts.length-1].x)/2,(pts[0].y+pts[pts.length-1].y)/2);
+    for(let i=0;i<pts.length;i++){
+      const next=pts[(i+1)%pts.length];
+      const mx=(pts[i].x+next.x)/2,my=(pts[i].y+next.y)/2;
+      ctx.quadraticCurveTo(pts[i].x,pts[i].y,mx,my);
+    }
+    ctx.closePath();
+    ctx.fillStyle = b.dark;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = b.base;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+
+    // inner sheen
+    ctx.fillStyle = b.light;
+    ctx.globalAlpha = 0.18;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // eyes
+    const cx=pts.reduce((s,p)=>s+p.x,0)/pts.length;
+    const cy=pts.reduce((s,p)=>s+p.y,0)/pts.length;
+    const blink = b.blinkT < 0.12 ? 0.08 : 1;
+    const ex1=cx-Math.cos(b.eyeOff)*b.r*0.25,ey1=cy-Math.sin(b.eyeOff)*b.r*0.4;
+    const ex2=cx+Math.cos(b.eyeOff)*b.r*0.25,ey2=cy-Math.sin(b.eyeOff)*b.r*0.4;
+    ctx.fillStyle='#fff';
+    ctx.beginPath(); ctx.ellipse(ex1,ey1,b.r*0.2*blink,b.r*0.22*blink,0,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(ex2,ey2,b.r*0.2*blink,b.r*0.22*blink,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#0a0a16';
+    ctx.beginPath(); ctx.arc(ex1+Math.cos(time*2.2)*2,ey1,b.r*0.08*blink,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(ex2+Math.cos(time*2.2+1)*2,ey2,b.r*0.08*blink,0,Math.PI*2); ctx.fill();
+  }
+
+  ctx.restore();
+
+  // particles
+  ctx.globalCompositeOperation = 'lighter';
+  for(let i=0;i<POOL;i++){
+    const p=parts[i];
+    if(p.life<=0) continue;
+    const t = p.life/p.max;
+    ctx.globalAlpha = t;
+    const s = p.size * (0.4 + 0.6*t);
+    ctx.drawImage(glowSprite, p.x-s/2, p.y-s/2, s, s);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+// ---------- State tick ----------
+function stateTick(dt){
+  for(let i=0;i&lt;POOL;i++){
+    const p=parts[i];
+    if(p.life&lt;=0) continue;
+    p.life -= dt;
+    p.x += p.vx*dt; p.y += p.vy*dt;
+    p.vy += 40*dt;
+    p.vx *= Math.exp(-1.4*dt);
+    p.vy *= Math.exp(-1.4*dt);
+  }
+  // auto spawn at cursor while left held
+  if(mouse.left &amp;&amp; blobs.length &lt; MAX_BLOBS){
+    if(Math.random() &lt; 0.04) makeBlob(mouse.x + (Math.random()-0.5)*10, mouse.y + (Math.random()-0.5)*10, 26 + Math.random()*22);
+  }
+  // little ambient nudges
+  if(blobs.length &lt; 4 &amp;&amp; Math.random() &lt; 0.01){
+    makeBlob(Math.random()*w, Math.random()*h*0.8, 32 + Math.random()*26);
+  }
+}
+
+function physicsStep(dt){
+  const time = performance.now()*0.001;
+  for(const b of blobs){
+    const pts=b.pts;
+    for(const p of pts){
+      const vx=(p.x-p.px)*DAMP;
+      const vy=(p.y-p.py)*DAMP;
+      p.px=p.x; p.py=p.y;
+      p.x+=vx; p.y+=vy+GRAVITY*dt*60;
+    }
+    b.s += (1 - b.s) * Math.min(1, 6*dt);
+    b.age += dt;
+    b.blinkT -= dt;
+    if(b.blinkT &lt;= 0) b.blinkT = 1.5 + Math.random()*3.5;
+
+    const n=pts.length;
+    for(let iter=0;iter&lt;ITERS;iter++){
+      for(let i=0;i&lt;n;i++){
+        const a=pts[i], c=pts[(i+1)%n];
+        const dx=c.x-a.x, dy=c.y-a.y;
+        const d=Math.hypot(dx,dy)||0.001;
+        const rest = b.ringRest * squish;
+        const diff=(d-rest)/d*0.5;
+        a.x+=dx*diff; a.y+=dy*diff;
+        c.x-=dx*diff; c.y-=dy*diff;
+      }
+      for(let i=0;i&lt;n;i++){
+        const a=pts[i], c=pts[(i+2)%n];
+        const dx=c.x-a.x, dy=c.y-a.y;
+        const d=Math.hypot(dx,dy)||0.001;
+        const diff=(d-b.bendRest)/d*0.25;
+        a.x+=dx*diff; a.y+=dy*diff;
+        c.x-=dx*diff; c.y-=dy*diff;
+      }
+      const poly=[];
+      for(let i=0;i&lt;n;i++) poly.push([pts[i].x, pts[i].y]);
+      let area=0;
+      for(let i=0;i&lt;n;i++){
+        const j=(i+1)%n;
+        area += poly[i][0]*poly[j][1] - poly[j][0]*poly[i][1];
+      }
+      area = Math.abs(area)/2;
+      const pressure = (b.restArea - area)*0.005;
+      for(let i=0;i&lt;n;i++){
+        const j=(i+1)%n, prev=(i-1+n)%n;
+        const nx=poly[j][1]-poly[prev][1];
+        const ny=poly[prev][0]-poly[j][0];
+        const len=Math.hypot(nx,ny)||1;
+        pts[i].x += nx/len*pressure;
+        pts[i].y += ny/len*pressure;
+      }
+    }
+    b.cx = pts.reduce((s,p)=&gt;s+p.x,0)/n;
+    b.cy = pts.reduce((s,p)=&gt;s+p.y,0)/n;
+  }
+
+  // mouse interaction
+  if(grabs.size){
+    for(const [b, g] of grabs){
+      const p = b.pts[g.idx];
+      const dx = mouse.x - p.x, dy = mouse.y - p.y;
+      const throwVx = (mouse.x - mouse.lx);
+      const throwVy = (mouse.y - mouse.ly);
+      p.x += dx*0.25;
+      p.y += dy*0.25;
+      p.px -= throwVx*0.6;
+      p.py -= throwVy*0.6;
+    }
+  } else if(mouse.left){
+    for(const b of blobs){
+      const dx = mouse.x - b.cx, dy = mouse.y - b.cy;
+      const d = Math.hypot(dx,dy)||1;
+      if(d &lt; 160){
+        const f = 0.6*(1-d/160);
+        b.vx += f*dx/d*12;
+        b.vy += f*dy/d*12;
+      }
+    }
+  }
+
+  // inter-blob separation
+  for(let i=0;i&lt;blobs.length;i++){
+    for(let j=i+1;j&lt;blobs.length;j++){
+      const a=blobs[i], b=blobs[j];
+      const dx=a.cx-b.cx, dy=a.cy-b.cy;
+      const dd=Math.hypot(dx,dy)||1;
+      const minD = (a.r+b.r)*1.05;
+      if(dd &lt; minD){
+        const overlap = minD-dd;
+        const nx=dx/dd, ny=dy/dd;
+        for(const p of a.pts){ p.x += nx*overlap*0.5; p.y += ny*overlap*0.5; }
+        for(const p of b.pts){ p.x -= nx*overlap*0.5; p.y -= ny*overlap*0.5; }
+      }
+    }
+  }
+
+  // floor / walls
+  for(const b of blobs){
+    for(const p of b.pts){
+      if(p.y &gt; h - FLOOR_PAD){ p.y = h - FLOOR_PAD; const vy=(p.y-p.py); p.py = p.y - vy*0.35; }
+      if(p.x &lt; FLOOR_PAD){ p.x = FLOOR_PAD; const vx=(p.x-p.px); p.px = p.x - vx*0.35; }
+      if(p.x &gt; w - FLOOR_PAD){ p.x = w - FLOOR_PAD; const vx=(p.x-p.px); p.px = p.x - vx*0.35; }
+    }
+  }
+
+  trauma *= Math.exp(-3.5*dt);
+}
+
+function update(dt){
+  stateTick(dt);
+  physicsStep(dt);
+}
+
+// ---------- Reset / UI ----------
+document.getElementById('resetBtn').addEventListener('click', resetBuddies);
+document.getElementById('muteBtn').addEventListener('click', toggleMute);
+
+resetBuddies();
+
+// Live max label after reset
+maxCEl.textContent = MAX_BLOBS;
+
+</script>
+</body>
+</html>

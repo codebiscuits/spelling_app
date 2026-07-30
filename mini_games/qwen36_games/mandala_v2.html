@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mandala Generator</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+#mute{position:fixed;top:16px;right:16px;z-index:5;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);color:#ccc;border:1px solid rgba(255,255,255,0.15);padding:8px 14px;border-radius:999px;cursor:pointer;font-size:18px;pointer-events:auto}
+#mute:hover{background:rgba(40,40,80,0.90);color:#fff}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Mandala</b><br>
+Move — paint cursor<br>
+Left drag — glow stroke<br>
+Right drag — erase<br>
+Scroll — symmetry count<br>
+Shift+Scroll — brush size<br>
+P — cycle palette<br>
+R — reset<br>
+M — sound on/off<br>
+Symmetry: <span id="symVal">8</span> | Brush: <span id="brushVal">3</span> | Palette: <span id="palVal">Rainbow</span>
+</div>
+<button id="mute" title="Sound on/off (M)" aria-label="Toggle sound">🔇</button>
+<button id="reset">Reset</button>
+<script>
+// ─── Cosine palettes (§4.1: Iñigo Quilez) ───
+const PALETTES = [
+  { name: 'Rainbow', a: [.5,.5,.5], b: [.5,.5,.5], c: [1,1,1], d: [.00,.33,.67] },
+  { name: 'Sunset',  a: [.5,.5,.5], b: [.5,.5,.5], c: [1,1,1], d: [.30,.20,.20] },
+  { name: 'Ocean',   a: [.5,.5,.5], b: [.5,.5,.5], c: [1,.7,.4], d: [0,.15,.20] },
+  { name: 'Aurora',  a: [.5,.5,.5], b: [.5,.5,.5], c: [.8,.6,.9], d: [.10,.20,.30] },
+  { name: 'Candy',   a: [.5,.5,.5], b: [.5,.5,.5], c: [1,.8,.6], d: [.00,.15,.30] },
+];
+let palIndex = 0;
+
+// §6.2: Precomputed palette LUT — 64 entries, zero allocation per frame
+const LUT_SIZE = 64;
+const paletteLUT = new Array(LUT_SIZE);
+
+function rebuildLUT() {
+  const p = PALETTES[palIndex];
+  const { a, b, c, d } = p;
+  for (let i = 0; i < LUT_SIZE; i++) {
+    const t = i / LUT_SIZE;
+    let r = a[0] + b[0] * Math.cos(6.28318 * (c[0] * t + d[0]));
+    let g = a[1] + b[1] * Math.cos(6.28318 * (c[1] * t + d[1]));
+    let bl = a[2] + b[2] * Math.cos(6.28318 * (c[2] * t + d[2]));
+    r = Math.floor(Math.max(0, Math.min(255, r * 255)));
+    g = Math.floor(Math.max(0, Math.min(255, g * 255)));
+    bl = Math.floor(Math.max(0, Math.min(255, bl * 255)));
+    paletteLUT[i] = `rgb(${r},${g},${bl})`;
+  }
+}
+
+function getLUTColor(t) {
+  return paletteLUT[((t * LUT_SIZE) | 0) % LUT_SIZE];
+}
+
+function getPalette() { return PALETTES[palIndex]; }
+function nextPalette() {
+  palIndex = (palIndex + 1) % PALETTES.length;
+  document.getElementById('palVal').textContent = PALETTES[palIndex].name;
+  rebuildLUT();
+}
+
+rebuildLUT();
+
+// ─── Feedback buffer (§4.2 trails, §4.10 mandala) ───
+const buf = document.createElement('canvas');
+const bctx = buf.getContext('2d');
+
+// ─── Engine bones: fixed timestep + DPR canvas + mouse (§2) ───
+const canvas = document.getElementById('c'), ctx = canvas.getContext('2d');
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+let w, h, dpr, cx, cy, brushSize = 3, symmetry = 8;
+let lastDraw = { x: 0, y: 0 };
+
+function fitCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buf.width = w * dpr; buf.height = h * dpr;
+  bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = w / 2; cy = h / 2;
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+// Mouse input (§2.3)
+const mouse = { x: 0, y: 0, buttons: 0, left: false, right: false };
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top;
+  mouse.buttons = e.buttons;
+  mouse.left = !!(mouse.buttons & 1);
+  mouse.right = !!(mouse.buttons & 2);
+});
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) { mouse.left = true; lastDraw = { x: mouse.x, y: mouse.y }; }
+  if (e.button === 2) { mouse.right = true; lastDraw = { x: mouse.x, y: mouse.y }; }
+});
+window.addEventListener('mouseup', e => {
+  if (e.button === 0) mouse.left = false;
+  if (e.button === 2) mouse.right = false;
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (e.shiftKey) {
+    brushSize = Math.max(1, Math.min(30, brushSize - Math.sign(e.deltaY) * 0.5));
+    document.getElementById('brushVal').textContent = Math.round(brushSize);
+  } else {
+    // §5 easing: spring-driven symmetry transition
+    symTarget = Math.max(2, Math.min(32, symmetry - Math.sign(e.deltaY)));
+  }
+}, { passive: false });
+
+// ─── §5 sound: Web Audio pentatonic synth, off by default (classroom) ───
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC && AC.state === 'suspended') AC.resume();
+}
+function tone(f0, f1, dur, vol, type, delay) {
+  if (muted || !AC) return;
+  const t0 = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'triangle';
+  o.frequency.setValueAtTime(f0, t0);
+  o.frequency.exponentialRampToValueAtTime(Math.max(f1, 1), t0 + dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampAtTime(vol, t0 + 0.01);
+  g.gain.exponentialRampAtTime(0.0001, t0 + dur);
+  o.connect(g).connect(AC.destination);
+  o.start(t0); o.stop(t0 + dur + 0.05);
+}
+const PENTA = [0, 2, 4, 7, 9];
+const penta = (base, i) => base * Math.pow(2, (PENTA[i % 5] + 12 * ((i / 5) | 0)) / 12);
+let soundNoteIdx = 0;
+
+function playPaintSound(speed) {
+  // Pitch proportional to brush speed: faster = higher
+  const n = soundNoteIdx % 10;
+  const spd = Math.min(1, speed / 15);
+  tone(penta(330, n), penta(330, n) * 1.05, 0.06 + spd * 0.04, 0.06 + spd * 0.04, 'sine');
+  tone(penta(330, n + 3), penta(330, n + 3) * 0.98, 0.08, 0.03, 'triangle', 0.02);
+  soundNoteIdx++;
+}
+
+function playEraseSound() {
+  tone(220, 110, 0.12, 0.08, 'sawtooth');
+  tone(165, 80, 0.15, 0.05, 'sine', 0.02);
+}
+
+// Mute button
+const muteBtn = document.getElementById('mute');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) tone(523, 530, 0.1, 0.12, 'sine');
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') reset();
+  if (e.key === 'p' || e.key === 'P') nextPalette();
+  if (e.key === 'm' || e.key === 'M') {
+    muted = !muted;
+    muteBtn.textContent = muted ? '🔇' : '🔊';
+    ensureAudio();
+    if (!muted) tone(523, 530, 0.1, 0.12, 'sine');
+  }
+});
+document.getElementById('reset').addEventListener('click', reset);
+
+// ─── §5 screenshake: trauma² with smooth noise for offset & rotation ───
+let trauma = 0;
+let shakeOffsetX = 0, shakeOffsetY = 0, shakeAngle = 0;
+
+// Simple smooth noise (perlin-like using sin)
+function smoothNoise(t) {
+  return Math.sin(t * 1.7) * 0.5 + Math.sin(t * 3.3) * 0.3 + Math.sin(t * 7.1) * 0.2;
+}
+
+function updateShake(dt) {
+  trauma *= Math.exp(-12 * dt); // fast decay
+  if (trauma < 0.001) trauma = 0;
+  const amp = trauma * trauma; // trauma² curve
+  if (amp > 0.001) {
+    const t = performance.now() * 0.001;
+    shakeOffsetX = smoothNoise(t) * amp * 8;
+    shakeOffsetY = smoothNoise(t + 100) * amp * 8;
+    shakeAngle = smoothNoise(t + 200) * amp * 0.03; // subtle rotation
+  } else {
+    shakeOffsetX = shakeOffsetY = shakeAngle = 0;
+  }
+}
+
+// ─── §5 hit-stop: freeze physics for 40–80 ms on events ───
+let hitStop = 0;
+const HIT_STOP_MS = 50; // ~3 frames at 60 Hz
+
+// ─── §5 easing: spring-driven symmetry transition ───
+let symTarget = symmetry;
+let symVel = 0;
+const SYM_OMEGA = 12; // responsiveness
+
+function updateSymSpring(dt) {
+  symVel += (symTarget - symmetry) * SYM_OMEGA * SYM_OMEGA * dt;
+  symVel *= Math.exp(-2 * SYM_OMEGA * dt);
+  symmetry += symVel * dt;
+  symmetry = Math.round(Math.max(2, Math.min(32, symmetry)));
+  document.getElementById('symVal').textContent = symmetry;
+}
+
+// ─── §5 particles on every event: fixed-size typed-array pool ───
+const POOL = 512;
+const pX = new Float32Array(POOL);
+const pY = new Float32Array(POOL);
+const pVX = new Float32Array(POOL);
+const pVY = new Float32Array(POOL);
+const pLife = new Float32Array(POOL);
+const pMax = new Float32Array(POOL);
+const pSize = new Float32Array(POOL);
+const pAlpha = new Float32Array(POOL);
+let partHead = 0;
+let activeParts = 0;
+
+function spawnParticles(x, y, count, color) {
+  for (let i = 0; i < count; i++) {
+    if (activeParts >= POOL) {
+      // Recycle oldest: just overwrite
+      partHead = (partHead + 1) % POOL;
+      activeParts = Math.max(0, activeParts - 1);
+    }
+    const angle = Math.random() * Math.PI * 2;
+    const spd = 1 + Math.random() * 4;
+    pX[partHead] = x;
+    pY[partHead] = y;
+    pVX[partHead] = Math.cos(angle) * spd;
+    pVY[partHead] = Math.sin(angle) * spd;
+    pLife[partHead] = pMax[partHead] = 0.2 + Math.random() * 0.4;
+    pSize[partHead] = 2 + Math.random() * 5;
+    pAlpha[partHead] = 0.5 + Math.random() * 0.5;
+    partHead = (partHead + 1) % POOL;
+    activeParts++;
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = 0; i < POOL; i++) {
+    if (pLife[i] <= 0) continue;
+    pX[i] += pVX[i] * 60 * dt;
+    pY[i] += pVY[i] * 60 * dt;
+    pVX[i] *= 0.96;
+    pVY[i] *= 0.96;
+    pLife[i] -= dt;
+    if (pLife[i] <= 0) {
+      pLife[i] = 0;
+      activeParts = Math.max(0, activeParts - 1);
+    }
+  }
+}
+
+function drawParticles() {
+  ctx.globalCompositeOperation = 'lighter';
+  const tOffset = (performance.now() * 0.00003) % 1.0;
+  // §6.2: Zero-allocation hot loop — iterate, minimize state changes
+  // Precompute inverse width once (used for t calculation)
+  const invW = 1 / w;
+  let lastColor = '';
+  for (let i = 0; i < POOL; i++) {
+    if (pLife[i] <= 0) continue;
+    const lifeRatio = pLife[i] / pMax[i];
+    const alpha = pAlpha[i] * lifeRatio;
+    // §6.2: LUT color — zero allocation, indexed lookup
+    const t = (pX[i] * invW + tOffset) % 1.0;
+    const colorIdx = ((t * LUT_SIZE) | 0) % LUT_SIZE;
+    const colStr = paletteLUT[colorIdx];
+    // Batch: only change fillStyle when color changes
+    if (colStr !== lastColor) {
+      ctx.fillStyle = colStr;
+      lastColor = colStr;
+    }
+    ctx.globalAlpha = alpha;
+    ctx.beginPath();
+    ctx.arc(pX[i], pY[i], pSize[i] * lifeRatio, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+// ─── §5 squash & stretch for cursor ───
+let cursorSquashX = 1, cursorSquashY = 1;
+let cursorSquashVelX = 0, cursorSquashVelY = 0;
+const CURSOR_SPRING = 15;
+const CURSOR_DAMP = Math.exp(-5);
+
+// ─── Ambient bokeh particles (§5 ambient life) ───
+const BOKEH_COUNT = 40;
+const bokeh = [];
+function initBokeh() {
+  bokeh.length = 0;
+  for (let i = 0; i < BOKEH_COUNT; i++) {
+    bokeh.push({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      r: 2 + Math.random() * 6,
+      speed: 0.1 + Math.random() * 0.3,
+      angle: Math.random() * Math.PI * 2,
+      alpha: 0.03 + Math.random() * 0.06,
+      phase: Math.random() * Math.PI * 2,
+      // §5 ambient life: micro wobble
+      wobbleAmp: 0.2 + Math.random() * 0.5,
+      wobbleFreq: 0.5 + Math.random() * 1.5,
+    });
+  }
+}
+
+function drawBokeh(time) {
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < bokeh.length; i++) {
+    const b = bokeh[i];
+    // Drift
+    b.x += Math.cos(b.angle) * b.speed;
+    b.y += Math.sin(b.angle) * b.speed;
+    // §5 ambient life: micro wobble from noise
+    b.x += Math.sin(time * 0.001 * b.wobbleFreq + b.phase) * b.wobbleAmp * 0.1;
+    b.y += Math.cos(time * 0.001 * b.wobbleFreq + b.phase * 1.3) * b.wobbleAmp * 0.1;
+    // Wrap
+    if (b.x < -20) b.x = w + 20;
+    if (b.x > w + 20) b.x = -20;
+    if (b.y < -20) b.y = h + 20;
+    if (b.y > h + 20) b.y = -20;
+    // Gentle pulse
+    const pulse = 0.8 + 0.2 * Math.sin(time * 0.001 + b.phase);
+    ctx.globalAlpha = b.alpha * pulse;
+    ctx.fillStyle = 'rgba(180,170,220,1)';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+// ─── Glow sprite (§4.2) — palette-driven, pre-rendered ONCE ───
+const SPR = 64;
+let sprite = null;
+
+function makeSprite() {
+  const s = document.createElement('canvas');
+  s.width = s.height = SPR;
+  const sc = s.getContext('2d');
+  // §6.2: LUT-based colors — no allocation per frame
+  const c0 = paletteLUT[0];
+  const c1 = paletteLUT[((0.3 * LUT_SIZE) | 0) % LUT_SIZE];
+  const c2 = paletteLUT[((0.6 * LUT_SIZE) | 0) % LUT_SIZE];
+  const sg = sc.createRadialGradient(32, 32, 0, 32, 32, 32);
+  sg.addColorStop(0, c0.replace('rgb', 'rgba').replace(')', ',1)'));
+  sg.addColorStop(0.25, c0.replace('rgb', 'rgba').replace(')', ',0.6)'));
+  sg.addColorStop(0.5, c1.replace('rgb', 'rgba').replace(')', ',0.25)'));
+  sg.addColorStop(0.75, c2.replace('rgb', 'rgba').replace(')', ',0.08)'));
+  sg.addColorStop(1, c2.replace('rgb', 'rgba').replace(')', ',0)'));
+  sc.fillStyle = sg;
+  sc.fillRect(0, 0, SPR, SPR);
+  return s;
+}
+
+function resetSprite() { sprite = makeSprite(); }
+resetSprite();
+
+// Rebuild sprite when palette changes
+const origNextPalette = nextPalette;
+nextPalette = function() {
+  origNextPalette();
+  resetSprite();
+  // §5: particles on palette change event
+  spawnParticles(cx, cy, 20, null);
+  trauma = Math.min(1, trauma + 0.15);
+  ensureAudio();
+  tone(440, 880, 0.15, 0.10, 'sine');
+  tone(660, 1320, 0.12, 0.07, 'triangle', 0.05);
+};
+
+function reset() {
+  cx = w / 2; cy = h / 2;
+  symmetry = 8; symTarget = 8; symVel = 0;
+  brushSize = 3; palIndex = 0;
+  document.getElementById('symVal').textContent = 8;
+  document.getElementById('brushVal').textContent = 3;
+  document.getElementById('palVal').textContent = PALETTES[0].name;
+  resetSprite();
+  buf.width = w * dpr; buf.height = h * dpr;
+  bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  bctx.fillStyle = '#0c0c18';
+  bctx.fillRect(0, 0, w, h);
+  initBokeh();
+  lastDraw = { x: cx, y: cy };
+  // §5: particles on reset
+  spawnParticles(cx, cy, 30, null);
+  trauma = 0.3;
+  ensureAudio();
+  tone(262, 523, 0.2, 0.10, 'sine');
+  tone(330, 660, 0.15, 0.08, 'triangle', 0.08);
+  tone(392, 784, 0.12, 0.06, 'sine', 0.16);
+}
+
+// ─── §5 paint stroke with squash/stretch cursor + particles + sound ───
+let lastPaintSound = 0;
+
+function paintStroke(x1, y1, x2, y2) {
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  if (dist < 0.5) return;
+  // §6.2: LUT-based color — zero allocation
+  const t = ((x1 + x2) / (2 * w) + performance.now() * 0.00003) % 1.0;
+  const colStr = getLUTColor(t);
+  // Line stroke
+  bctx.strokeStyle = colStr;
+  bctx.lineWidth = brushSize;
+  bctx.lineCap = 'round';
+  bctx.beginPath();
+  bctx.moveTo(x1, y1);
+  bctx.lineTo(x2, y2);
+  bctx.stroke();
+  // Glow sprites along stroke — additive blending (§4.2)
+  bctx.globalCompositeOperation = 'lighter';
+  const spacing = Math.max(2, brushSize * 0.35);
+  const steps = Math.floor(dist / spacing);
+  const ss = brushSize * 3;
+  for (let i = 0; i <= steps; i++) {
+    const frac = i / steps;
+    const px = x1 + (x2 - x1) * frac;
+    const py = y1 + (y2 - y1) * frac;
+    bctx.drawImage(sprite, px - ss / 2, py - ss / 2, ss, ss);
+  }
+  bctx.globalCompositeOperation = 'source-over';
+
+  // §5 particles on paint event
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+  spawnParticles(mx, my, Math.max(2, Math.floor(dist / 10)), null);
+
+  // §5 sound on paint
+  const speed = dist;
+  const now = performance.now();
+  if (speed > 3 && now - lastPaintSound > 80) {
+    playPaintSound(speed);
+    lastPaintSound = now;
+  }
+
+  // §5 screenshake on paint
+  if (speed > 10) {
+    trauma = Math.min(1, trauma + Math.min(0.1, speed * 0.003));
+  }
+}
+
+// ─── Erase on feedback buffer ───
+let lastEraseSound = 0;
+
+function eraseStroke(x1, y1, x2, y2) {
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  if (dist < 0.5) return;
+
+  bctx.globalCompositeOperation = 'destination-out';
+  bctx.strokeStyle = 'rgba(0,0,0,1)';
+  bctx.lineWidth = brushSize * 4;
+  bctx.lineCap = 'round';
+  bctx.beginPath();
+  bctx.moveTo(x1, y1);
+  bctx.lineTo(x2, y2);
+  bctx.stroke();
+  bctx.globalCompositeOperation = 'source-over';
+
+  // §5 particles on erase event
+  const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+  spawnParticles(mx, my, Math.max(2, Math.floor(dist / 8)), null);
+  trauma = Math.min(1, trauma + 0.05);
+
+  // §5 erase sound
+  const now = performance.now();
+  if (dist > 3 && now - lastEraseSound > 120) {
+    playEraseSound();
+    lastEraseSound = now;
+  }
+}
+
+// ─── Kaleidoscope fold (§4.10) with enhanced chromatic dispersion ───
+function renderMandala(time) {
+  ctx.fillStyle = '#0c0c18';
+  ctx.fillRect(0, 0, w, h);
+
+  // Ambient bokeh background (§5 ambient life)
+  drawBokeh(time);
+
+  // §5 screenshake transform
+  if (trauma > 0.001) {
+    ctx.save();
+    ctx.translate(shakeOffsetX, shakeOffsetY);
+    ctx.translate(cx, cy);
+    ctx.rotate(shakeAngle);
+    ctx.translate(-cx, -cy);
+  }
+
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.globalCompositeOperation = 'lighter'; // additive blending (§4.2)
+  const scale = 1.35; // outward scaling per §4.10: pulls scenery into mandala
+
+  // §6.2: Precompute segment angle — avoid per-iteration division
+  const segAngle = (Math.PI * 2) / symmetry;
+  for (let i = 0; i < symmetry; i++) {
+    const angle = i * segAngle;
+    // Rotated copy
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.scale(scale, scale);
+    ctx.drawImage(buf, -cx, -cy);
+    ctx.restore();
+    // Mirrored copy (flip Y, rotate negative)
+    ctx.save();
+    ctx.scale(1, -1);
+    ctx.rotate(-angle);
+    ctx.scale(scale, scale);
+    ctx.drawImage(buf, -cx, -cy);
+    ctx.restore();
+  }
+
+  // Chromatic dispersion fringes (§4.10): R shifted left, B shifted right
+  ctx.globalAlpha = 0.12;
+  ctx.drawImage(buf, -cx - 4, -cy);   // red channel offset
+  ctx.globalAlpha = 0.08;
+  ctx.drawImage(buf, -cx + 5, -cy);   // blue channel offset
+  ctx.globalAlpha = 1.0;
+  ctx.restore();
+
+  // Vignette (§4.4 post-processing): dark radial gradient overlay
+  const vignette = ctx.createRadialGradient(cx, cy, w * 0.25, cx, cy, w * 0.75);
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, w, h);
+
+  // §5 screenshake reset
+  if (trauma > 0.001) {
+    ctx.restore(); // undo shake transform
+  }
+}
+
+// ─── §5 squash & stretch cursor overlay ───
+function drawCursor() {
+  const vx = mouse.x - (mouse._lx || mouse.x);
+  const vy = mouse.y - (mouse._ly || mouse.y);
+  const speed = Math.hypot(vx, vy);
+
+  // §5 spring-driven squash/stretch: scale by velocity
+  const targetSx = 1 + Math.abs(vy) * 0.02;
+  const targetSy = 1 + Math.abs(vx) * 0.02;
+
+  cursorSquashVelX += (targetSx - cursorSquashX) * CURSOR_SPRING * CURSOR_SPRING * (1/60);
+  cursorSquashVelY += (targetSy - cursorSquashY) * CURSOR_SPRING * CURSOR_SPRING * (1/60);
+  cursorSquashVelX *= CURSOR_DAMP;
+  cursorSquashVelY *= CURSOR_DAMP;
+  cursorSquashX += cursorSquashVelX * (1/60);
+  cursorSquashY += cursorSquashVelY * (1/60);
+
+  // Clamp
+  cursorSquashX = Math.max(0.7, Math.min(1.5, cursorSquashX));
+  cursorSquashY = Math.max(0.7, Math.min(1.5, cursorSquashY));
+
+  // Draw cursor indicator with squash/stretch
+  ctx.save();
+  ctx.translate(mouse.x, mouse.y);
+  ctx.scale(cursorSquashX, cursorSquashY);
+  ctx.globalAlpha = 0.4;
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(0, 0, brushSize + 4, 0, Math.PI * 2);
+  ctx.stroke();
+  // Center dot
+  ctx.globalAlpha = 0.7;
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath();
+  ctx.arc(0, 0, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  mouse._lx = mouse.x;
+  mouse._ly = mouse.y;
+}
+
+// ─── Main loop ───
+const DT = 1 / 60;
+let acc = 0, last = performance.now();
+
+function update(dt) {
+  // §5 hit-stop: freeze physics briefly
+  if (hitStop > 0) { hitStop -= dt; return; }
+
+  // §5 easing: spring-driven symmetry
+  updateSymSpring(dt);
+
+  // §5 screenshake update
+  updateShake(dt);
+
+  // §5 particles update
+  updateParticles(dt);
+
+  if (mouse.left) paintStroke(lastDraw.x, lastDraw.y, mouse.x, mouse.y);
+  else if (mouse.right) eraseStroke(lastDraw.x, lastDraw.y, mouse.x, mouse.y);
+  lastDraw = { x: mouse.x, y: mouse.y };
+}
+
+function draw(alpha, time) {
+  // Fade feedback buffer (§4.2 trails — destination-out always completes)
+  bctx.globalCompositeOperation = 'destination-out';
+  bctx.fillStyle = 'rgba(0,0,0,0.015)';
+  bctx.fillRect(0, 0, w, h);
+  bctx.globalCompositeOperation = 'source-over';
+
+  renderMandala(time);
+
+  // §5 particles on top
+  drawParticles();
+
+  // §5 squash/stretch cursor
+  drawCursor();
+}
+
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  draw(acc / DT, now);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+reset();
+</script>
+</body>
+</html>

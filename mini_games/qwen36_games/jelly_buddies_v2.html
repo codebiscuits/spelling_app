@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Jelly Buddies v2</title>
+<!--
+  Engine bones (§2.1–2.3) + controls pane + reset button.
+  Reference: HANDBOOK.md §2 (Engine bones), §0 (House standards).
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    background: #0c0c1e;
+    overflow: hidden;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  canvas { display: block; cursor: crosshair; }
+
+  /* §0 House standard: frosted-glass controls pane, top-left */
+  #controls {
+    position: fixed; top: 16px; left: 16px;
+    background: rgba(12, 12, 30, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    padding: 10px 14px; border-radius: 10px;
+    pointer-events: none;
+    font-size: 13px; line-height: 1.5;
+    max-width: 260px; z-index: 5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #ccc;
+  }
+  #controls b { color: #fff; font-weight: 600; }
+  #controls .row { display: flex; justify-content: space-between; gap: 8px; }
+  #controls .key { color: #888; }
+  #controls .val { color: #6cf; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* §0 House standard: reset button, bottom-center pill */
+  #reset {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    padding: 8px 20px; border-radius: 999px;
+    cursor: pointer;
+    font: 600 13px system-ui;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    z-index: 5;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  #reset:hover { background: rgba(255, 255, 255, 0.22); border-color: rgba(255, 255, 255, 0.45); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="controls">
+  <b>Jelly Buddies v2</b>
+  <div class="row"><span class="key">Move</span><span class="val">Steer cursor</span></div>
+  <div class="row"><span class="key">Left drag</span><span class="val">Attract</span></div>
+  <div class="row"><span class="key">Right drag</span><span class="val">Repel</span></div>
+  <div class="row"><span class="key">Scroll</span><span class="val">Size: <span id="sizeVal">40</span></span></div>
+  <br>
+  <div class="row"><span class="key">Buddies</span><span class="val" id="countVal">0</span></div>
+</div>
+
+<button id="reset">&#x21BA; Reset</button>
+
+<script>
+'use strict';
+
+// ─── §2.2 DPR-aware canvas ────────────────────────────────────────────────
+// Render at device resolution, draw in CSS pixels.
+// Math.min(dpr, 2) cap prevents 3× phone screens from drowning.
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0;
+
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth;
+  h = window.innerHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+// Background gradient (never pure black — §4.1)
+canvas.style.background = 'radial-gradient(ellipse at center, #1a1230 0%, #0a0818 100%)';
+
+// ─── §2.3 Mouse input wiring ──────────────────────────────────────────────
+// Every game gives a distinct job to each mouse input (§0, §2.3).
+
+canvas.addEventListener('contextmenu', e => e.preventDefault()); // free right-click
+
+const mouse = {
+  x: 0, y: 0,      // current position in CSS pixels
+  px: 0, py: 0,     // previous position (for velocity)
+  buttons: 0,       // e.buttons snapshot (bit 1=left, bit 2=right)
+  left: false,      // current left-button state
+  right: false,     // current right-button state
+};
+
+// Read e.buttons on mousemove — more robust than hand-rolled booleans.
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mouse.px = mouse.x;
+  mouse.py = mouse.y;
+  mouse.x = e.clientX - r.left;
+  mouse.y = e.clientY - r.top;
+  mouse.buttons = e.buttons;
+  mouse.left = !!(mouse.buttons & 1);
+  mouse.right = !!(mouse.buttons & 2);
+});
+
+// Track button press/release.
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) mouse.left = true;
+  if (e.button === 2) mouse.right = true;
+});
+
+// mouseup on window (not canvas) — catches releases outside the viewport.
+window.addEventListener('mouseup', e => {
+  if (e.button === 0) mouse.left = false;
+  if (e.button === 2) mouse.right = false;
+});
+
+// Normalise wheel deltas with Math.sign — magnitude varies wildly between devices.
+let scrollDelta = 0;
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  scrollDelta = -Math.sign(e.deltaY);
+}, { passive: false });
+
+// ─── §2.1 Fixed timestep with interpolation ───────────────────────────────
+// Physics runs at exactly 60 steps/sec, independent of display refresh.
+// The leftover fraction (alpha) is passed to draw for interpolation.
+const DT = 1 / 60;
+let acc = 0, last = performance.now();
+
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1); // clamp: tab-switch spiral guard
+  last = now;
+  while (acc >= DT) {
+    update(DT);
+    acc -= DT;
+  }
+  draw(acc / DT); // pass leftover fraction for interpolation
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ─── Game state ───────────────────────────────────────────────────────────
+let budd = [];
+let budSize = 40; // scroll-adjustable base size
+
+function updateSizeUI() {
+  document.getElementById('sizeVal').textContent = budSize;
+}
+function updateCountUI() {
+  document.getElementById('countVal').textContent = budd.length;
+}
+
+// Reset button — §0 house standard.
+document.getElementById('reset').addEventListener('click', reset);
+
+function reset() {
+  budd = [];
+  for (let i = 0; i < 5; i++) {
+    addBuddy(
+      w / 2 + (Math.random() - 0.5) * 200,
+      h / 2 + (Math.random() - 0.5) * 200
+    );
+  }
+  updateCountUI();
+}
+
+function addBuddy(x, y) {
+  const n = 16;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    pts.push({
+      x: x + Math.cos(a) * budSize,
+      y: y + Math.sin(a) * budSize,
+      px: 0, py: 0, // previous position (Verlet: velocity is implicit)
+    });
+  }
+  const restArea = Math.PI * budSize * budSize;
+  budd.push({ pts, restArea, eyeOff: Math.random() * Math.PI * 2 });
+  updateCountUI();
+}
+
+// ─── Physics step (placeholder — fleshed out by subtasks) ─────────────────
+function update(dt) {
+  // Scroll adjusts buddy size.
+  if (scrollDelta !== 0) {
+    budSize = Math.max(10, Math.min(80, budSize - scrollDelta * 4));
+    scrollDelta = 0;
+    updateSizeUI();
+    // Update rest area for all existing buddies.
+    for (const b of budd) {
+      b.restArea = Math.PI * budSize * budSize;
+    }
+  }
+
+  // Mouse attraction / repulsion forces on blob points.
+  for (const b of budd) {
+    for (const p of b.pts) {
+      const dx = p.x - mouse.x;
+      const dy = p.y - mouse.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d < 120) {
+        const f = 0.8 * (1 - d / 120);
+        if (mouse.left) {
+          // Attract toward cursor.
+          p.x += f * dx / d * 8;
+          p.y += f * dy / d * 8;
+        } else if (mouse.right) {
+          // Repel away from cursor.
+          p.x += f * -dx / d * 20;
+          p.y += f * -dy / d * 20;
+        }
+      }
+    }
+  }
+
+  // ── Verlet integration (scaffold — physics subtasks will expand this) ──
+  const GRAVITY = 0.30;
+  const DAMPING = 0.988;
+  for (const b of budd) {
+    for (const p of b.pts) {
+      const vx = (p.x - p.px) * DAMPING;
+      const vy = (p.y - p.py) * DAMPING;
+      p.px = p.x; p.py = p.y;
+      p.x += vx;
+      p.y += vy + GRAVITY;
+    }
+  }
+
+  // Floor bounce (simple).
+  for (const b of budd) {
+    for (const p of b.pts) {
+      if (p.y > h - 6) {
+        p.y = h - 6;
+        p.py = p.y + (p.y - p.py) * 0.4; // energy loss on bounce
+      }
+    }
+  }
+
+  // ── Distance constraints (scaffold — will be expanded by §3.1) ──
+  for (const b of budd) {
+    const pts = b.pts;
+    const n = pts.length;
+    for (let iter = 0; iter < 3; iter++) {
+      // Perimeter distance constraints.
+      for (let i = 0; i < n; i++) {
+        const a = pts[i];
+        const c = pts[(i + 1) % n];
+        const dx = c.x - a.x;
+        const dy = c.y - a.y;
+        const d = Math.hypot(dx, dy) || 0.001;
+        const diff = (d - budSize * 2) / d * 0.5;
+        a.x += dx * diff;
+        a.y += dy * diff;
+        c.x -= dx * diff;
+        c.y -= dy * diff;
+      }
+      // Pressure constraint (shoelace area comparison).
+      const poly = [];
+      for (let i = 0; i < n; i++) poly.push([pts[i].x, pts[i].y]);
+      let area = 0;
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        area += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
+      }
+      area = Math.abs(area) / 2;
+      const pressure = (b.restArea - area) * 0.005;
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const prev = (i - 1 + n) % n;
+        const nx = poly[j][1] - poly[prev][1];
+        const ny = poly[prev][0] - poly[j][0];
+        const len = Math.hypot(nx, ny) || 1;
+        pts[i].x += (nx / len) * pressure;
+        pts[i].y += (ny / len) * pressure;
+      }
+    }
+  }
+
+  // Simple inter-buddy push (gentle overlap).
+  for (let i = 0; i < budd.length; i++) {
+    for (let j = i + 1; j < budd.length; j++) {
+      const a = budd[i], b = budd[j];
+      let ax = 0, ay = 0;
+      for (const p of a.pts) { ax += p.x; ay += p.y; }
+      ax /= a.pts.length; ay /= a.pts.length;
+      let bx = 0, by = 0;
+      for (const p of b.pts) { bx += p.x; by += p.y; }
+      bx /= b.pts.length; by /= b.pts.length;
+      const ddx = bx - ax, ddy = by - ay;
+      const dd = Math.hypot(ddx, ddy) || 1;
+      if (dd < budSize * 3) {
+        const overlap = budSize * 3 - dd;
+        ax += (ddx / dd) * overlap * 0.5;
+        ay += (ddy / dd) * overlap * 0.5;
+        bx -= (ddx / dd) * overlap * 0.5;
+        by -= (ddy / dd) * overlap * 0.5;
+        // Push all points proportionally.
+        for (const p of a.pts) { p.x += (ddx / dd) * overlap * 0.05; p.y += (ddy / dd) * overlap * 0.05; }
+        for (const p of b.pts) { p.x -= (ddx / dd) * overlap * 0.05; p.y -= (ddy / dd) * overlap * 0.05; }
+      }
+    }
+  }
+}
+
+// ─── Render (scaffold — art subtasks will expand this) ────────────────────
+function draw(alpha) {
+  ctx.clearRect(0, 0, w, h);
+
+  // Draw each buddy.
+  for (const b of budd) {
+    drawJelly(b);
+  }
+
+  // Ambient bokeh particles (additive).
+  ctx.globalCompositeOperation = 'lighter';
+  const time = performance.now() * 0.001;
+  for (let i = 0; i < 8; i++) {
+    const px = (Math.sin(time * 0.7 + i * 1.3) * 0.5 + 0.5) * w;
+    const py = (Math.cos(time * 0.5 + i * 1.7) * 0.5 + 0.5) * h;
+    const g = ctx.createRadialGradient(px, py, 0, px, py, 60);
+    g.addColorStop(0, 'rgba(100, 200, 255, 0.15)');
+    g.addColorStop(1, 'rgba(100, 200, 255, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(px - 60, py - 60, 120, 120);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawJelly(b) {
+  const pts = b.pts;
+  const n = pts.length;
+
+  // Smooth blob outline via quadratic curves through midpoints.
+  ctx.beginPath();
+  ctx.moveTo((pts[0].x + pts[n - 1].x) / 2, (pts[0].y + pts[n - 1].y) / 2);
+  for (let i = 0; i < n; i++) {
+    const next = pts[(i + 1) % n];
+    const mx = (pts[i].x + next.x) / 2;
+    const my = (pts[i].y + next.y) / 2;
+    ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+  }
+  ctx.closePath();
+
+  // Translucent fill + edge.
+  ctx.fillStyle = 'rgba(140, 220, 255, 0.25)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(200, 240, 255, 0.6)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Googly eyes (center of blob, offset by eyeOff).
+  let cx = 0, cy = 0;
+  for (const p of pts) { cx += p.x; cy += p.y; }
+  cx /= n; cy /= n;
+
+  const ex1 = cx - Math.cos(b.eyeOff) * budSize * 0.25;
+  const ey1 = cy - Math.sin(b.eyeOff) * budSize * 0.4;
+  const ex2 = cx + Math.cos(b.eyeOff) * budSize * 0.25;
+  const ey2 = cy - Math.sin(b.eyeOff) * budSize * 0.4;
+
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(ex1, ey1, budSize * 0.22, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(ex2, ey2, budSize * 0.22, 0, Math.PI * 2); ctx.fill();
+
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(ex1 + Math.cos(time * 2) * 2, ey1 + 1, budSize * 0.09, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(ex2 + Math.cos(time * 2 + 1) * 2, ey2 + 1, budSize * 0.09, 0, Math.PI * 2); ctx.fill();
+}
+
+// ─── Boot ─────────────────────────────────────────────────────────────────
+reset();
+
+</script>
+</body>
+</html>

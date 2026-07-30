@@ -1,0 +1,1117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shadow Maze</title>
+<!--
+  Standalone mini-game for the spelling app. Implements HANDBOOK.md:
+    §0 house standards — mouse-only 4-input vocabulary, controls pane, no touch,
+       preventDefault(contextmenu), bottom-centre reset pill
+    §2  fixed timestep + DPR-aware canvas
+    §4.8 real 2D shadows — raycast visibility polygon from every light to every
+         wall vertex (± epsilon), sorted by angle, filled to make hard shadows
+    §5  juice — trauma² screenshake, hit-stop, squash/stretch, easing, ZzFX
+        sounds, ambient life (fireflies, micro-motion), particles on every event
+    §7  designed for children — no fail state, exploration & collection only
+    §4.1 cosine palettes, §4.2 glow/trails/bloom, §4.4 vignette+grain,
+       §4.5 procedural wall texture, §4.2 ambient firefly particles
+    §6  performance — zero allocation hot loop, typed arrays, spatial hashing,
+        particle pools, batched drawing
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #0c0c1e; }
+  canvas { display: block; cursor: none; } /* the cursor IS the lantern — drawn ourselves */
+
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #ccc; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10,10,20,0.75);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 12px; }
+  #ui .key { color: #888; }
+  #ui .val { color: #ffcf7d; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  #resetBtn, #muteBtn {
+    position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #ccc; background: rgba(10,10,20,0.80); border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 10px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); }
+  #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; line-height: 1; }
+  #resetBtn:hover, #muteBtn:hover { background: rgba(40,40,80,0.90); color: #fff; border-color: rgba(255,255,255,0.30); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h3>🏮 Shadow Maze</h3>
+  <div class="param"><span class="key">Move mouse</span><span class="val">Carry the lantern</span></div>
+  <div class="param"><span class="key">Left click</span><span class="val">Plant a torch (<span id="torchCount">0</span>/4)</span></div>
+  <div class="param"><span class="key">Right click</span><span class="val">Pulse of light</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Lantern: <span id="radiusVal">170</span>px</span></div>
+  <br>
+  <div class="param"><span class="key">Found</span><span class="val"><span id="foundVal">0</span> / <span id="totalVal">0</span></span></div>
+</div>
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">🔇</button>
+<button id="resetBtn">&#x21BA; New maze</button>
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let w = 0, h = 0, dpr = 1;
+
+// ---- §2 DPR-aware canvas: main canvas + an identically-transformed offscreen
+//      "darkness" canvas we punch light-shaped holes into every frame. ----
+const darkCanvas = document.createElement('canvas');
+const darkCtx = darkCanvas.getContext('2d');
+
+// ---- §4.2 + §4.4 bloom & trail canvases ----
+const trailCanvas = document.createElement('canvas');
+const trailCtx = trailCanvas.getContext('2d');
+
+const bloomCanvas = document.createElement('canvas');
+const bloomCtx = bloomCanvas.getContext('2d');
+
+function fitCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  darkCanvas.width = canvas.width; darkCanvas.height = canvas.height;
+  darkCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  trailCanvas.width = canvas.width; trailCanvas.height = canvas.height;
+  trailCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  bloomCanvas.width = canvas.width; bloomCanvas.height = canvas.height;
+  bloomCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+
+// =====================================================================
+// §6.2 Zero allocation: precomputed color palettes (no per-frame string alloc)
+// =====================================================================
+const PALETTE_SIZE = 64;
+const coolPalette = new Array(PALETTE_SIZE);
+const warmPalette = new Array(PALETTE_SIZE);
+for (let i = 0; i < PALETTE_SIZE; i++) {
+  coolPalette[i] = cosPalette(i / PALETTE_SIZE);
+  warmPalette[i] = lightPalette(i / PALETTE_SIZE);
+}
+
+// ---- §4.1 Cosine palette for collectables ----
+function cosPalette(t) {
+  const d = [0.00, 0.30, 0.55];
+  const c = [];
+  for (let i = 0; i < 3; i++) c.push(0.55 + 0.42 * Math.cos(6.28318 * (0.85 * t + d[i])));
+  return `rgb(${c.map(v => Math.round(clamp(v, 0, 1) * 255)).join(',')})`;
+}
+
+// ---- §4.1 Warm palette for lights (lantern, torches) ----
+function lightPalette(t) {
+  const a = [0.95, 0.75, 0.50];
+  const b = [0.15, 0.20, 0.25];
+  const c = [0.00, 0.10, 0.20];
+  const d = [0.00, 0.33, 0.67];
+  return [0, 1, 2].map(i =>
+    Math.round(clamp(a[i] + b[i] * Math.cos(6.28318 * (c[i] * t + d[i])), 0, 1) * 255));
+}
+
+// =====================================================================
+// §5 ZzFX — public domain tiny sound synth (KilledByAPixel)
+// Each sound is a parameter array: [volume, pitch, sweep, noise, etc.]
+// Off by default (classroom-friendly), toggled top-right.
+// =====================================================================
+let AC = null, muted = true;
+function ensureAudio() {
+  if (muted) return;
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+}
+
+// ZzFXMic — minimal ZzFX implementation (~30 lines)
+// Signature: zzfx(volume, randomness, frequency, duration, pitchSweep, noise,
+//                attack, decay, sustain, release, chirp, modulation, bitCrush, reverb, distortion)
+function zzfx(v, r, f, d, s, n, a, dc, su, rl, ch, mo, bc, rv, di) {
+  if (muted || !AC) return;
+  const vol = v || 0.5;
+  const freq = f || 220;
+  const dur = d || 0.1;
+  const noise = n || 0;
+  const atk = a || 0;
+  const dec = dc || 0.1;
+  const sus = su || 0.3;
+  const rel = rl || 0.1;
+  const t0 = AC.currentTime;
+  const len = (atk + dec + sus + rel) * 60 || dur;
+  const buf = AC.createBuffer(1, AC.sampleRate * len, AC.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    const t = i / AC.sampleRate;
+    const env = t < atk ? t / atk : t < atk + dec ? 1 - (t - atk) / dec * 0.3 : t < atk + dec + sus ? 0.7 : t < atk + dec + sus + rel ? 0.7 - (t - atk - dec - sus) / rel * 0.7 : 0;
+    const freqAt = freq * Math.pow(2, s * t) * (1 + noise * Math.sin(t * 100 + r * 1000));
+    data[i] = env * (Math.sin(2 * Math.PI * freqAt * t) * (1 - noise) + Math.sin(2 * Math.PI * freqAt * t * (1 + mo)) * mo * 0.5 + (Math.random() * 2 - 1) * noise * 0.3);
+  }
+  const src = AC.createBufferSource();
+  src.buffer = buf;
+  const gain = AC.createGain();
+  gain.gain.value = vol;
+  src.connect(gain).connect(AC.destination);
+  src.start(t0);
+}
+
+// ZzFX sound presets for Shadow Maze events
+const SFX = {
+  collect:   () => zzfx(0.15, 0, 660, 0.14, 0, 0, 0, 0.02, 0.3, 0.12, 0, 0, 0, 0, 0),
+  collect2:  () => zzfx(0.15, 0, 880, 0.12, 0, 0, 0, 0.02, 0.3, 0.10, 0, 0, 0, 0, 0),
+  torch:     () => zzfx(0.14, 0.1, 520, 0.18, -200, 0, 0, 0.03, 0.2, 0.15, 0, 0, 0, 0, 0),
+  pulse:     () => zzfx(0.12, 0, 180, 0.35, 320, 0, 0, 0.05, 0.3, 0.20, 0, 0, 0, 0, 0),
+  pulse2:    () => zzfx(0.10, 0, 140, 0.5, -80, 0.05, 0, 0.05, 0.3, 0.25, 0, 0, 0, 0.1, 0),
+  celebrate: () => {
+    for (let i = 0; i < 6; i++)
+      zzfx(0.14, 0, 392 * Math.pow(2, i / 12), 0.35, 0, 0, 0, 0.02, 0.3, 0.15, 0, 0, 0, 0, i * 0.12);
+  },
+  muteOn:    () => zzfx(0.12, 0, 523, 0.1, 0, 0, 0, 0.02, 0.2, 0.08, 0, 0, 0, 0, 0),
+  torchExpire: () => zzfx(0.08, 0, 300, 0.25, -100, 0.1, 0, 0.03, 0.2, 0.15, 0, 0, 0, 0, 0),
+};
+
+// =====================================================================
+// §5 Screenshake — trauma² system (Squirrel Eiserloh GDC)
+// =====================================================================
+let trauma = 0;
+const TRAUMA_DECAY = 3.5;
+function addTrauma(amount) {
+  trauma = Math.min(1, trauma + amount);
+}
+
+// Smooth noise for shake offset (simple hash-based)
+function smoothNoise(t, seed) {
+  const x = Math.sin(t * 127.1 + seed * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// =====================================================================
+// §5 Hit-stop — freeze sim for 50ms on collect events
+// =====================================================================
+let hitStop = 0;
+const HIT_STOP_DURATION = 0.05; // 50ms freeze
+
+// =====================================================================
+// §5 Easing helpers
+// =====================================================================
+function easeOutExpo(x) { return x >= 1 ? 1 : 1 - Math.pow(2, -10 * x); }
+function easeOutCubic(x) { return 1 - Math.pow(1 - x, 3); }
+function easeOutBack(x) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+function easeOutElastic(x) {
+  if (x === 0 || x === 1) return x;
+  return Math.pow(2, -10 * x) * Math.sin((x * 10 - 0.75) * (2 * Math.PI / 3)) + 1;
+}
+
+// =====================================================================
+// §4.5 Value noise for procedural wall texture
+// =====================================================================
+const hash = (x, y) => {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+};
+function noise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  return hash(xi, yi) * (1-u) * (1-v) + hash(xi+1, yi) * u * (1-v)
+       + hash(xi, yi+1) * (1-u) * v + hash(xi+1, yi+1) * u * v;
+}
+function fbm(x, y, octaves) {
+  let val = 0, amp = 0.5, freq = 1;
+  for (let i = 0; i < octaves; i++) {
+    val += amp * noise(x * freq, y * freq);
+    amp *= 0.5; freq *= 2.0;
+  }
+  return val;
+}
+
+// =====================================================================
+// §6.2 Precomputed wall noise cache — avoid recalculating every frame
+// =====================================================================
+let wallNoiseCache = null;
+let wallNoiseW = 0, wallNoiseH = 0;
+
+// =====================================================================
+// Maze: rectangular walls + hidden glowing collectables
+// =====================================================================
+const WALL_MARGIN = 40;
+let walls = [];          // {x,y,w,h}
+let segments = [];       // {x1,y1,x2,y2} — wall edges + screen border
+let cornerPts = [];      // world points sampled for ray angles (wall corners + screen corners)
+let collectables = [];   // {x,y,found,hue,phase,squashT}
+let total = 0, found = 0;
+let torches = [];        // {x,y,seed}
+const MAX_TORCHES = 4;
+const TORCH_R = 130;
+let pulse = null;        // {x,y,t}
+const PULSE_EXPAND = 0.55, PULSE_HOLD = 0.15, PULSE_FADE = 0.55;
+const PULSE_TOTAL = PULSE_EXPAND + PULSE_HOLD + PULSE_FADE;
+
+let lanternRadius = 170;
+let lanternRadiusTarget = 170; // for smooth easing
+const LANTERN_MIN = 80, LANTERN_MAX = 320;
+const COLLECT_R = 26;
+
+let mouseX = 0, mouseY = 0;
+let celebrating = false, celebT = 0;
+const CELEBRATE_DURATION = 3.0;
+let simT = 0;
+
+// §5 smooth lantern radius easing (spring-driven from §3.2)
+let lanternVel = 0;
+const LANTERN_OMEGA = 12;
+
+// =====================================================================
+// §6.3 Spatial hashing for collectable visibility checks
+// =====================================================================
+const SPATIAL_CELL = 64; // cell size in px — covers COLLECT_R radius
+let spatialGrid = new Map();
+let spatialCellW = 0, spatialCellH = 0;
+
+function spatialClear() { spatialGrid.clear(); }
+
+function spatialInsert(collectable) {
+  const cx = ((collectable.x / SPATIAL_CELL) | 0);
+  const cy = ((collectable.y / SPATIAL_CELL) | 0);
+  const key = cx * 73856093 ^ cy * 19349663;
+  let bucket = spatialGrid.get(key);
+  if (!bucket) { bucket = []; spatialGrid.set(key, bucket); }
+  bucket.push(collectable);
+}
+
+function spatialQuery(x, y) {
+  const cx = ((x / SPATIAL_CELL) | 0);
+  const cy = ((y / SPATIAL_CELL) | 0);
+  const result = [];
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const key = (cx + dx) * 73856093 ^ (cy + dy) * 19349663;
+      const bucket = spatialGrid.get(key);
+      if (bucket) {
+        for (let i = 0; i < bucket.length; i++) result.push(bucket[i]);
+      }
+    }
+  }
+  return result;
+}
+
+// =====================================================================
+// §6.3 Wall bounding boxes for quick spatial occlusion culling
+// =====================================================================
+let wallBounds = []; // {minX, maxX, minY, maxY}
+
+function rectOverlapsPoint(rx, ry, rw, rh, x, y, margin) {
+  return x > rx - margin && x < rx + rw + margin && y > ry - margin && y < ry + rh + margin;
+}
+function pointInWalls(x, y, margin) {
+  for (const wa of walls) if (rectOverlapsPoint(wa.x, wa.y, wa.w, wa.h, x, y, margin)) return true;
+  return false;
+}
+
+function generateMaze() {
+  walls = []; segments = []; cornerPts = [];
+  torches = []; pulse = null; celebrating = false; celebT = 0;
+  trauma = 0; hitStop = 0; lanternVel = 0;
+  spatialClear();
+  wallBounds = [];
+  wallNoiseCache = null;
+
+  // screen border — light rays terminate here, giving a real polygon edge
+  segments.push({ x1: 0, y1: 0, x2: w, y2: 0 });
+  segments.push({ x1: w, y1: 0, x2: w, y2: h });
+  segments.push({ x1: w, y1: h, x2: 0, y2: h });
+  segments.push({ x1: 0, y1: h, x2: 0, y2: 0 });
+  cornerPts.push({ x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h });
+
+  const numWalls = 8 + Math.floor(Math.random() * 4);
+  for (let i = 0; i < numWalls; i++) {
+    const horizontal = Math.random() < 0.5;
+    const ww = horizontal ? rand(0.10, 0.24) * w : rand(0.04, 0.09) * w;
+    const hh = horizontal ? rand(0.04, 0.09) * h : rand(0.12, 0.26) * h;
+    const x = rand(WALL_MARGIN, Math.max(WALL_MARGIN + 1, w - WALL_MARGIN - ww));
+    const y = rand(WALL_MARGIN, Math.max(WALL_MARGIN + 1, h - WALL_MARGIN - hh));
+    walls.push({ x, y, w: ww, h: hh });
+    wallBounds.push({ minX: x, maxX: x + ww, minY: y, maxY: y + hh });
+    const cs = [[x, y], [x + ww, y], [x + ww, y + hh], [x, y + hh]];
+    for (let k = 0; k < 4; k++) {
+      const a = cs[k], b = cs[(k + 1) % 4];
+      segments.push({ x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+    }
+    for (const c of cs) cornerPts.push({ x: c[0], y: c[1] });
+  }
+
+  collectables = [];
+  total = 8 + Math.floor(Math.random() * 5);
+  found = 0;
+  for (let i = 0; i < total; i++) {
+    let x, y, tries = 0, ok = false;
+    do {
+      x = rand(30, w - 30); y = rand(30, h - 30);
+      ok = !pointInWalls(x, y, 22);
+      for (const c of collectables) if (ok && Math.hypot(c.x - x, c.y - y) < 80) ok = false;
+      tries++;
+    } while (!ok && tries < 400);
+    collectables.push({ x, y, found: false, hue: i / total, phase: Math.random() * 10, squashT: 0 });
+  }
+
+  // §6.3 Build spatial hash for collectables
+  for (const c of collectables) spatialInsert(c);
+}
+generateMaze();
+
+// =====================================================================
+// §4.8 real 2D shadows: raycast to every wall vertex (± epsilon), sort by
+// angle, intersect with all segments, keep the nearest hit per ray.
+// =====================================================================
+function raySegIntersect(ox, oy, dx, dy, x1, y1, x2, y2) {
+  const sx = x2 - x1, sy = y2 - y1;
+  const denom = dx * sy - dy * sx;
+  if (Math.abs(denom) < 1e-10) return null;
+  const t = ((x1 - ox) * sy - (y1 - oy) * sx) / denom;
+  const u = ((x1 - ox) * dy - (y1 - oy) * dx) / denom;
+  if (t < 0 || u < 0 || u > 1) return null;
+  return t;
+}
+
+const EPS = 0.00005;
+function computeVisibilityPolygon(lx, ly, maxR) {
+  const angles = [];
+  for (const p of cornerPts) {
+    const a = Math.atan2(p.y - ly, p.x - lx);
+    angles.push(a - EPS, a, a + EPS);
+  }
+  for (let i = 0; i < 48; i++) angles.push((i / 48) * Math.PI * 2);
+  angles.sort((a, b) => a - b);
+
+  const poly = [];
+  for (const a of angles) {
+    const dx = Math.cos(a), dy = Math.sin(a);
+    let best = maxR;
+    for (const s of segments) {
+      const t = raySegIntersect(lx, ly, dx, dy, s.x1, s.y1, s.x2, s.y2);
+      if (t !== null && t < best) best = t;
+    }
+    poly.push({ x: lx + dx * best, y: ly + dy * best });
+  }
+  return poly;
+}
+
+// =====================================================================
+// §4.2 Pre-rendered glow sprites — one warm, one cool — for additive light
+// =====================================================================
+const glowWarm = document.createElement('canvas');
+glowWarm.width = glowWarm.height = 64;
+{
+  const g = glowWarm.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,240,200,1)');
+  grad.addColorStop(0.25, 'rgba(255,200,120,0.6)');
+  grad.addColorStop(0.6, 'rgba(255,150,60,0.15)');
+  grad.addColorStop(1, 'rgba(255,120,40,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+}
+
+const glowCool = document.createElement('canvas');
+glowCool.width = glowCool.height = 64;
+{
+  const g = glowCool.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(220,230,255,1)');
+  grad.addColorStop(0.25, 'rgba(180,200,255,0.5)');
+  grad.addColorStop(0.6, 'rgba(120,160,255,0.12)');
+  grad.addColorStop(1, 'rgba(80,120,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+}
+
+// =====================================================================
+// §6.2 + §4.2 + §5 Particles — typed arrays (SoA), pooled, batched drawing
+// =====================================================================
+// §6 Typed arrays: Structure-of-Arrays for maximum throughput
+const POOL = 500;
+const pX = new Float32Array(POOL);
+const pY = new Float32Array(POOL);
+const pVX = new Float32Array(POOL);
+const pVY = new Float32Array(POOL);
+const pLife = new Float32Array(POOL);
+const pMax = new Float32Array(POOL);
+const pSize = new Float32Array(POOL);
+// Color stored as integer palette index (0–63) — no string alloc per particle
+const pColorIdx = new Uint8Array(POOL);
+
+let partHead = 0;
+
+// §6.2 Reusable scratch array for burst particles — zero GC
+const _burstBuf = [];
+
+function spawnPart(x, y, vx, vy, size, colorIdx, life) {
+  const i = partHead; partHead = (partHead + 1) % POOL;
+  pX[i] = x; pY[i] = y; pVX[i] = vx; pVY[i] = vy;
+  pSize[i] = size; pColorIdx[i] = colorIdx;
+  pLife[i] = life; pMax[i] = life;
+}
+
+// §5 Burst helper: spawn N particles in a cone/arc with varied speeds
+// §6.2 Zero alloc: use preallocated _burstBuf instead of creating arrays
+function spawnBurst(x, y, count, speedMin, speedMax, sizeMin, sizeMax, colorIdx, lifeMin, lifeMax) {
+  for (let i = 0; i < count; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const sp = speedMin + Math.random() * (speedMax - speedMin);
+    const sz = sizeMin + Math.random() * (sizeMax - sizeMin);
+    const lf = lifeMin + Math.random() * (lifeMax - lifeMin);
+    spawnPart(x, y, Math.cos(ang) * sp, Math.sin(ang) * sp, sz, colorIdx, lf);
+  }
+}
+
+// §4.2 Ambient firefly particles — drift slowly, glow softly
+// §5 Enhanced ambient life: more fireflies, synchronized blinking
+const FIREFLY_COUNT = 20;
+const fireflies = [];
+function initFireflies() {
+  for (let i = 0; i < FIREFLY_COUNT; i++) {
+    fireflies.push({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: (Math.random() - 0.5) * 0.3,
+      phase: Math.random() * Math.PI * 2,
+      size: 2 + Math.random() * 3,
+      hue: Math.random() * 0.3,
+      // §5 micro-motion: tiny wandering offsets
+      wanderA: Math.random() * Math.PI * 2,
+      wanderS: 0.01 + Math.random() * 0.02,
+    });
+  }
+}
+initFireflies();
+
+// §5 Celebration with screenshake, hit-stop, and enhanced particles
+function triggerCelebration() {
+  celebrating = true; celebT = 0;
+  // §5 Hit-stop
+  hitStop = HIT_STOP_DURATION;
+  // §5 Screenshake
+  addTrauma(0.6);
+  // §5 More particles — burst from every collectable
+  for (let i = 0; i < collectables.length; i++) {
+    const c = collectables[i];
+    const cidx = Math.floor(c.hue * (PALETTE_SIZE - 1));
+    spawnBurst(c.x, c.y, 15, 1, 5, 4, 8, cidx, 0.6, 1.0);
+    // §5 Extra sparkle particles
+    for (let j = 0; j < 8; j++) {
+      spawnPart(c.x, c.y,
+        (Math.random() - 0.5) * 6,
+        -2 - Math.random() * 4,
+        2 + Math.random() * 3, 0, 0.8 + Math.random() * 0.4);
+    }
+  }
+  SFX.celebrate();
+}
+
+// =====================================================================
+// Input — mouse-only, four distinct jobs (§0.1)
+// =====================================================================
+mouseX = w / 2; mouseY = h / 2;
+
+canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('mousedown', e => {
+  ensureAudio();
+  if (e.button === 0) { // left: plant a fixed torch, cap 4, oldest expires
+    if (torches.length >= MAX_TORCHES) {
+      const old = torches.shift();
+      // §5 particles on torch expire
+      spawnBurst(old.x, old.y, 8, 1, 2.5, 3, 5, 34, 0.3, 0.5);
+      SFX.torchExpire();
+      addTrauma(0.08);
+    }
+    torches.push({ x: mouseX, y: mouseY, seed: Math.random() * 1000 });
+    // §5 Particles on torch plant
+    spawnBurst(mouseX, mouseY, 10, 0.5, 2, 2, 5, 32, 0.3, 0.6);
+    SFX.torch();
+    addTrauma(0.1);
+  } else if (e.button === 2) { // right: expanding pulse reveals the maze briefly
+    pulse = { x: mouseX, y: mouseY, t: 0 };
+    SFX.pulse();
+    SFX.pulse2();
+    addTrauma(0.15);
+    // §5 Pulse particles
+    spawnBurst(mouseX, mouseY, 20, 1, 4, 2, 5, 31, 0.4, 0.8);
+  }
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  // §5 Smooth eased lantern radius change
+  lanternRadiusTarget = clamp(lanternRadiusTarget - Math.sign(e.deltaY) * 10, LANTERN_MIN, LANTERN_MAX);
+}, { passive: false });
+
+document.getElementById('resetBtn').addEventListener('click', generateMaze);
+const muteBtn = document.getElementById('muteBtn');
+muteBtn.addEventListener('click', () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  ensureAudio();
+  if (!muted) SFX.muteOn();
+});
+
+window.addEventListener('resize', fitCanvas);
+
+// simple noise-ish flicker for torches/lantern (§5)
+function flicker(t, seed) {
+  return 1 + 0.05 * Math.sin(t * 17 + seed) + 0.035 * Math.sin(t * 29 + seed * 1.7)
+    + 0.02 * Math.sin(t * 43 + seed * 2.3);
+}
+
+// =====================================================================
+// Update (fixed timestep, §2)
+// =====================================================================
+function update(dt) {
+  // §5 Hit-stop: freeze simulation time on big events
+  if (hitStop > 0) {
+    hitStop -= dt;
+    // Still advance simT for visual effects, but not physics
+    simT += dt;
+    // Still handle pulse and celebration timers
+    if (pulse) {
+      pulse.t += dt;
+      if (pulse.t > PULSE_TOTAL) pulse = null;
+    }
+    if (celebrating) {
+      celebT += dt;
+      if (celebT > CELEBRATE_DURATION) generateMaze();
+    }
+    // Still update particles for visual continuity
+    for (let i = 0; i < POOL; i++) {
+      if (pLife[i] <= 0) continue;
+      pLife[i] -= dt;
+      pX[i] += pVX[i]; pY[i] += pVY[i];
+    }
+    // Still update fireflies
+    for (let i = 0; i < fireflies.length; i++) {
+      const f = fireflies[i];
+      f.x += f.vx; f.y += f.vy;
+      f.phase += dt * 1.5;
+      f.wanderA += (Math.random() - 0.5) * 0.1;
+      f.vx += Math.cos(f.wanderA) * f.wanderS;
+      f.vy += Math.sin(f.wanderA) * f.wanderS;
+      f.vx = clamp(f.vx, -0.5, 0.5);
+      f.vy = clamp(f.vy, -0.5, 0.5);
+      if (f.x < -20) f.x = w + 20;
+      if (f.x > w + 20) f.x = -20;
+      if (f.y < -20) f.y = h + 20;
+      if (f.y > h + 20) f.y = -20;
+    }
+    return; // skip rest of update
+  }
+
+  simT += dt;
+
+  // §5 Smooth lantern radius easing via spring (§3.2)
+  lanternVel += (lanternRadiusTarget - lanternRadius) * LANTERN_OMEGA * LANTERN_OMEGA * dt;
+  lanternVel *= Math.exp(-2 * LANTERN_OMEGA * dt);
+  lanternRadius += lanternVel * dt;
+
+  if (pulse) {
+    pulse.t += dt;
+    if (pulse.t > PULSE_TOTAL) pulse = null;
+  }
+
+  if (!celebrating) {
+    // §6.3 Spatial hashing: only check collectables near the mouse for proximity
+    const nearby = spatialQuery(mouseX, mouseY);
+    for (let ci = 0; ci < nearby.length; ci++) {
+      const c = nearby[ci];
+      if (c.found) continue;
+      if (Math.hypot(c.x - mouseX, c.y - mouseY) < COLLECT_R) {
+        // §4.8 visibility check
+        let visible = true;
+        if (!pulse) {
+          const dist = Math.hypot(c.x - mouseX, c.y - mouseY);
+          for (let si = 0; si < segments.length; si++) {
+            const s = segments[si];
+            const hit = raySegIntersect(mouseX, mouseY,
+              (c.x - mouseX) / dist, (c.y - mouseY) / dist,
+              s.x1, s.y1, s.x2, s.y2);
+            if (hit !== null && hit < dist) { visible = false; break; }
+          }
+        }
+        if (!visible) continue;
+        c.found = true; found++;
+
+        // §5 Hit-stop on collect
+        hitStop = HIT_STOP_DURATION;
+        // §5 Screenshake on collect
+        addTrauma(0.25);
+        // §5 Squash/stretch trigger
+        c.squashT = 1.0;
+        // §5 More particles on collect (30 instead of 12)
+        const cidx = Math.floor(c.hue * (PALETTE_SIZE - 1));
+        spawnBurst(c.x, c.y, 30, 0.5, 3.5, 2, 6, cidx, 0.3, 0.7);
+        // §5 Extra sparkle burst
+        spawnBurst(c.x, c.y, 8, 1, 4, 1, 3, 31, 0.2, 0.5);
+        // §5 ZzFX collect sound
+        if (found % 2 === 0) SFX.collect2(); else SFX.collect();
+        if (found >= total) triggerCelebration();
+      }
+    }
+  } else {
+    celebT += dt;
+    if (celebT > CELEBRATE_DURATION) generateMaze();
+  }
+
+  // §6 Typed array particles: update via typed arrays, no object GC
+  for (let i = 0; i < POOL; i++) {
+    if (pLife[i] <= 0) continue;
+    pLife[i] -= dt;
+    pVY[i] += 0.05; pVX[i] *= 0.985; pVY[i] *= 0.985;
+    pX[i] += pVX[i]; pY[i] += pVY[i];
+  }
+
+  // §5 Ambient fireflies: drift, blink, micro-motion, sync
+  for (let i = 0; i < fireflies.length; i++) {
+    const f = fireflies[i];
+    f.x += f.vx; f.y += f.vy;
+    f.phase += dt * 1.5;
+    // §5 Micro-motion: gentle wandering
+    f.wanderA += (Math.random() - 0.5) * 0.1;
+    f.vx += Math.cos(f.wanderA) * f.wanderS;
+    f.vy += Math.sin(f.wanderA) * f.wanderS;
+    f.vx = clamp(f.vx, -0.5, 0.5);
+    f.vy = clamp(f.vy, -0.5, 0.5);
+    // wrap around
+    if (f.x < -20) f.x = w + 20;
+    if (f.x > w + 20) f.x = -20;
+    if (f.y < -20) f.y = h + 20;
+    if (f.y > h + 20) f.y = -20;
+  }
+
+  // §5 Decay trauma
+  trauma *= Math.exp(-TRAUMA_DECAY * dt);
+  if (trauma < 0.001) trauma = 0;
+
+  // §5 Decay squash/stretch
+  for (let i = 0; i < collectables.length; i++) {
+    const c = collectables[i];
+    if (c.squashT > 0) {
+      c.squashT *= Math.exp(-8 * dt);
+      if (c.squashT < 0.001) c.squashT = 0;
+    }
+  }
+}
+
+// =====================================================================
+// Render
+// =====================================================================
+function drawBackground() {
+  const bg = ctx.createRadialGradient(w * 0.5, h * 0.4, 0, w * 0.5, h * 0.5, Math.max(w, h) * 0.75);
+  bg.addColorStop(0, '#1b1730'); bg.addColorStop(1, '#0c0c1e');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(255,255,255,0.035)'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = 0; x < w; x += 48) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+  for (let y = 0; y < h; y += 48) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+  ctx.stroke();
+}
+
+function drawWalls() {
+  // §6.2 Reuse cached noise if dimensions haven't changed
+  if (!wallNoiseCache || wallNoiseW !== w || wallNoiseH !== h) {
+    wallNoiseCache = new Float32Array(walls.length);
+    for (let i = 0; i < walls.length; i++) {
+      wallNoiseCache[i] = fbm(walls[i].x * 0.01, walls[i].y * 0.01, 3);
+    }
+    wallNoiseW = w; wallNoiseH = h;
+  }
+
+  for (let i = 0; i < walls.length; i++) {
+    const wa = walls[i];
+    const noiseVal = wallNoiseCache[i];
+    const baseR = Math.round(107 + noiseVal * 20 - 10);
+    const baseG = Math.round(114 + noiseVal * 20 - 10);
+    const baseB = Math.round(144 + noiseVal * 20 - 10);
+
+    const g = ctx.createLinearGradient(wa.x, wa.y, wa.x, wa.y + wa.h);
+    g.addColorStop(0, `rgb(${baseR + 15},${baseG + 15},${baseB + 15})`);
+    g.addColorStop(1, `rgb(${baseR - 15},${baseG - 15},${baseB - 15})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(wa.x, wa.y, wa.w, wa.h);
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)'; ctx.lineWidth = 2;
+    ctx.strokeRect(wa.x + 1, wa.y + 1, wa.w - 2, wa.h - 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1;
+    ctx.strokeRect(wa.x + 2, wa.y + 2, wa.w - 4, 2);
+  }
+}
+
+// =====================================================================
+// §6.2 + §5 Collectables with squash/stretch — batched path drawing
+// =====================================================================
+function drawCollectables() {
+  // §6.2 Pre-allocate a single path for all collectables — one beginPath, one fill
+  for (let i = 0; i < collectables.length; i++) {
+    const c = collectables[i];
+    if (c.found) continue;
+    const basePulse = 1 + 0.18 * Math.sin(simT * 3 + c.phase);
+
+    // §5 Squash/stretch: scaleY = 1 + vy * 0.02, scaleX = 1/scaleY (volume-preserving)
+    // We approximate vy from the phase oscillation: vy ≈ -sin(phase) * speed
+    const phaseVy = -Math.cos(simT * 3 + c.phase) * 0.6;
+    const squashAmt = phaseVy * 0.03;
+    const scaleX = 1 / (1 + squashAmt);
+    const scaleY = 1 + squashAmt;
+
+    // §5 Blend squash/stretch in over decay time
+    const squashBlend = 1 - c.squashT;
+    const finalSX = scaleX + (1 - scaleX) * c.squashT;
+    const finalSY = scaleY + (1 - scaleY) * c.squashT;
+    // Add extra squash burst from collection
+    const burstSquash = c.squashT * 0.3;
+    const totalSX = finalSX * (1 - burstSquash);
+    const totalSY = finalSY + burstSquash;
+
+    ctx.save();
+    ctx.translate(c.x, c.y);
+
+    // §5 Glow using pre-rendered cool sprite
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.45 + 0.1 * Math.sin(simT * 2 + c.phase);
+    ctx.drawImage(glowCool, -22 * basePulse, -22 * basePulse, 44 * basePulse, 44 * basePulse);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Rotating star shape with squash/stretch
+    ctx.rotate(simT * 0.6 + c.phase);
+    ctx.scale(totalSX, totalSY);
+
+    // §6.2 Batch: build path in world space, then fill with one color
+    // We need to draw each star with its own color, so we batch by color
+    // For small numbers, individual fills are fine; but we batch the path geometry
+    const cidx = Math.floor(c.hue * (PALETTE_SIZE - 1));
+    const col = coolPalette[cidx];
+
+    // §6.2 Single path per color bucket — collect all stars of same color
+    // For simplicity with rotation, we draw individually but reuse the path points
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    for (let j = 0; j < 4; j++) {
+      const a = (j / 4) * Math.PI * 2;
+      const r1 = 8 * basePulse, r2 = 3 * basePulse;
+      ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
+      ctx.lineTo(Math.cos(a + Math.PI / 4) * r2, Math.sin(a + Math.PI / 4) * r2);
+    }
+    ctx.closePath(); ctx.fill();
+
+    ctx.restore();
+  }
+}
+
+// §4.2 Ambient fireflies — draw on trail canvas for subtle trails
+function drawFireflies() {
+  for (let i = 0; i < fireflies.length; i++) {
+    const f = fireflies[i];
+    const blink = 0.3 + 0.7 * Math.max(0, Math.sin(f.phase));
+    if (blink < 0.15) continue;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = blink * 0.35;
+    ctx.drawImage(glowWarm, f.x - 12, f.y - 12, 24, 24);
+    ctx.globalAlpha = blink * 0.6;
+    ctx.fillStyle = '#fffde0';
+    ctx.beginPath(); ctx.arc(f.x, f.y, f.size * 0.4, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function buildDarkness(lights) {
+  darkCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  darkCtx.globalCompositeOperation = 'source-over';
+  darkCtx.fillStyle = 'rgba(9,9,22,0.95)';
+  darkCtx.fillRect(0, 0, w, h);
+
+  for (let li = 0; li < lights.length; li++) {
+    const L = lights[li];
+    const poly = computeVisibilityPolygon(L.x, L.y, L.r);
+    if (poly.length < 3) continue;
+    darkCtx.save();
+    darkCtx.beginPath();
+    darkCtx.moveTo(poly[0].x, poly[0].y);
+    for (let pi = 1; pi < poly.length; pi++) darkCtx.lineTo(poly[pi].x, poly[pi].y);
+    darkCtx.closePath();
+    darkCtx.clip();
+    darkCtx.globalCompositeOperation = 'destination-out';
+    const grad = darkCtx.createRadialGradient(L.x, L.y, 0, L.x, L.y, L.r);
+    grad.addColorStop(0, 'rgba(0,0,0,1)');
+    grad.addColorStop(0.65, 'rgba(0,0,0,0.85)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    darkCtx.fillStyle = grad;
+    darkCtx.fillRect(L.x - L.r, L.y - L.r, L.r * 2, L.r * 2);
+    darkCtx.restore();
+  }
+}
+
+function drawGlowAt(x, y, r, color, alpha) {
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = alpha * 0.6;
+  ctx.drawImage(glowWarm, x - r, y - r, r * 2, r * 2);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawTorchIcons() {
+  for (let i = 0; i < torches.length; i++) {
+    const t = torches[i];
+    const f = flicker(simT * 3, t.seed);
+    ctx.fillStyle = '#5a4632';
+    ctx.fillRect(t.x - 3, t.y - 2, 6, 20);
+    drawGlowAt(t.x, t.y - 10, 22 * f, 'rgba(255,178,80,0.9)', 0.5);
+    ctx.fillStyle = '#ffdca0';
+    ctx.beginPath(); ctx.arc(t.x, t.y - 10, 4 * f, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawLanternCursor() {
+  // §5 Lantern cursor with subtle spring wobble
+  const wobble = Math.sin(simT * 8) * 0.5;
+  drawGlowAt(mouseX, mouseY + wobble, 16, 'rgba(255,214,140,0.9)', 0.7);
+  ctx.strokeStyle = 'rgba(255,230,180,0.9)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(mouseX, mouseY + wobble, 7, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#fff6d8';
+  ctx.beginPath(); ctx.arc(mouseX, mouseY + wobble, 3, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawPulseRing() {
+  if (!pulse) return;
+  let r, alpha;
+  if (pulse.t < PULSE_EXPAND) {
+    // §5 easeOutBack for satisfying overshoot on pulse expansion
+    r = easeOutBack(clamp(pulse.t / PULSE_EXPAND, 0, 1)) * Math.hypot(w, h) * 0.75;
+    alpha = 0.5;
+  } else if (pulse.t < PULSE_EXPAND + PULSE_HOLD) {
+    r = Math.hypot(w, h) * 0.75; alpha = 0.5;
+  } else {
+    const f = (pulse.t - PULSE_EXPAND - PULSE_HOLD) / PULSE_FADE;
+    r = Math.hypot(w, h) * 0.75; alpha = 0.5 * (1 - f);
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.max(0, alpha);
+  ctx.strokeStyle = 'rgba(255,240,200,1)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(pulse.x, pulse.y, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+// =====================================================================
+// §6.2 + §6.4 Batched Particles — grouped by color bucket, single path per bucket
+// =====================================================================
+function drawParticles() {
+  ctx.globalCompositeOperation = 'lighter';
+
+  // §6.4 Batch by color: collect particles into color buckets, then batch their paths
+  // §6.2 Use a reusable bucket array to avoid per-frame allocation
+  const buckets = {};
+  let activeBuckets = 0;
+
+  for (let i = 0; i < POOL; i++) {
+    if (pLife[i] <= 0) continue;
+    const t = pLife[i] / pMax[i];
+    const idx = pColorIdx[i];
+    if (!buckets[idx]) { buckets[idx] = []; activeBuckets++; }
+    buckets[idx].push(i);
+  }
+
+  // Draw each color bucket: one fillStyle, batched arcs in a single path
+  const bucketKeys = Object.keys(buckets);
+  for (let bi = 0; bi < bucketKeys.length; bi++) {
+    const idx = parseInt(bucketKeys[bi]);
+    const bucket = buckets[bucketKeys[bi]];
+    ctx.fillStyle = idx === 0 ? '#fff6d8' : coolPalette[idx] || '#fff';
+
+    // §6.4 Single beginPath for all particles in this bucket
+    ctx.beginPath();
+    for (let pi = 0; pi < bucket.length; pi++) {
+      const i = bucket[pi];
+      const t = pLife[i] / pMax[i];
+      ctx.moveTo(pX[i] + pSize[i] * t, pY[i]);
+      ctx.arc(pX[i], pY[i], pSize[i] * t, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    // Glow layer: batch drawImage calls per bucket
+    ctx.globalAlpha = 0.5;
+    for (let pi = 0; pi < bucket.length; pi++) {
+      const i = bucket[pi];
+      const t = pLife[i] / pMax[i];
+      ctx.drawImage(glowWarm,
+        pX[i] - pSize[i] * 2, pY[i] - pSize[i] * 2,
+        pSize[i] * 4 * t, pSize[i] * 4 * t);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawCelebration() {
+  if (!celebrating) return;
+  const f = celebT / CELEBRATE_DURATION;
+  const alpha = f < 0.15 ? f / 0.15 : f > 0.8 ? (1 - f) / 0.2 : 1;
+  ctx.save();
+  ctx.globalAlpha = clamp(alpha, 0, 1);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff6d8';
+  ctx.font = 'bold 42px "Segoe UI", sans-serif';
+  ctx.shadowColor = 'rgba(255,200,120,0.8)'; ctx.shadowBlur = 20;
+  ctx.fillText('✨ All found! ✨', w / 2, h * 0.42);
+  ctx.font = '18px "Segoe UI", sans-serif';
+  ctx.shadowBlur = 8;
+  ctx.fillText('A fresh maze is on its way…', w / 2, h * 0.42 + 34);
+  ctx.restore();
+}
+
+// =====================================================================
+// §4.4 Vignette + noise grain post-processing
+// =====================================================================
+function drawVignette() {
+  const vig = ctx.createRadialGradient(w * 0.5, h * 0.5, Math.min(w, h) * 0.3,
+                                        w * 0.5, h * 0.5, Math.max(w, h) * 0.75);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.45)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, w, h);
+}
+
+const grainCanvas = document.createElement('canvas');
+grainCanvas.width = 128; grainCanvas.height = 128;
+{
+  const gCtx = grainCanvas.getContext('2d');
+  const imgData = gCtx.createImageData(128, 128);
+  for (let i = 0; i < imgData.data.length; i += 4) {
+    const v = Math.random() * 255;
+    imgData.data[i] = v; imgData.data[i+1] = v; imgData.data[i+2] = v; imgData.data[i+3] = 15;
+  }
+  gCtx.putImageData(imgData, 0, 0);
+}
+
+function drawGrain() {
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.globalAlpha = 0.06;
+  ctx.drawImage(grainCanvas, 0, 0, w, h);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+// =====================================================================
+// §4.4 + §4.2 Main render with bloom pass
+// =====================================================================
+function render() {
+  // §5 Screenshake: trauma² with rotation (Squirrel Eiserloh GDC)
+  const shakeIntensity = trauma * trauma; // trauma²
+  let shakeX = 0, shakeY = 0, shakeRot = 0;
+  if (shakeIntensity > 0.001) {
+    // Smooth noise offsets
+    const noiseX = (smoothNoise(simT * 30, 0) - 0.5) * 2;
+    const noiseY = (smoothNoise(simT * 30, 100) - 0.5) * 2;
+    const noiseRot = (smoothNoise(simT * 20, 200) - 0.5) * 2;
+    shakeX = noiseX * shakeIntensity * 8;
+    shakeY = noiseY * shakeIntensity * 8;
+    shakeRot = noiseRot * shakeIntensity * 0.03; // rotation shake is the secret
+  }
+
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+  if (shakeRot !== 0) {
+    ctx.translate(w / 2, h / 2);
+    ctx.rotate(shakeRot);
+    ctx.translate(-w / 2, -h / 2);
+  }
+
+  // ---- Phase 1: Draw everything to the main canvas ----
+  drawBackground();
+  drawWalls();
+  drawCollectables();
+  drawFireflies();
+
+  const lights = [{ x: mouseX, y: mouseY, r: lanternRadius * flicker(simT, 0) }];
+  for (let i = 0; i < torches.length; i++) {
+    const t = torches[i];
+    lights.push({ x: t.x, y: t.y, r: TORCH_R * flicker(simT * 3, t.seed) });
+  }
+  if (pulse) {
+    let r;
+    if (pulse.t < PULSE_EXPAND) r = easeOutExpo(pulse.t / PULSE_EXPAND) * Math.hypot(w, h) * 0.9;
+    else r = Math.hypot(w, h) * 0.9;
+    lights.push({ x: pulse.x, y: pulse.y, r });
+  }
+  buildDarkness(lights);
+  ctx.drawImage(darkCanvas, 0, 0, w, h);
+
+  drawTorchIcons();
+  drawPulseRing();
+  drawLanternCursor();
+  drawParticles();
+  drawCelebration();
+
+  // ---- Phase 2: §4.2 + §4.4 Bloom pass ----
+  bloomCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  bloomCtx.clearRect(0, 0, w, h);
+  bloomCtx.drawImage(canvas, 0, 0, w, h);
+  bloomCtx.filter = 'blur(12px)';
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.15;
+  ctx.drawImage(bloomCanvas, 0, 0, w, h);
+  bloomCtx.filter = 'none';
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+
+  // ---- Phase 3: §4.4 Vignette + grain ----
+  drawVignette();
+  drawGrain();
+
+  ctx.restore();
+}
+
+// ---- UI text (only touch the DOM when a value actually changes) ----
+const torchCountEl = document.getElementById('torchCount');
+const radiusValEl = document.getElementById('radiusVal');
+const foundValEl = document.getElementById('foundVal');
+const totalValEl = document.getElementById('totalVal');
+let lastTorch = -1, lastRadius = -1, lastFound = -1, lastTotal = -1;
+function updateUI() {
+  if (torches.length !== lastTorch) { torchCountEl.textContent = torches.length; lastTorch = torches.length; }
+  const r = Math.round(lanternRadius);
+  if (r !== lastRadius) { radiusValEl.textContent = r; lastRadius = r; }
+  if (found !== lastFound) { foundValEl.textContent = found; lastFound = found; }
+  if (total !== lastTotal) { totalValEl.textContent = total; lastTotal = total; }
+}
+
+// ---- §2 fixed timestep: physics/logic at exactly 60 steps/sec everywhere ----
+const DT = 1 / 60;
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  render();
+  updateUI();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

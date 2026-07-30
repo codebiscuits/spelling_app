@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Puppet Pets v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Puppet Pets v2</b><br>
+Move — idle follow<br>
+Left drag — grab tail<br>
+Right drag — gust of wind<br>
+Scroll — body stiffness<br>
+R — reset all
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+let w, h;
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+document.getElementById('reset').addEventListener('click', reset);
+
+// ── Mouse ──
+const mouse = { x: 0, y: 0, px: 0, py: 0, buttons: 0, left: false, right: false, grabbed: null, grabOffset: { x: 0, y: 0 } };
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mouse.px = mouse.x; mouse.py = mouse.y;
+  mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top;
+  mouse.buttons = e.buttons;
+  mouse.left = !!(e.buttons & 1);
+  mouse.right = !!(e.buttons & 2);
+});
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) {
+    mouse.left = true;
+    // try to grab tail of nearest pet
+    for (const pet of pets) {
+      const tail = pet.body[pet.body.length - 1];
+      const d = Math.hypot(tail.x - mouse.x, tail.y - mouse.y);
+      if (d < 60) { mouse.grabbed = pet; mouse.grabOffset.x = 0; mouse.grabOffset.y = 0; return; }
+    }
+  }
+  if (e.button === 2) mouse.right = true;
+});
+window.addEventListener('mouseup', e => {
+  if (e.button === 0) { mouse.left = false; mouse.grabbed = null; }
+  if (e.button === 2) mouse.right = false;
+});
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  stiffness = Math.max(0.15, Math.min(0.95, stiffness - Math.sign(e.deltaY) * 0.08));
+}, { passive: false });
+
+// ── Keyboard ──
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') reset();
+});
+
+// ── Physics constants ──
+const DT = 1 / 60;
+const GRAVITY = 320;
+const DAMPING = 0.97;
+let stiffness = 0.5;
+
+// ── Cosine palette (warm creature colors) ──
+const pal = t => {
+  const a = [0.63, 0.55, 0.50], b = [0.30, 0.35, 0.35], c = [1.0, 0.7, 0.4], d = [0.00, 0.33, 0.67];
+  return [0, 1, 2].map(i => Math.max(0, Math.min(1, a[i] + b[i] * Math.cos(6.28318 * (c[i] * t + d[i])))));\n};
+function rgb(t, alpha) {
+  const [r, g, b] = pal(t);
+  return alpha !== undefined ? `rgba(${(r*255)|0},${(g*255)|0},${(b*255)|0},${alpha})` : `rgb(${(r*255)|0},${(g*255)|0},${(b*255)|0})`;
+}
+
+// ── Noise for hand-drawn wobble ──
+function hash(x, y) {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function noise2(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  return hash(xi, yi) * (1-u) * (1-v) + hash(xi+1, yi) * u * (1-v)
+       + hash(xi, yi+1) * (1-u) * v + hash(xi+1, yi+1) * u * v;
+}
+
+// ── Simple value noise for ambient wobble ──
+function smoothNoise(t, seed) {
+  return noise2(t * 0.5 + seed, t * 0.3 + seed * 2.7);
+}
+
+// ── Pets ──
+let pets = [];
+const PET_COUNT = 3;
+
+function createPet(x, y, hueT) {
+  const segments = 14;
+  const body = [];
+  let px = x, py = y;
+  for (let i = 0; i < segments; i++) {
+    body.push({ x: px, y: py, px: px, py: py, r: 8 - i * 0.3 });
+    px += 0; py += 10;
+  }
+  // head follows mouse via spring
+  const head = {
+    x: x, y: y - 30,
+    px: x, py: y - 30,
+    vx: 0, vy: 0,
+    omega: 12, // responsiveness
+  };
+  return {
+    body,
+    head,
+    hueT: hueT || Math.random(),
+    blinkTimer: Math.random() * 5,
+    blinkState: 0, // 0 = open, 1 = closing, 2 = open
+    idlePhase: Math.random() * Math.PI * 2,
+    trauma: 0, // screenshake
+    tailWag: 0,
+  };
+}
+
+function reset() {
+  pets = [];
+  for (let i = 0; i < PET_COUNT; i++) {
+    const x = w * 0.25 + i * w * 0.25;
+    const y = h * 0.35;
+    pets.push(createPet(x, y, i / PET_COUNT));
+  }
+  particles.length = 0;
+  stiffness = 0.5;
+}
+
+// ── Particles (pre-allocated pool, zero alloc in hot loop) ──
+let particles = [];
+const MAX_PARTICLES = 200;
+const pPool = {
+  x: new Float32Array(MAX_PARTICLES),
+  y: new Float32Array(MAX_PARTICLES),
+  vx: new Float32Array(MAX_PARTICLES),
+  vy: new Float32Array(MAX_PARTICLES),
+  life: new Float32Array(MAX_PARTICLES),
+  decay: new Float32Array(MAX_PARTICLES),
+  color: new Float32Array(MAX_PARTICLES),
+  size: new Float32Array(MAX_PARTICLES),
+  count: 0,
+  freeList: [],
+  init() {
+    for (let i = 0; i < MAX_PARTICLES; i++) this.freeList.push(i);
+  },
+  spawn(x, y, vx, vy, life, decay, color, size) {
+    if (this.count >= MAX_PARTICLES) return;
+    const i = this.freeList.pop();
+    this.x[i] = x; this.y[i] = y;
+    this.vx[i] = vx; this.vy[i] = vy;
+    this.life[i] = life;
+    this.decay[i] = decay;
+    this.color[i] = color;
+    this.size[i] = size;
+    this.count++;
+  },
+  kill(i) {
+    this.freeList.push(i);
+    this.count--;
+  },
+};
+pPool.init();
+
+function spawnParticles(x, y, count, color, speed) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd = (Math.random() * 0.5 + 0.5) * (speed || 80);
+    pPool.spawn(x, y, Math.cos(angle) * spd, Math.sin(angle) * spd - 30,
+                1, 0.8 + Math.random() * 1.2, color, 2 + Math.random() * 3);
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = 0; i < pPool.count; i++) {
+    pPool.x[i] += pPool.vx[i] * dt;
+    pPool.y[i] += pPool.vy[i] * dt;
+    pPool.vy[i] += 100 * dt;
+    pPool.life[i] -= pPool.decay[i] * dt;
+    if (pPool.life[i] <= 0) pPool.kill(i);
+  }
+}
+
+// ── Spring follower (damped spring) ──
+function followSpring(pos, target, vel, dt, omega) {
+  vel += (target - pos) * omega * omega * dt;
+  vel *= Math.exp(-2 * omega * dt);
+  pos += vel * dt;
+  return pos;
+}
+
+// ── Physics update ──
+function update(dt) {
+  const time = performance.now() * 0.001;
+
+  for (const pet of pets) {
+    // ── Head follows mouse via damped spring ──
+    let targetX = mouse.x;
+    let targetY = mouse.y;
+    if (pet === mouse.grabbed) {
+      // head is grabbed — follow grab point
+      targetX = mouse.x - mouse.grabOffset.x;
+      targetY = mouse.y - mouse.grabOffset.y;
+    }
+    pet.head.x = followSpring(pet.head.x, targetX, pet.head.vx, dt, pet.head.omega);
+    pet.head.y = followSpring(pet.head.y, targetY, pet.head.vy, dt, pet.head.omega);
+    // Update previous position for velocity tracking
+    pet.head.px = pet.head.x - pet.head.vx * dt;
+    pet.head.py = pet.head.y - pet.head.vy * dt;
+
+    // ── Body: Verlet integration ──
+    for (let i = 0; i < pet.body.length; i++) {
+      const p = pet.body[i];
+      const vx = (p.x - p.px) * DAMPING;
+      const vy = (p.y - p.py) * DAMPING;
+      p.px = p.x; p.py = p.y;
+      p.x += vx;
+      p.y += vy + GRAVITY * dt * dt;
+    }
+
+    // ── Constraints (Gauss-Seidel) ──
+    const iterCount = 4;
+    for (let iter = 0; iter < iterCount; iter++) {
+      // distance constraints (chain)
+      for (let i = 0; i < pet.body.length - 1; i++) {
+        const a = pet.body[i], b = pet.body[i + 1];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dd = Math.hypot(dx, dy) || 0.001;
+        const rest = 10;
+        const diff = (dd - rest) / dd * 0.5 * stiffness;
+        a.x += dx * diff; a.y += dy * diff;
+        b.x -= dx * diff; b.y -= dy * diff;
+      }
+      // bending constraint (i to i+2 at 2× rest)
+      for (let i = 0; i < pet.body.length - 2; i++) {
+        const a = pet.body[i], b = pet.body[i + 2];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dd = Math.hypot(dx, dy) || 0.001;
+        const rest = 20;
+        const diff = (dd - rest) / dd * 0.25 * stiffness;
+        a.x += dx * diff * 0.5; a.y += dy * diff * 0.5;
+        b.x -= dx * diff * 0.5; b.y -= dy * diff * 0.5;
+      }
+      // connect head to first body segment
+      {
+        const a = pet.head, b = pet.body[0];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dd = Math.hypot(dx, dy) || 0.001;
+        const rest = 10;
+        const diff = (dd - rest) / dd * 0.5 * stiffness;
+        // head is fully driven by spring, only adjust body
+        b.x -= dx * diff; b.y -= dy * diff;
+      }
+    }
+
+    // ── Grabbed pet: tail follows mouse ──
+    if (pet === mouse.grabbed && mouse.left) {
+      const tail = pet.body[pet.body.length - 1];
+      mouse.grabOffset.x = mouse.x - tail.x;
+      mouse.grabOffset.y = mouse.y - tail.y;
+      tail.x = mouse.x - mouse.grabOffset.x;
+      tail.y = mouse.y - mouse.grabOffset.y;
+      tail.px = tail.x; tail.py = tail.y;
+    }
+
+    // ── Right drag: wind repulsion ──
+    if (mouse.right) {
+      for (const p of pet.body) {
+        const dx = p.x - mouse.x, dy = p.y - mouse.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < 180) {
+          const f = 150 * (1 - d / 180);
+          p.x += (dx / d) * f * dt;
+          p.y += (dy / d) * f * dt;
+        }
+      }
+      // head too
+      {
+        const dx = pet.head.x - mouse.x, dy = pet.head.y - mouse.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < 180) {
+          const f = 150 * (1 - d / 180);
+          pet.head.vx += (dx / d) * f * dt;
+          pet.head.vy += (dy / d) * f * dt;
+        }
+      }
+    }
+
+    // ── Floor bounce ──
+    for (const p of pet.body) {
+      if (p.y > h - 20) {
+        p.y = h - 20;
+        const vy = p.y - p.py;
+        p.py = p.y + Math.abs(vy) * 0.3;
+        pet.trauma = Math.min(1, pet.trauma + Math.abs(vy) * 0.01);
+      }
+    }
+    // head bounce
+    if (pet.head.y > h - 10) {
+      pet.head.y = h - 10;
+      pet.head.vy *= -0.3;
+      pet.trauma = Math.min(1, pet.trauma + 0.1);
+    }
+
+    // ── Wall bounds ──
+    for (const p of pet.body) {
+      if (p.x < 10) { p.x = 10; p.px = p.x + (p.x - p.px) * 0.5; }
+      if (p.x > w - 10) { p.x = w - 10; p.px = p.x + (p.x - p.px) * 0.5; }
+    }
+    if (pet.head.x < 10) { pet.head.x = 10; pet.head.vx *= -0.5; }
+    if (pet.head.x > w - 10) { pet.head.x = w - 10; pet.head.vx *= -0.5; }
+
+    // ── Blinking ──
+    pet.blinkTimer -= dt;
+    if (pet.blinkTimer <= 0) {
+      if (pet.blinkState === 0) { pet.blinkState = 1; pet.blinkTimer = 0.15; } // closing
+      else if (pet.blinkState === 1) { pet.blinkState = 2; pet.blinkTimer = 3 + Math.random() * 4; } // open
+      else { pet.blinkState = 0; pet.blinkTimer = 0.15; } // closing
+    }
+    if (pet.blinkState === 1) pet.blinkTimer = Math.max(0, pet.blinkTimer);
+
+    // ── Idle wobble ──
+    pet.tailWag = Math.sin(time * 2 + pet.idlePhase) * 3;
+
+    // ── Trauma decay ──
+    pet.trauma *= Math.pow(0.01, dt);
+    if (pet.trauma < 0.001) pet.trauma = 0;
+  }
+
+  // ── Inter-pet collision (gentle, compare heads not body[0]) ──
+  for (let i = 0; i < pets.length; i++) {
+    for (let j = i + 1; j < pets.length; j++) {
+      const a = pets[i], b = pets[j];
+      const ax = a.head.x, ay = a.head.y;
+      const bx = b.head.x, by = b.head.y;
+      const dx = bx - ax, dy = by - ay;
+      const dd = Math.hypot(dx, dy) || 1;
+      const minDist = 50;
+      if (dd < minDist) {
+        const overlap = (minDist - dd) / dd * 0.3;
+        a.head.x -= dx * overlap; a.head.y -= dy * overlap;
+        b.head.x += dx * overlap; b.head.y += dy * overlap;
+      }
+    }
+  }
+
+  updateParticles(dt);
+}
+
+// ── Hand-drawn wobble render ──
+// Re-randomize wobble offsets ~2× per second
+let wobbleSeed = 0;
+let lastWobbleTime = 0;
+
+function getWobbleOffset(x, y, index) {
+  const scale = 0.1;
+  return (noise2(x * scale + wobbleSeed, y * scale + index * 0.7) - 0.5) * 3;
+}
+
+function drawWobblyLine(pts, wobbleFreq) {
+  if (pts.length < 2) return;
+  // Draw each segment twice with slightly different offsets for sketchy look
+  for (let pass = 0; pass < 2; pass++) {
+    const offset = pass * 1.2;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x + getWobbleOffset(pts[0].x, pts[0].y, offset), pts[0].y + getWobbleOffset(pts[0].x, pts[0].y, offset + 100));
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i];
+      ctx.lineTo(p.x + getWobbleOffset(p.x, p.y, offset + i), p.y + getWobbleOffset(p.x, p.y, offset + i + 100));
+    }
+    ctx.stroke();
+  }
+}
+
+function drawPet(pet, time) {
+  const body = pet.body;
+  const head = pet.head;
+
+  // ── Draw body: thick wobbly stroke with gradient ──
+  const bodyPts = [head, ...body];
+  const len = bodyPts.length;
+
+  // Glow layer (additive)
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = rgb(pet.hueT, 0.15);
+  ctx.lineWidth = 20;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  drawWobblyLine(bodyPts, 0.5);
+  ctx.restore();
+
+  // Main body stroke
+  ctx.save();
+  ctx.strokeStyle = rgb(pet.hueT, 0.85);
+  ctx.lineWidth = 14;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  drawWobblyLine(bodyPts, 0.5);
+  ctx.restore();
+
+  // Inner highlight stroke
+  ctx.save();
+  ctx.strokeStyle = rgb(Math.min(1, pet.hueT + 0.1), 0.4);
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  drawWobblyLine(bodyPts, 0.5);
+  ctx.restore();
+
+  // ── Body segments (filled circles for chunky look) ──
+  for (let i = 0; i < body.length; i++) {
+    const p = body[i];
+    const segR = 7 - i * 0.35;
+    // Squash/stretch based on velocity
+    const vx = p.x - p.px;
+    const vy = p.y - p.py;
+    const speed = Math.hypot(vx, vy);
+    const squash = 1 + vy * 0.015;
+    const stretch = 1 / squash;
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.scale(stretch, squash);
+
+    // Segment fill
+    ctx.fillStyle = rgb(pet.hueT + i * 0.02, 0.7);
+    ctx.beginPath();
+    ctx.arc(0, 0, segR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Segment highlight
+    ctx.fillStyle = rgb(pet.hueT + i * 0.02, 0.3);
+    ctx.beginPath();
+    ctx.arc(-segR * 0.2, -segR * 0.3, segR * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // ── Head ──
+  const headR = 12;
+  const hVx = head.x - head.px;
+  const hVy = head.y - head.py;
+  const hSquash = 1 + hVy * 0.02;
+  const hStretch = 1 / hSquash;
+
+  ctx.save();
+  ctx.translate(head.x, head.y);
+  ctx.scale(hStretch, hSquash);
+
+  // Head wobble (idle)
+  const wobbleX = Math.sin(time * 3 + pet.idlePhase) * 2;
+  const wobbleY = Math.cos(time * 2.5 + pet.idlePhase) * 1.5;
+  ctx.translate(wobbleX, wobbleY);
+
+  // Head glow
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const glowGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, headR * 2.5);
+  glowGrad.addColorStop(0, rgb(pet.hueT, 0.2));
+  glowGrad.addColorStop(1, rgb(pet.hueT, 0));
+  ctx.fillStyle = glowGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, headR * 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Head fill
+  ctx.fillStyle = rgb(pet.hueT, 0.9);
+  ctx.beginPath();
+  ctx.arc(0, 0, headR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Head highlight
+  ctx.fillStyle = rgb(pet.hueT, 0.35);
+  ctx.beginPath();
+  ctx.arc(-3, -4, headR * 0.45, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── Eyes ──
+  const eyeSpacing = 5;
+  const eyeY = -2;
+  const eyeR = 4.5;
+  const pupilR = 2.2;
+
+  // Blink
+  const isBlinking = pet.blinkState === 1 || pet.blinkState === 2;
+  const blinkScale = isBlinking ? Math.max(0.05, pet.blinkTimer / 0.15) : 1;
+
+  for (let side = -1; side <= 1; side += 2) {
+    const ex = side * eyeSpacing;
+    const ey = eyeY;
+
+    // Eye white
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(ex, ey, eyeR, eyeR * blinkScale, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (blinkScale > 0.3) {
+      // Pupil: tracks mouse
+      const dx = mouse.x - (head.x + ex);
+      const dy = mouse.y - (head.y + ey);
+      const d = Math.hypot(dx, dy) || 1;
+      const pupilDist = Math.min(2, d * 0.02);
+      const px = ex + (dx / d) * pupilDist;
+      const py = ey + (dy / d) * pupilDist;
+
+      ctx.fillStyle = '#1a1a2e';
+      ctx.beginPath();
+      ctx.arc(px, py, pupilR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Pupil highlight
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.beginPath();
+      ctx.arc(px + 0.8, py - 0.8, pupilR * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ── Tiny mouth (happy curve) ──
+  if (blinkScale > 0.3) {
+    ctx.strokeStyle = 'rgba(30,30,50,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-3, 5);
+    ctx.quadraticCurveTo(0, 7 + (hVy > 20 ? 2 : 0), 3, 5);
+    ctx.stroke();
+  }
+
+  // ── Cheek blush ──
+  ctx.fillStyle = 'rgba(255,150,150,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(-7, 3, 3, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(7, 3, 3, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+
+  // ── Spikes/hair on top (wobbly) ──
+  ctx.save();
+  ctx.strokeStyle = rgb(pet.hueT, 0.6);
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 5; i++) {
+    const angle = -Math.PI * 0.8 + (i / 4) * Math.PI * 0.6 + Math.sin(time * 2 + i) * 0.15;
+    const sx = head.x + Math.cos(angle) * (headR + 2);
+    const sy = head.y + Math.sin(angle) * (headR + 2);
+    const ex2 = head.x + Math.cos(angle) * (headR + 10 + Math.sin(time * 3 + i * 2) * 3);
+    const ey2 = head.y + Math.sin(angle) * (headR + 10 + Math.cos(time * 2.5 + i * 2) * 3);
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(ex2 + getWobbleOffset(ex2, ey2, 500 + i), ey2 + getWobbleOffset(ex2, ey2, 600 + i));
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ── Ambient particles ──
+let ambientParticles = [];
+function initAmbient() {
+  ambientParticles = [];
+  for (let i = 0; i < 15; i++) {
+    ambientParticles.push({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 10,
+      vy: (Math.random() - 0.5) * 10,
+      size: 1 + Math.random() * 2,
+      hue: Math.random(),
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
+}
+
+function updateAmbient(dt, time) {
+  for (const p of ambientParticles) {
+    p.x += p.vx * dt + Math.sin(time + p.phase) * 5 * dt;
+    p.y += p.vy * dt + Math.cos(time * 0.7 + p.phase) * 3 * dt;
+    if (p.x < -20) p.x = w + 20;
+    if (p.x > w + 20) p.x = -20;
+    if (p.y < -20) p.y = h + 20;
+    if (p.y > h + 20) p.y = -20;
+  }
+}
+
+function drawAmbient(time) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of ambientParticles) {
+    const pulse = 0.7 + 0.3 * Math.sin(time * 2 + p.phase);
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 20 * pulse);
+    g.addColorStop(0, rgb(p.hue, 0.15 * pulse));
+    g.addColorStop(1, rgb(p.hue, 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(p.x - p.size * 20, p.y - p.size * 20, p.size * 40, p.size * 40);
+  }
+  ctx.restore();
+}
+
+// ── Trail particles (spawned on fast movement) ──
+function spawnTrailParticles(time) {
+  for (const pet of pets) {
+    const tail = pet.body[pet.body.length - 1];
+    const vx = tail.x - tail.px;
+    const vy = tail.y - tail.py;
+    const speed = Math.hypot(vx, vy);
+    if (speed > 100 && Math.random() < 0.3) {
+      spawnParticles(tail.x, tail.y, 1, pet.hueT, 30);
+    }
+    // Head particles when moving
+    const hvx = pet.head.x - pet.head.px;
+    const hvy = pet.head.y - pet.head.py;
+    if (Math.hypot(hvx, hvy) > 80 && Math.random() < 0.2) {
+      spawnParticles(pet.head.x, pet.head.y, 1, pet.hueT + 0.1, 20);
+    }
+  }
+}
+
+// ── Screenshake ──
+let shakeX = 0, shakeY = 0;
+
+function applyShake() {
+  let maxTrauma = 0;
+  for (const pet of pets) maxTrauma = Math.max(maxTrauma, pet.trauma);
+  const intensity = maxTrauma * maxTrauma * 4;
+  shakeX = (Math.random() - 0.5) * intensity;
+  shakeY = (Math.random() - 0.5) * intensity;
+}
+
+// ── Draw ──
+function draw(alpha) {
+  const time = performance.now() * 0.001;
+
+  // Update wobble seed ~2× per second
+  if (time - lastWobbleTime > 0.5) {
+    wobbleSeed += 1;
+    lastWobbleTime = time;
+  }
+
+  applyShake();
+
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
+  // Background
+  ctx.globalCompositeOperation = 'source-over';
+  const bgGrad = ctx.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.7);
+  bgGrad.addColorStop(0, '#12101c');
+  bgGrad.addColorStop(1, '#0a0812');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(-10, -10, w + 20, h + 20);
+
+  // Ambient particles
+  drawAmbient(time);
+
+  // Pets
+  for (const pet of pets) {
+    drawPet(pet, time);
+  }
+
+  // Trail particles
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < pPool.count; i++) {
+    ctx.globalAlpha = pPool.life[i] * 0.6;
+    ctx.fillStyle = rgb(pPool.color[i]);
+    ctx.beginPath();
+    ctx.arc(pPool.x[i], pPool.y[i], pPool.size[i] * pPool.life[i], 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // ── Floor ──
+  ctx.strokeStyle = 'rgba(100,80,140,0.3)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, h - 20);
+  ctx.lineTo(w, h - 20);
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ── Main loop ──
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) {
+    const time = performance.now() * 0.001;
+    update(DT);
+    spawnTrailParticles(time);
+    updateAmbient(DT, time);
+    acc -= DT;
+  }
+  draw(acc / DT);
+  requestAnimationFrame(frame);
+}
+
+initAmbient();
+reset();
+requestAnimationFrame(frame);
+
+</script>
+</body>
+</html>

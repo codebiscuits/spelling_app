@@ -1,0 +1,1473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Splash Bath v2</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { overflow: hidden; background: #0a0e1a; height: 100%; }
+  body { cursor: crosshair; }
+  canvas { display: block; position: absolute; top: 0; left: 0; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; color: #c0d4e8; font-size: 13px;
+    pointer-events: none; z-index: 10; background: rgba(10,14,26,0.72);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px; backdrop-filter: blur(10px); line-height: 1.7;
+    min-width: 230px; font-family: 'Segoe UI', system-ui, sans-serif;
+    /* Easing pop-in (§5) */
+    animation: uiPopIn 0.5s ease-out;
+  }
+  @keyframes uiPopIn {
+    0% { transform: scale(0.7); opacity: 0; }
+    60% { transform: scale(1.05); }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  #ui h3 { color: #fff; margin-bottom: 6px; font-size: 14px; letter-spacing: 0.5px; }
+  #ui .param { display: flex; justify-content: space-between; gap: 14px; }
+  #ui .key { color: #7a94aa; }
+  #ui .val { color: #7fd8ff; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #ui .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 6px 0; }
+  #soundBtn {
+    position: fixed; top: 16px; right: 16px; z-index: 10;
+    padding: 8px 16px; font-size: 13px; font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #c0d4e8; background: rgba(10,14,26,0.72); border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px); pointer-events: auto;
+    /* Easing pop-in (§5) */
+    animation: btnPopIn 0.5s easeOutBack;
+  }
+  @keyframes btnPopIn {
+    0% { transform: scale(0.7); opacity: 0; }
+    60% { transform: scale(1.08); }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  #soundBtn:hover { background: rgba(30,50,80,0.85); color: #fff; }
+  #resetBtn {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    z-index: 10; padding: 10px 28px; font-size: 14px;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #c0d4e8; background: rgba(10,14,26,0.80); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn:hover { background: rgba(30,55,90,0.90); color: #fff; border-color: rgba(255,255,255,0.25); }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<canvas id="bg"></canvas>
+<div id="ui">
+  <h3>&#x1F6C6; Splash Bath v2</h3>
+  <div class="param"><span class="key">Move</span><span class="val">Stir water</span></div>
+  <div class="param"><span class="key">Left hold</span><span class="val">Pour water</span></div>
+  <div class="param"><span class="key">Right hold</span><span class="val">Drain plug</span></div>
+  <div class="param"><span class="key">Scroll</span><span class="val">Brush size</span></div>
+  <div class="param"><span class="key">Space</span><span class="val">Shake tub</span></div>
+  <div class="divider"></div>
+  <div class="param"><span class="key">Brush</span><span class="val" id="brushVal">55</span></div>
+  <div class="param"><span class="key">Water</span><span class="val" id="countVal">0 / 2800</span></div>
+  <div class="param"><span class="key">Duck</span><span class="val" id="duckVal">0.0</span></div>
+</div>
+<button id="soundBtn">&#x1F507; Sound Off</button>
+<button id="resetBtn">&#x21BA; Reset bath</button>
+<script>
+(function () {
+  "use strict";
+
+  // === Reduced motion ===
+  const REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // === Canvas setup (DPR-aware, §2.2) ===
+  const canvas = document.getElementById('scene');
+  const ctx = canvas.getContext('2d');
+  const bgCanvas = document.getElementById('bg');
+  const bgCtx = bgCanvas.getContext('2d');
+
+  // Goo render at half resolution (§4.3, §4.6)
+  const GOO_DOWN = 2;
+  const goo = document.createElement('canvas');
+  const gctx = goo.getContext('2d');
+  const goo2 = document.createElement('canvas');
+  const g2ctx = goo2.getContext('2d');
+
+  // Trail canvas (§4.2): fade-to-transparent using destination-out
+  const trailCanvas = document.createElement('canvas');
+  const tCtx = trailCanvas.getContext('2d');
+
+  let w = 0, h = 0, dpr = 1;
+  let segments = [];
+  let tapPos = { x: 0, y: 0 };
+  let tapDefaultX = 0, tapDefaultY = 0;
+  let pourStreamX = 0, pourStreamY = 0;
+
+  function fitCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bgCanvas.width = Math.round(w * dpr); bgCanvas.height = Math.round(h * dpr);
+    bgCanvas.style.width = w + 'px'; bgCanvas.style.height = h + 'px';
+    bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    goo.width = Math.ceil(w / GOO_DOWN); goo.height = Math.ceil(h / GOO_DOWN);
+    gctx.setTransform(1 / GOO_DOWN, 0, 0, 1 / GOO_DOWN, 0, 0);
+    goo2.width = goo.width; goo2.height = goo.height;
+    bloomCanvas.width = Math.ceil(w / 2); bloomCanvas.height = Math.ceil(h / 2);
+    trailCanvas.width = w; trailCanvas.height = h;
+    buildGeometry();
+    initGrid();
+    prefill();
+  }
+
+  // === Geometry helpers ===
+  function seg(x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy || 1;
+    const invLen = 1 / Math.sqrt(len2);
+    return { x1, y1, x2, y2, dx, dy, len2, invLen };
+  }
+
+  function buildGeometry() {
+    const tubL = w * 0.10, tubR = w * 0.55, tubBot = h * 0.82, tubLip = h * 0.28;
+    const basinL = w * 0.62, basinR = w * 0.92, basinBot = h * 0.90, basinTop = h * 0.55;
+    segments = [
+      seg(tubL, tubLip, tubL, tubBot),
+      seg(tubL, tubBot, tubR, tubBot),
+      seg(tubR, tubBot, tubR, tubLip + (tubBot - tubLip) * 0.45),
+      seg(basinL, basinTop, basinL, basinBot),
+      seg(basinL, basinBot, basinR, basinBot),
+      seg(basinR, basinBot, basinR, basinTop * 0.90),
+      seg(tubL + (tubR - tubL) * 0.15, h * 0.58, tubL + (tubR - tubL) * 0.45, h * 0.575),
+      seg(tubL + (tubR - tubL) * 0.55, h * 0.68, tubL + (tubR - tubL) * 0.80, h * 0.685),
+      seg(0, h * 0.965, w, h * 0.965),
+    ];
+    tapDefaultX = tubL + (tubR - tubL) * 0.5;
+    tapDefaultY = tubLip - h * 0.055;
+    tapPos.x = tapDefaultX;
+    tapPos.y = tapDefaultY;
+    pourStreamX = tapDefaultX;
+    pourStreamY = tapDefaultY;
+  }
+
+  window.addEventListener('resize', fitCanvas);
+
+  // === Clavet SPH Particle Fluid (§3.5b) ===
+  const MAX = 2800;
+  const H = 18, H2 = H * H;
+  const REST_DENSITY = 4.0;
+  const STIFFNESS = 0.55, NEAR_STIFFNESS = 1.1;
+  const VISC_SIGMA = 0.04;
+  const GRAVITY = 1200;
+  const WALL_MARGIN = 5.5;
+  const MAX_DISP = H * 0.6;
+  const SPLASH_SPEED2 = 550 * 550;
+  const DAMP = 0.9995;
+
+  const px = new Float32Array(MAX), py = new Float32Array(MAX);
+  const oldx = new Float32Array(MAX), oldy = new Float32Array(MAX);
+  const vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+  const rho = new Float32Array(MAX), rhoNear = new Float32Array(MAX);
+  const pres = new Float32Array(MAX), presNear = new Float32Array(MAX);
+  const collided = new Uint8Array(MAX);
+  let count = 0;
+
+  // Spatial hash (counting sort, zero-alloc)
+  let cellSize = H, gridCols = 1, gridRows = 1, numCells = 1;
+  let cellStart, cellCount, fillCursor, particleCell, sortedIdx;
+
+  function initGrid() {
+    gridCols = Math.max(1, Math.ceil(w / cellSize));
+    gridRows = Math.max(1, Math.ceil(h / cellSize));
+    numCells = gridCols * gridRows;
+    cellStart = new Int32Array(numCells + 1);
+    cellCount = new Int32Array(numCells);
+    fillCursor = new Int32Array(numCells);
+  }
+
+  function cellIdx(x, y) {
+    let cx = (x / cellSize) | 0, cy = (y / cellSize) | 0;
+    if (cx < 0) cx = 0; else if (cx >= gridCols) cx = gridCols - 1;
+    if (cy < 0) cy = 0; else if (cy >= gridRows) cy = gridRows - 1;
+    return cy * gridCols + cx;
+  }
+
+  function buildGrid(n) {
+    cellCount.fill(0);
+    for (let i = 0; i < n; i++) {
+      const c = cellIdx(px[i], py[i]);
+      particleCell[i] = c;
+      cellCount[c]++;
+    }
+    cellStart[0] = 0;
+    for (let c = 0; c < numCells; c++) cellStart[c + 1] = cellStart[c] + cellCount[c];
+    fillCursor.set(cellStart.subarray(0, numCells));
+    for (let i = 0; i < n; i++) {
+      const c = particleCell[i];
+      sortedIdx[fillCursor[c]++] = i;
+    }
+  }
+
+  function computeDensities(n) {
+    rho.fill(1, 0, n);
+    rhoNear.fill(1, 0, n);
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i];
+      const cx = (xi / cellSize) | 0, cy = (yi / cellSize) | 0;
+      const gx0 = Math.max(0, cx - 1), gx1 = Math.min(gridCols - 1, cx + 1);
+      const gy0 = Math.max(0, cy - 1), gy1 = Math.min(gridRows - 1, cy + 1);
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const rowBase = gy * gridCols;
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const c = rowBase + gx, end = cellStart[c + 1];
+          for (let k = cellStart[c]; k < end; k++) {
+            const j = sortedIdx[k]; if (j <= i) continue;
+            const dx = px[j] - xi, dy = py[j] - yi;
+            const r2 = dx * dx + dy * dy;
+            if (r2 >= H2 || r2 <= 1e-9) continue;
+            const q = 1 - Math.sqrt(r2) / H;
+            const d = q * q, dn = d * q;
+            rho[i] += d; rho[j] += d;
+            rhoNear[i] += dn; rhoNear[j] += dn;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      pres[i] = STIFFNESS * (rho[i] - REST_DENSITY);
+      presNear[i] = NEAR_STIFFNESS * rhoNear[i];
+    }
+  }
+
+  function applyRelaxation(n) {
+    for (let i = 0; i < n; i++) {
+      const cx = (px[i] / cellSize) | 0, cy = (py[i] / cellSize) | 0;
+      const gx0 = Math.max(0, cx - 1), gx1 = Math.min(gridCols - 1, cx + 1);
+      const gy0 = Math.max(0, cy - 1), gy1 = Math.min(gridRows - 1, cy + 1);
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const rowBase = gy * gridCols;
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const c = rowBase + gx, end = cellStart[c + 1];
+          for (let k = cellStart[c]; k < end; k++) {
+            const j = sortedIdx[k]; if (j <= i) continue;
+            const dx = px[j] - px[i], dy = py[j] - py[i];
+            const r2 = dx * dx + dy * dy;
+            if (r2 >= H2 || r2 <= 1e-9) continue;
+            const r = Math.sqrt(r2), q = 1 - r / H;
+            const mag = (pres[i] + pres[j]) * q + (presNear[i] + presNear[j]) * q * q;
+            let dmag = mag * 0.5;
+            if (dmag > MAX_DISP) dmag = MAX_DISP;
+            else if (dmag < -MAX_DISP) dmag = -MAX_DISP;
+            const nx = dx / r, ny = dy / r;
+            px[i] -= nx * dmag; py[i] -= ny * dmag;
+            px[j] += nx * dmag; py[j] += ny * dmag;
+          }
+        }
+      }
+    }
+  }
+
+  function applyViscosity(n, dt) {
+    if (n === 0) return;
+    buildGrid(n);
+    const k0 = dt * VISC_SIGMA * 0.5;
+    for (let i = 0; i < n; i++) {
+      const xi = px[i], yi = py[i];
+      const cx = (xi / cellSize) | 0, cy = (yi / cellSize) | 0;
+      const gx0 = Math.max(0, cx - 1), gx1 = Math.min(gridCols - 1, cx + 1);
+      const gy0 = Math.max(0, cy - 1), gy1 = Math.min(gridRows - 1, cy + 1);
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const rowBase = gy * gridCols;
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const c = rowBase + gx, end = cellStart[c + 1];
+          for (let k = cellStart[c]; k < end; k++) {
+            const j = sortedIdx[k]; if (j <= i) continue;
+            const dx = px[j] - xi, dy = py[j] - yi;
+            const r2 = dx * dx + dy * dy;
+            if (r2 >= H2 || r2 <= 1e-9) continue;
+            const r = Math.sqrt(r2);
+            const nx = dx / r, ny = dy / r;
+            const u = (vx[i] - vx[j]) * nx + (vy[i] - vy[j]) * ny;
+            if (u > 0) {
+              const imp = k0 * (1 - r / H) * u;
+              vx[i] -= nx * imp; vy[i] -= ny * imp;
+              vx[j] += nx * imp; vy[j] += ny * imp;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function resolveCollisions(n, dt) {
+    collided.fill(0, 0, n);
+    const invDt = 1 / dt;
+    let maxImpactSpeed = 0;
+    for (let i = 0; i < n; i++) {
+      for (let s = 0; s < segments.length; s++) {
+        const sg = segments[s];
+        const ox = oldx[i], oy = oldy[i];
+        const rx = px[i] - ox, ry = py[i] - oy;
+        const sideOld = sg.dx * (oy - sg.y1) - sg.dy * (ox - sg.x1);
+        const sign = sideOld >= 0 ? sg.invLen : -sg.invLen;
+        const nx = -sg.dy * sign, ny = sg.dx * sign;
+        let handled = false;
+
+        const denom = rx * sg.dy - ry * sg.dx;
+        if (denom !== 0) {
+          const ex = sg.x1 - ox, ey = sg.y1 - oy;
+          const tPath = (ex * sg.dy - ey * sg.dx) / denom;
+          const tSeg = (ex * ry - ey * rx) / denom;
+          if (tPath >= 0 && tPath <= 1 && tSeg >= 0 && tSeg <= 1) {
+            const vn = rx * nx + ry * ny;
+            const tx = rx - vn * nx, ty = ry - vn * ny;
+            px[i] = ox + rx * tPath + nx * WALL_MARGIN;
+            py[i] = oy + ry * tPath + ny * WALL_MARGIN;
+            oldx[i] = px[i] - (tx * 0.6 - vn * nx * 0.15);
+            oldy[i] = py[i] - (ty * 0.6 - vn * ny * 0.15);
+            handled = true;
+            const speed = Math.abs(vn) * invDt;
+            if (speed > maxImpactSpeed) maxImpactSpeed = speed;
+            if (!collided[i] && speed * speed > SPLASH_SPEED2) {
+              collided[i] = 1;
+              spawnSplash(px[i], py[i], speed);
+            }
+          }
+        }
+
+        if (!handled) {
+          let tt = ((px[i] - sg.x1) * sg.dx + (py[i] - sg.y1) * sg.dy) / sg.len2;
+          if (tt < 0) tt = 0; else if (tt > 1) tt = 1;
+          const ddx = px[i] - (sg.x1 + sg.dx * tt), ddy = py[i] - (sg.y1 + sg.dy * tt);
+          const d2 = ddx * ddx + ddy * ddy;
+          if (d2 < WALL_MARGIN * WALL_MARGIN) {
+            const d = Math.sqrt(d2) || 0.0001;
+            let pnx = ddx / d, pny = ddy / d;
+            if (pnx * nx + pny * ny < 0) { pnx = nx; pny = ny; }
+            const push = WALL_MARGIN - d;
+            px[i] += pnx * push; py[i] += pny * push;
+            oldx[i] += pnx * push * 0.65; oldy[i] += pny * push * 0.65;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      if (px[i] < 2) { px[i] = 2; oldx[i] = px[i]; }
+      else if (px[i] > w - 2) { px[i] = w - 2; oldx[i] = px[i]; }
+      if (py[i] < 2) { py[i] = 2; oldy[i] = py[i]; }
+      else if (py[i] > h - 2) { py[i] = h - 2; oldy[i] = py[i]; }
+    }
+    // Feed max impact speed to hit-stop (§5)
+    if (maxImpactSpeed > 100) {
+      hitStopQueue = Math.min(0.08, hitStopQueue + maxImpactSpeed * 0.00002);
+    }
+  }
+
+  // === Hit-stop (§5): freeze sim on big impacts ===
+  let hitStopQueue = 0;
+  let hitStopTimer = 0;
+  const HIT_STOP_DURATION = 0.06; // 60 ms freeze window
+
+  function updateHitStop(dt) {
+    if (hitStopQueue > 0) {
+      hitStopTimer += dt;
+      if (hitStopTimer >= HIT_STOP_DURATION) {
+        hitStopQueue = 0;
+        hitStopTimer = 0;
+      }
+      return true; // frozen
+    }
+    return false;
+  }
+
+  function simulate(dt) {
+    const n = count;
+    if (n === 0) return;
+    for (let i = 0; i < n; i++) vy[i] += GRAVITY * dt;
+
+    applyPalmForce(n, dt);
+    if (draining) applyDrainForce(n, dt);
+
+    applyViscosity(n, dt);
+
+    for (let i = 0; i < n; i++) {
+      oldx[i] = px[i]; oldy[i] = py[i];
+      px[i] += vx[i] * dt; py[i] += vy[i] * dt;
+    }
+
+    buildGrid(n);
+    computeDensities(n);
+    applyRelaxation(n);
+    resolveCollisions(n, dt);
+
+    const invDt = 1 / dt;
+    const MAX_SPEED = 1400, MAX_SPEED2 = MAX_SPEED * MAX_SPEED;
+    for (let i = 0; i < n; i++) {
+      vx[i] = (px[i] - oldx[i]) * invDt * DAMP;
+      vy[i] = (py[i] - oldy[i]) * invDt * DAMP;
+      const sp2 = vx[i] * vx[i] + vy[i] * vy[i];
+      if (sp2 > MAX_SPEED2) {
+        const k = MAX_SPEED / Math.sqrt(sp2);
+        vx[i] *= k; vy[i] *= k;
+      }
+    }
+
+    const drainY = h * 0.955;
+    for (let i = count - 1; i >= 0; i--) {
+      if (py[i] > drainY && Math.random() < 0.05) {
+        spawnBubble(px[i], py[i]);
+        removeParticle(i);
+      }
+    }
+  }
+
+  function prefill() {
+    count = 0;
+    const left = w * 0.10 + 12, right = w * 0.55 - 12;
+    const bottom = h * 0.82 - WALL_MARGIN - 3, top = h * 0.68;
+    const sp = 11;
+    for (let y = bottom; y > top && count < MAX; y -= sp) {
+      for (let x = left; x < right && count < MAX; x += sp) {
+        const i = count++;
+        px[i] = x + (Math.random() - 0.5) * 2;
+        py[i] = y + (Math.random() - 0.5) * 2;
+        oldx[i] = px[i]; oldy[i] = py[i];
+        vx[i] = 0; vy[i] = 0;
+        rho[i] = REST_DENSITY; rhoNear[i] = 0;
+      }
+    }
+  }
+
+  function removeParticle(i) {
+    const last = count - 1;
+    px[i] = px[last]; py[i] = py[last];
+    oldx[i] = oldx[last]; oldy[i] = oldy[last];
+    vx[i] = vx[last]; vy[i] = vy[last];
+    rho[i] = rho[last]; rhoNear[i] = rhoNear[last];
+    count--;
+  }
+
+  function spawnWater(x, y) {
+    if (count >= MAX) return;
+    const i = count++;
+    px[i] = x + (Math.random() - 0.5) * 10;
+    py[i] = y + (Math.random() - 0.5) * 6;
+    oldx[i] = px[i]; oldy[i] = py[i];
+    vx[i] = (Math.random() - 0.5) * 50;
+    vy[i] = 30 + Math.random() * 60;
+    rho[i] = REST_DENSITY; rhoNear[i] = 0;
+  }
+
+  // === Mouse input (§2.3) ===
+  const mouse = { x: 0, y: 0, px: 0, py: 0, vx: 0, vy: 0, inside: false };
+  let pouring = false, draining = false;
+  let brushRadius = 55;
+  const BRUSH_MIN = 22, BRUSH_MAX = 150;
+  let pourAccum = 0;
+  let spaceHeld = false;
+
+  canvas.addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.inside = true;
+  });
+  canvas.addEventListener('mouseleave', () => { mouse.inside = false; });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('mousedown', e => {
+    ensureAudio();
+    if (e.button === 0) {
+      pouring = true;
+      // Particles on pour-start event (§5)
+      spawnPourStartFX(tapPos.x, tapPos.y);
+    }
+    if (e.button === 2) draining = true;
+  });
+  window.addEventListener('mouseup', e => {
+    if (e.button === 0) pouring = false;
+    if (e.button === 2) draining = false;
+  });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    brushRadius = Math.max(BRUSH_MIN, Math.min(BRUSH_MAX, brushRadius - Math.sign(e.deltaY) * 6));
+  }, { passive: false });
+  window.addEventListener('keydown', e => {
+    if (e.key === 'm' || e.key === 'M') toggleSound();
+    if (e.code === 'Space') { spaceHeld = true; e.preventDefault(); }
+  });
+  window.addEventListener('keyup', e => {
+    if (e.code === 'Space') spaceHeld = false;
+  });
+
+  function applyPalmForce(n, dt) {
+    if (!mouse.inside) return;
+    const r = brushRadius, r2 = r * r;
+    const speed = Math.min(900, Math.hypot(mouse.vx, mouse.vy));
+    const strength = (60 + speed * 0.9) * dt;
+    for (let i = 0; i < n; i++) {
+      const dx = px[i] - mouse.x, dy = py[i] - mouse.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < r2 && d2 > 1e-6) {
+        const d = Math.sqrt(d2), falloff = 1 - d / r;
+        const nx = dx / d, ny = dy / d;
+        vx[i] += nx * falloff * strength;
+        vy[i] += ny * falloff * strength;
+        vx[i] += mouse.vx * falloff * 0.06;
+        vy[i] += mouse.vy * falloff * 0.06;
+      }
+    }
+  }
+
+  function applyDrainForce(n, dt) {
+    const r = brushRadius, r2 = r * r;
+    const pull = 1400 * dt;
+    for (let i = n - 1; i >= 0; i--) {
+      const dx = mouse.x - px[i], dy = mouse.y - py[i];
+      const d2 = dx * dx + dy * dy;
+      if (d2 < r2) {
+        const d = Math.sqrt(d2) || 0.0001;
+        const nx = dx / d, ny = dy / d;
+        const falloff = 1 - d / r;
+        vx[i] += nx * falloff * pull;
+        vy[i] += ny * falloff * pull;
+        if (d < 9) {
+          spawnBubble(px[i], py[i]);
+          removeParticle(i);
+        }
+      }
+    }
+  }
+
+  // === Juice: particles (§5) ===
+  const MAX_PFX = 500; // Increased for more FX
+  const pfxX = new Float32Array(MAX_PFX), pfxY = new Float32Array(MAX_PFX);
+  const pfxVx = new Float32Array(MAX_PFX), pfxVy = new Float32Array(MAX_PFX);
+  const pfxLife = new Float32Array(MAX_PFX), pfxMaxLife = new Float32Array(MAX_PFX);
+  const pfxBubble = new Uint8Array(MAX_PFX);
+  const pfxSqueeze = new Float32Array(MAX_PFX); // squash/stretch per particle (§5)
+  const pfxType = new Uint8Array(MAX_PFX); // 0=splash, 1=bubble, 2=pour-start, 3=drain
+  let pfxCount = 0, pfxCursor = 0;
+
+  function spawnFx(x, y, vx0, vy0, life, bubble, squeeze, type) {
+    const i = pfxCursor;
+    pfxCursor = (pfxCursor + 1) % MAX_PFX;
+    if (pfxCount < MAX_PFX) pfxCount++;
+    pfxX[i] = x; pfxY[i] = y; pfxVx[i] = vx0; pfxVy[i] = vy0;
+    pfxLife[i] = life; pfxMaxLife[i] = life;
+    pfxBubble[i] = bubble ? 1 : 0;
+    pfxSqueeze[i] = squeeze || 1;
+    pfxType[i] = type || 0;
+  }
+
+  function spawnSplash(x, y, speed) {
+    const n = Math.min(18, 5 + (speed / 140) | 0);
+    for (let k = 0; k < n; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 60 + Math.random() * speed * 0.5;
+      // Squash/stretch on splash droplets (§5) — scale by velocity
+      const sq = 1 + Math.min(1, speed / 800);
+      spawnFx(x, y, Math.cos(a) * s, Math.sin(a) * s - 80, 0.35 + Math.random() * 0.3, false, sq, 0);
+    }
+    playSplash(speed);
+  }
+
+  function spawnBubble(x, y) {
+    spawnFx(x, y, (Math.random() - 0.5) * 20, -40 - Math.random() * 30, 0.4, true, 1, 1);
+  }
+
+  // Pour-start particles (§5)
+  function spawnPourStartFX(x, y) {
+    for (let k = 0; k < 12; k++) {
+      const a = Math.PI * 0.2 + Math.random() * Math.PI * 0.6; // downward arc
+      const s = 40 + Math.random() * 60;
+      spawnFx(x + (Math.random() - 0.5) * 10, y, Math.cos(a) * s, Math.sin(a) * s, 0.5 + Math.random() * 0.3, false, 1, 2);
+    }
+    playPourStart();
+  }
+
+  // Drain particles (§5)
+  function spawnDrainFX(x, y) {
+    for (let k = 0; k < 6; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const s = 20 + Math.random() * 30;
+      spawnFx(x, y, Math.cos(a) * s, Math.sin(a) * s, 0.3 + Math.random() * 0.2, false, 1, 3);
+    }
+  }
+
+  function updateFx(dt) {
+    for (let i = 0; i < MAX_PFX; i++) {
+      if (pfxLife[i] <= 0) continue;
+      pfxLife[i] -= dt;
+      pfxVy[i] += (pfxBubble[i] ? -200 : GRAVITY) * dt;
+      pfxX[i] += pfxVx[i] * dt; pfxY[i] += pfxVy[i] * dt;
+    }
+  }
+
+  // === Camera trauma (§5) ===
+  let trauma = 0;
+  function addTrauma(v) { trauma = Math.min(1, trauma + v); }
+
+  // === Sound (§5) — ZzFX by Keith Clark & LuckyRyū (public domain) ===
+  // ZzFXM (music) and ZzFX (sound effects) — minimal inline synth
+  let audioCtx = null, soundOn = false;
+  function ensureAudio() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    }
+  }
+
+  // ZzFX micro sound synth — ~1KB public domain
+  // Parameters: volume, pitch, pitchSlide, duration, variation, noiseMix, attack, decay, sustain, sustainPct, release, shape, shapeCurve, slideTo, freqStart, freqEnd, repeatTime, pitchJump, pitchJumpTime, repeatFade, squareDuty, dutySlide
+  function zzfx(vol, pitch, pitchSlide, duration, variation, noiseMix, attack, decay, sustain, sustainPct, release, shape, shapeCurve, slideTo, freqStart, freqEnd, repeatTime, pitchJump, pitchJumpTime, repeatFade, squareDuty, dutySlide) {
+    if (!audioCtx || !soundOn) return;
+    vol = vol || 0; pitch = pitch || 0;
+    const sampleRate = audioCtx.sampleRate;
+    const length = sampleRate * (duration || 0.1);
+    const buffer = audioCtx.createBuffer(1, Math.ceil(length), sampleRate);
+    const data = buffer.getChannelData(0);
+    let n = 0;
+    const pitchEnd = pitch + (pitchSlide || 0) * duration;
+    const freqStart2 = freqStart || 0, freqEnd2 = freqEnd || 0;
+    for (let i = 0; i < length; i++) {
+      const t = i / sampleRate;
+      const p = pitch + pitchSlide * t;
+      const freq = Math.pow(2, p / 12) * 110;
+      const freqEnv = freqStart2 + (freqEnd2 - freqStart2) * (i / length);
+      const env = i < attack ? i / attack : i < attack + decay ? 1 - (i - attack) / decay :
+                  i < attack + decay + sustain * duration ? 1 - (i - attack - decay) / (sustain * duration) * (1 - sustainPct) :
+                  sustainPct + (1 - sustainPct) * Math.max(0, 1 - (i - attack - decay - sustain * duration) / (release * duration));
+      const phase = 2 * Math.PI * (freq * t + pitch * t * t / 2);
+      let sample = 0;
+      if (shape === 0) sample = Math.sin(phase);
+      else if (shape === 1) sample = Math.sin(phase) * (1 - 2 * (Math.floor(phase / Math.PI) % 2));
+      else if (shape === 2) sample = 1 - 2 * (2 * Math.abs(Math.round(phase / (2 * Math.PI)) - phase / (2 * Math.PI)));
+      else if (shape === 3) sample = Math.sin(phase) * 0.5 + Math.sin(phase * 2.5) * 0.25;
+      sample *= env * vol;
+      if (noiseMix) sample += (Math.random() * 2 - 1) * noiseMix * env * vol;
+      data[i] = sample;
+    }
+    const source = audioCtx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioCtx.destination);
+    source.start();
+  }
+
+  // ZzFX-inspired sound functions for splash bath
+  function playSplash(speed) {
+    if (!soundOn || !audioCtx) return;
+    const vol = Math.min(0.25, speed / 5000);
+    const note = [0, 2, 4, 7, 9][(speed | 0) % 5];
+    const freq = 220 * Math.pow(2, note / 12);
+    // Water splash: sine with quick decay, pitch slides down
+    zzfx(vol, Math.log2(freq / 110) * 12, -8, 0.2, 0.3, 0.1, 0.005, 0.05, 0, 0.3, 0.15, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  }
+
+  function playPourStart() {
+    if (!soundOn || !audioCtx) return;
+    // Gentle chime for pour start
+    zzfx(0.12, 4, 0, 0.3, 0, 0, 0.01, 0.08, 0, 0.5, 0.2, 2, 0.5, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  }
+
+  function playDrain() {
+    if (!soundOn || !audioCtx) return;
+    // Low burble
+    zzfx(0.08, -3, 2, 0.25, 0.5, 0.15, 0.01, 0.06, 0, 0.4, 0.18, 3, 0.8, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  }
+
+  function playHitStop() {
+    if (!soundOn || !audioCtx) return;
+    // Sharp impact thud
+    zzfx(0.15, -5, 3, 0.08, 0, 0.2, 0.002, 0.02, 0, 0.2, 0.06, 0, 1.5, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+  }
+
+  function toggleSound() {
+    soundOn = !soundOn;
+    document.getElementById('soundBtn').textContent = soundOn ? '&#x1F508; Sound On' : '&#x1F507; Sound Off';
+    if (soundOn) ensureAudio();
+  }
+  document.getElementById('soundBtn').addEventListener('click', toggleSound);
+
+  // === Cosine Palette (§4.1a, Iñigo Quilez) ===
+  const PAL_A = [.5,.5,.5], PAL_B = [.35,.30,.25], PAL_C = [1,.85,.7], PAL_D = [0,.15,.20];
+  function cosinePalette(t) {
+    t = ((t % 1) + 1) % 1;
+    return [0, 1, 2].map(i => {
+      const v = PAL_A[i] + PAL_B[i] * Math.cos(6.28318 * (PAL_C[i] * t + PAL_D[i]));
+      return Math.max(0, Math.min(1, v));
+    });
+  }
+  function rgbStr(r, g, b, a) {
+    if (a !== undefined) return `rgba(${(r*255)|0},${(g*255)|0},${(b*255)|0},${a.toFixed(3)})`;
+    return `rgb(${(r*255)|0},${(g*255)|0},${(b*255)|0})`;
+  }
+
+  // === OKLCH → RGB conversion (§4.1b) ===
+  function oklchToRgb(l, c, ch) {
+    const rad = ch * Math.PI / 180;
+    const a = c * Math.cos(rad);
+    const b = c * Math.sin(rad);
+    const l_ = l + 0.396 * a + 0.215 * b;
+    const m_ = l_ - 0.105 * a - 0.065 * b;
+    const n_ = -0.085 * a - 0.435 * b;
+    const l__ = l_ * l_ * l_;
+    const m__ = m_ * m_ * m_;
+    const n__ = n_ * n_ * n_;
+    const rLin = +4.0767416621 * l__ - 3.3077115913 * m__ + 0.2309699292 * n__;
+    const gLin = -1.2684380046 * l__ + 2.6097574011 * m__ - 0.3413193965 * n__;
+    const bLin = -0.0041960863 * l__ - 0.7034186147 * m__ + 1.7076147010 * n__;
+    function linToSrgb(c) {
+      return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+    }
+    return [
+      Math.max(0, Math.min(1, linToSrgb(rLin))),
+      Math.max(0, Math.min(1, linToSrgb(gLin))),
+      Math.max(0, Math.min(1, linToSrgb(bLin)))
+    ];
+  }
+
+  function oklchWater(l, c, h) {
+    const [r, g, b] = oklchToRgb(l, c, h);
+    return rgbStr(r, g, b, 0.92);
+  }
+
+  function waterColor(depth) {
+    const l = 0.32 + (1 - depth) * 0.36;
+    const c = 0.06 + (1 - depth) * 0.06;
+    const h = 195 - (1 - depth) * 10;
+    const oklchCol = oklchWater(l, c, h);
+
+    if (depth < 0.3) {
+      const t = depth * 0.6;
+      const [r, g, b] = cosinePalette(t);
+      const blend = 1 - depth / 0.3;
+      const ok = oklchToRgb(l, c, h);
+      const br = r * blend + ok[0] * (1 - blend);
+      const bg = g * blend + ok[1] * (1 - blend);
+      const bb = b * blend + ok[2] * (1 - blend);
+      return rgbStr(br, bg, bb, 0.92);
+    }
+    return oklchCol;
+  }
+
+  // === Precomputed water color LUT (§6.2 — zero allocation hot loop) ===
+  const WATER_LUT_SIZE = 256;
+  const waterLut = new Array(WATER_LUT_SIZE);
+  (function buildWaterLut() {
+    for (let i = 0; i < WATER_LUT_SIZE; i++) {
+      const depth = i / (WATER_LUT_SIZE - 1);
+      waterLut[i] = waterColor(depth);
+    }
+  })();
+  function getWaterColorLut(depth) {
+    const idx = Math.min(WATER_LUT_SIZE - 1, Math.max(0, (depth * (WATER_LUT_SIZE - 1)) | 0));
+    return waterLut[idx];
+  }
+
+  // === Rubber Duck (§3.1 buoyant object) ===
+  const duck = {
+    x: 0, y: 0, prevX: 0, prevY: 0,
+    radius: 22,
+    bobPhase: 0,
+    tilt: 0,
+    svx: 0, svy: 0, stilt: 0,
+    // Blinking eyes (§5 ambient life)
+    blinkPhase: 0,
+    blinkTimer: 0,
+    blinking: false,
+    // Idle wobble (§5 ambient life)
+    wobblePhase: 0,
+  };
+
+  function updateDuck(dt) {
+    let waterLevel = h, waterCount = 0, waterPushX = 0, waterPushY = 0;
+    for (let i = 0; i < count; i++) {
+      const dx = px[i] - duck.x, dy = py[i] - duck.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < 2500) {
+        waterLevel = Math.min(waterLevel, py[i]);
+        waterCount++;
+        waterPushX += dx;
+        waterPushY += dy;
+      }
+    }
+
+    let targetY = h * 0.5;
+    if (waterCount > 3) {
+      targetY = waterLevel + duck.radius * 0.3;
+    }
+
+    const targetX = tapPos.x;
+    const dx = targetX - duck.x, dy = targetY - duck.y;
+
+    // Spring-driven motion (§3.2)
+    duck.svx += dx * 8 * dt;
+    duck.svy += dy * 8 * dt;
+    duck.svx *= Math.exp(-6 * dt);
+    duck.svy *= Math.exp(-6 * dt);
+    duck.x += duck.svx;
+    duck.y += duck.svy;
+
+    // Bob on surface
+    duck.bobPhase += dt * 2.5;
+    duck.y += Math.sin(duck.bobPhase) * 0.3;
+
+    // Tilt based on horizontal velocity
+    duck.stilt += (duck.svx * 0.01 - duck.tilt) * 5 * dt;
+    duck.tilt = duck.stilt;
+
+    // Squash/stretch based on velocity (§5)
+    duck.sqX = 1 + Math.abs(duck.svy) * 0.005;
+    duck.sqY = 1 / duck.sqX;
+
+    // Idle wobble (§5 ambient life) — low-amplitude noise drift
+    duck.wobblePhase += dt * 1.2;
+    duck.x += Math.sin(duck.wobblePhase * 3.7) * 0.08;
+
+    // Blinking eyes (§5 ambient life)
+    duck.blinkTimer -= dt;
+    if (duck.blinkTimer <= 0) {
+      duck.blinking = !duck.blinking;
+      duck.blinkTimer = duck.blinking ? 0.12 : 1.5 + Math.random() * 3; // 120ms blink, 1.5–4.5s between
+    }
+  }
+
+  function drawDuck() {
+    ctx.save();
+    ctx.translate(duck.x, duck.y);
+    ctx.rotate(duck.tilt);
+    ctx.scale(duck.sqX || 1, duck.sqY || 1);
+
+    const r = duck.radius;
+
+    // Body (warm yellow)
+    ctx.beginPath();
+    ctx.ellipse(0, 2, r * 0.9, r * 0.7, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#f5d442';
+    ctx.fill();
+    ctx.strokeStyle = '#d4a820';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Head
+    ctx.beginPath();
+    ctx.arc(0, -r * 0.55, r * 0.55, 0, Math.PI * 2);
+    ctx.fillStyle = '#f5d442';
+    ctx.fill();
+    ctx.strokeStyle = '#d4a820';
+    ctx.stroke();
+
+    // Beak
+    ctx.beginPath();
+    ctx.ellipse(r * 0.45, -r * 0.45, r * 0.22, r * 0.12, 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = '#e88a30';
+    ctx.fill();
+
+    // Eyes (googly + blinking, §5 ambient life)
+    const eyeOff = Math.sin(duck.bobPhase * 1.5) * 1.5;
+    const eyeH = duck.blinking ? 0.02 : r * 0.1; // squish to line when blinking
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.15 + eyeOff, -r * 0.65, r * 0.1, eyeH, 0, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(r * 0.15 + eyeOff, -r * 0.65, r * 0.1, eyeH, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Pupils (only when not blinking)
+    if (!duck.blinking) {
+      ctx.beginPath();
+      ctx.arc(-r * 0.12 + eyeOff * 1.5, -r * 0.63, r * 0.05, 0, Math.PI * 2);
+      ctx.fillStyle = '#111';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(r * 0.18 + eyeOff * 1.5, -r * 0.63, r * 0.05, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Wing
+    ctx.beginPath();
+    ctx.ellipse(-r * 0.5, r * 0.1, r * 0.35, r * 0.2, -0.3, 0, Math.PI * 2);
+    ctx.fillStyle = '#e8c830';
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // === Pre-rendered noise grain texture (§4.4, §4.5) ===
+  const noiseCanvas = document.createElement('canvas');
+  noiseCanvas.width = 256; noiseCanvas.height = 256;
+  const nctx = noiseCanvas.getContext('2d');
+  const noiseData = nctx.createImageData(256, 256);
+  for (let i = 0; i < noiseData.data.length; i += 4) {
+    const v = Math.random() * 255;
+    noiseData.data[i] = v;
+    noiseData.data[i + 1] = v;
+    noiseData.data[i + 2] = v;
+    noiseData.data[i + 3] = 18;
+  }
+  nctx.putImageData(noiseData, 0, 0);
+
+  // === Ambient floating motes (§5, ambient life) ===
+  const MAX_MOTES = 40;
+  const moteX = new Float32Array(MAX_MOTES), moteY = new Float32Array(MAX_MOTES);
+  const moteVx = new Float32Array(MAX_MOTES), moteVy = new Float32Array(MAX_MOTES);
+  const motePhase = new Float32Array(MAX_MOTES);
+  let moteCount = 0;
+
+  function initMotes() {
+    for (let i = 0; i < MAX_MOTES; i++) {
+      moteX[i] = Math.random() * w;
+      moteY[i] = Math.random() * h;
+      moteVx[i] = (Math.random() - 0.5) * 8;
+      moteVy[i] = -5 - Math.random() * 12;
+      motePhase[i] = Math.random() * Math.PI * 2;
+    }
+    moteCount = MAX_MOTES;
+  }
+  initMotes();
+
+  function updateMotes(dt) {
+    for (let i = 0; i < MAX_MOTES; i++) {
+      moteX[i] += moteVx[i] * dt;
+      moteY[i] += moteVy[i] * dt;
+      if (moteY[i] < -10) { moteY[i] = h + 10; moteX[i] = Math.random() * w; }
+      if (moteX[i] < -10) moteX[i] = w + 10;
+      if (moteX[i] > w + 10) moteX[i] = -10;
+    }
+  }
+
+  function drawMotes() {
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < MAX_MOTES; i++) {
+      const flicker = 0.3 + Math.sin(t * 1.5 + motePhase[i]) * 0.2;
+      ctx.fillStyle = `rgba(180,220,255,${flicker.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(moteX[i], moteY[i], 1.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // === 2D Lighting (§4.8) ===
+  const lightCanvas = document.createElement('canvas');
+  const lctx = lightCanvas.getContext('2d');
+
+  function resizeLightCanvas() {
+    lightCanvas.width = Math.ceil(w / 2);
+    lightCanvas.height = Math.ceil(h / 2);
+    lctx.setTransform(2, 0, 0, 2, 0, 0);
+  }
+  resizeLightCanvas();
+
+  function drawLighting() {
+    const lw = lightCanvas.width, lh = lightCanvas.height;
+    lctx.fillStyle = 'rgba(5,8,18,0.12)';
+    lctx.fillRect(0, 0, lw, lh);
+
+    const lights = [];
+    lights.push({ x: tapPos.x / 2, y: tapPos.y / 2, r: 60 });
+    if (mouse.inside) {
+      lights.push({ x: mouse.x / 2, y: mouse.y / 2, r: 35, warm: true });
+    }
+    lights.push({ x: duck.x / 2, y: duck.y / 2, r: 30 });
+
+    for (const light of lights) {
+      lctx.globalCompositeOperation = 'destination-out';
+      const grad = lctx.createRadialGradient(light.x, light.y, 0, light.x, light.y, light.r);
+      if (light.warm) {
+        grad.addColorStop(0, 'rgba(255,220,150,0.5)');
+        grad.addColorStop(0.5, 'rgba(255,200,120,0.15)');
+      } else {
+        grad.addColorStop(0, 'rgba(255,255,255,0.4)');
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+      }
+      lctx.fillStyle = grad;
+      lctx.beginPath();
+      lctx.arc(light.x, light.y, light.r, 0, Math.PI * 2);
+      lctx.fill();
+    }
+    lctx.globalCompositeOperation = 'source-over';
+
+    ctx.drawImage(lightCanvas, 0, 0, w, h);
+  }
+
+  // === Pre-rendered glow sprite (§4.2) ===
+  const glowSpr = document.createElement('canvas');
+  glowSpr.width = glowSpr.height = 64;
+  const gCtx = glowSpr.getContext('2d');
+  const gGrad = gCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gGrad.addColorStop(0, 'rgba(180,230,255,0.9)');
+  gGrad.addColorStop(0.3, 'rgba(120,200,255,0.3)');
+  gGrad.addColorStop(1, 'rgba(80,160,255,0)');
+  gCtx.fillStyle = gGrad;
+  gCtx.fillRect(0, 0, 64, 64);
+
+  // === Pre-rendered caustic pattern ===
+  const causticSpr = document.createElement('canvas');
+  causticSpr.width = causticSpr.height = 64;
+  const cCtx = causticSpr.getContext('2d');
+  const cGrad = cCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  cGrad.addColorStop(0, 'rgba(200,240,255,0.15)');
+  cGrad.addColorStop(0.5, 'rgba(150,220,255,0.06)');
+  cGrad.addColorStop(1, 'rgba(100,180,255,0)');
+  cCtx.fillStyle = cGrad;
+  cCtx.fillRect(0, 0, 64, 64);
+
+   // === Single bloom canvas (§6.2 — zero canvas allocations, single filter call) ===
+  const bloomCanvas = document.createElement('canvas');
+  const bCtx = bloomCanvas.getContext('2d');
+
+   // === FBM noise for organic caustics (§4.5) ===
+  function noiseHash(x, y) {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  }
+  function noise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    return noiseHash(xi, yi) * (1-u) * (1-v) + noiseHash(xi+1, yi) * u * (1-v)
+         + noiseHash(xi, yi+1) * (1-u) * v + noiseHash(xi+1, yi+1) * u * v;
+  }
+  function fbm(x, y) {
+    let val = 0, amp = 0.5, freq = 1;
+    for (let o = 0; o < 3; o++) {
+      val += amp * noise(x * freq, y * freq);
+      amp *= 0.5; freq *= 2.0;
+    }
+    return val;
+  }
+  function warpedNoise(x, y, t) {
+    const warp = 0.5;
+    const nx = x + warp * fbm(x + t * 0.15, y + t * 0.1);
+    const ny = y + warp * fbm(x + t * 0.1, y + t * 0.18);
+    return fbm(nx, ny);
+  }
+
+  // === Background rendering (layered canvases, §6.5) ===
+  function drawBackground() {
+    const grad = bgCtx.createRadialGradient(w * 0.5, h * 0.3, 0, w * 0.5, h * 0.3, w * 0.7);
+    grad.addColorStop(0, '#141e30');
+    grad.addColorStop(1, '#0a0e1a');
+    bgCtx.fillStyle = grad;
+    bgCtx.fillRect(0, 0, w, h);
+
+    bgCtx.globalCompositeOperation = 'lighter';
+    const tubL = w * 0.10, tubR = w * 0.55, tubBot = h * 0.82;
+    const causticAlpha = 0.03 + Math.sin(t * 0.8) * 0.01;
+    for (let i = 0; i < 12; i++) {
+      const cx = tubL + (tubR - tubL) * (0.1 + i * 0.08)
+        + warpedNoise(i * 0.3 + 1.0, 0.5, t * 0.3) * 40;
+      const cy = tubBot - 15 - Math.abs(warpedNoise(0.5, i * 0.3 + 2.0, t * 0.25)) * 30;
+      const size = 30 + warpedNoise(i * 0.5, 0.7, t * 0.2) * 20;
+      const flicker = 0.5 + warpedNoise(i * 0.2, 0.3, t * 0.4) * 0.5;
+      const a = causticAlpha * flicker;
+      const cGrad = bgCtx.createRadialGradient(cx, cy, 0, cx, cy, size);
+      cGrad.addColorStop(0, `rgba(180,230,255,${a.toFixed(3)})`);
+      cGrad.addColorStop(0.5, `rgba(140,210,255,${(a * 0.4).toFixed(3)})`);
+      cGrad.addColorStop(1, 'rgba(100,180,255,0)');
+      bgCtx.fillStyle = cGrad;
+      bgCtx.beginPath();
+      bgCtx.arc(cx, cy, size, 0, Math.PI * 2);
+      bgCtx.fill();
+    }
+    bgCtx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawTub() {
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(160,190,220,0.45)';
+
+    for (let pass = 0; pass < 2; pass++) {
+      const wobble = pass === 0 ? 0 : 1;
+      ctx.beginPath();
+      for (let s = 0; s < segments.length; s++) {
+        const sg = segments[s];
+        const wx = wobble ? (Math.sin(s * 7.3 + t * 2) * 0.8) : 0;
+        const wy = wobble ? (Math.cos(s * 5.1 + t * 1.5) * 0.8) : 0;
+        if (s === 0 || s === segments.length - 1) {
+          ctx.moveTo(sg.x1 + wx, sg.y1 + wy);
+        } else {
+          ctx.lineTo(sg.x1 + wx, sg.y1 + wy);
+        }
+        ctx.lineTo(sg.x2 + wx, sg.y2 + wy);
+      }
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = 'rgba(180,195,210,0.80)';
+    ctx.fillRect(tapPos.x - 7, tapPos.y - 24, 14, 24);
+    ctx.beginPath();
+    ctx.roundRect(tapPos.x - 10, tapPos.y - 6, 20, 8, 3);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(tapPos.x + 14, tapPos.y - 16, 5, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(160,180,200,0.7)';
+    ctx.fill();
+
+    if (pouring && mouse.inside) {
+      ctx.beginPath();
+      ctx.moveTo(tapPos.x, tapPos.y + 2);
+      ctx.lineTo(mouse.x, mouse.y);
+      ctx.strokeStyle = 'rgba(140,210,255,0.25)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      ctx.globalCompositeOperation = 'lighter';
+      for (let k = 0; k < 3; k++) {
+        const frac = ((t * 4 + k * 0.33) % 1);
+        const sx = tapPos.x + (mouse.x - tapPos.x) * frac;
+        const sy = (tapPos.y + 2) + (mouse.y - tapPos.y - 2) * frac;
+        ctx.drawImage(glowSpr, sx - 8, sy - 8, 16, 16);
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+
+  // === Goo water render (§4.3) ===
+  function drawWaterGoo() {
+    gctx.clearRect(0, 0, goo.width, goo.height);
+    const n = count;
+    for (let i = 0; i < n; i++) {
+      const depth = Math.min(1, Math.max(0, (py[i] - h * 0.2) / (h * 0.7)));
+      gctx.beginPath();
+      gctx.arc(px[i], py[i], 7.0, 0, Math.PI * 2);
+      gctx.fillStyle = getWaterColorLut(depth);
+      gctx.fill();
+    }
+
+    g2ctx.clearRect(0, 0, goo2.width, goo2.height);
+    g2ctx.filter = 'blur(9px) contrast(28)';
+    g2ctx.drawImage(goo, 0, 0);
+    g2ctx.filter = 'none';
+
+    ctx.drawImage(goo2, 0, 0, w, h);
+
+    // Single bloom pass (§6.2 — one canvas, one filter call)
+    bCtx.clearRect(0, 0, bloomCanvas.width, bloomCanvas.height);
+    bCtx.filter = 'blur(18px)';
+    bCtx.drawImage(goo2, 0, 0, bloomCanvas.width, bloomCanvas.height);
+    bCtx.filter = 'none';
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.6;
+    ctx.drawImage(bloomCanvas, 0, 0, w, h);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // === Caustic shimmer on water surface (§4.4 post-processing) ===
+  // Precomputed shimmer alpha LUT (§6.2 — zero allocation hot loop)
+  const SHIMMER_LUT_SIZE = 21;
+  const shimmerLut = new Array(SHIMMER_LUT_SIZE);
+  (function buildShimmerLut() {
+    for (let i = 0; i < SHIMMER_LUT_SIZE; i++) {
+      shimmerLut[i] = 'rgba(210,240,255,' + (i * 0.01).toFixed(3) + ')';
+    }
+  })();
+
+  function drawShimmer() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const n = count;
+    for (let i = 0; i < n; i += 4) {
+      if (rho[i] > REST_DENSITY * 0.92) continue;
+      const flick = Math.sin(t * 3 + px[i] * 0.06 + py[i] * 0.05) * 0.5 + 0.5;
+      const idx = Math.min(SHIMMER_LUT_SIZE - 1, (flick * 20) | 0);
+      ctx.fillStyle = shimmerLut[idx];
+      ctx.beginPath();
+      ctx.arc(px[i], py[i], 2.0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // === FX particles with glow sprites (§4.2) ===
+  // Precomputed FX color strings (§6.2 — zero allocation hot loop)
+  const FX_LUT_SIZE = 101;
+  const fxPourLut = new Array(FX_LUT_SIZE);
+  const fxDrainLut = new Array(FX_LUT_SIZE);
+  const fxBubbleLut = new Array(FX_LUT_SIZE);
+  const fxBubbleHL = new Array(FX_LUT_SIZE);
+  (function buildFXLut() {
+    for (let i = 0; i < FX_LUT_SIZE; i++) {
+      const a = (i / 100);
+      fxPourLut[i] = 'rgba(255,230,140,' + a.toFixed(3) + ')';
+      fxDrainLut[i] = 'rgba(100,140,180,' + a.toFixed(3) + ')';
+      fxBubbleLut[i] = 'rgba(210,240,255,' + a.toFixed(3) + ')';
+      fxBubbleHL[i] = 'rgba(255,255,255,' + a.toFixed(3) + ')';
+    }
+  })();
+  function getFXPourAlpha(life) { return fxPourLut[(life * 100) | 0]; }
+  function getFXDrainAlpha(life) { return fxDrainLut[(life * 100) | 0]; }
+  function getFXBubbleAlpha(life) { return fxBubbleLut[(life * 100) | 0]; }
+  function getFXBubbleHLAlpha(life) { return fxBubbleHL[(life * 100) | 0]; }
+
+  function drawFx() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < MAX_PFX; i++) {
+      if (pfxLife[i] <= 0) continue;
+      const life = Math.max(0, pfxLife[i] / pfxMaxLife[i]);
+      const sq = pfxSqueeze[i] || 1;
+
+      if (pfxType[i] === 2) {
+        // Pour-start: warm golden sparkle burst (§5 particles on event)
+        ctx.fillStyle = getFXPourAlpha(life * 0.7);
+        ctx.beginPath();
+        ctx.arc(pfxX[i], pfxY[i], (3 * life + 1) * sq, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pfxType[i] === 3) {
+        // Drain: small dark swirl particles
+        ctx.fillStyle = getFXDrainAlpha(life * 0.5);
+        ctx.beginPath();
+        ctx.arc(pfxX[i], pfxY[i], (2.5 * life + 0.5), 0, Math.PI * 2);
+        ctx.fill();
+      } else if (pfxBubble[i]) {
+        // Bubble: translucent circle with highlight
+        ctx.fillStyle = getFXBubbleAlpha(life * 0.6);
+        ctx.beginPath();
+        ctx.arc(pfxX[i], pfxY[i], 2.8 * sq, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = getFXBubbleHLAlpha(life * 0.4);
+        ctx.beginPath();
+        ctx.arc(pfxX[i] - 0.8, pfxY[i] - 0.8, 1.0, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        // Splash droplet with squash/stretch (§5)
+        const w = (16 * life + 4) * sq;
+        const h2 = (16 * life + 4) / sq;
+        ctx.drawImage(glowSpr, pfxX[i] - w / 2, pfxY[i] - h2 / 2, w, h2);
+      }
+    }
+    ctx.restore();
+  }
+
+  // === Vignette + noise grain (§4.4, §4.5) ===
+  function drawPostFX() {
+    const vig = ctx.createRadialGradient(w * 0.5, h * 0.45, w * 0.25, w * 0.5, h * 0.45, w * 0.75);
+    vig.addColorStop(0, 'rgba(0,0,0,0)');
+    vig.addColorStop(1, 'rgba(0,0,0,0.35)');
+    ctx.fillStyle = vig;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.globalAlpha = 0.03;
+    ctx.drawImage(noiseCanvas, 0, 0, w, h);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // === Cursor indicator ===
+  function drawCursor() {
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, brushRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = pouring ? 'rgba(140,220,255,0.45)' : draining ? 'rgba(255,170,140,0.45)' : 'rgba(200,220,240,0.22)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.arc(mouse.x, mouse.y, 3, 0, Math.PI * 2);
+    ctx.fillStyle = pouring ? '#8fdcff' : draining ? '#ffb08f' : '#cfe3f7';
+    ctx.fill();
+  }
+
+  // === Water trails (§4.2) ===
+  const TRAIL_FADE = 0.035;
+  // Trail color LUT (§6.2 — precomputed cosine palette, zero allocation)
+  const TRAIL_LUT_SIZE = 64;
+  const trailLut = new Array(TRAIL_LUT_SIZE);
+  (function buildTrailLut() {
+    for (let i = 0; i < TRAIL_LUT_SIZE; i++) {
+      const depth = i / TRAIL_LUT_SIZE;
+      const [r, g, b] = cosinePalette(depth * 0.6);
+      trailLut[i] = 'rgba(' + (r * 255 | 0) + ',' + (g * 255 | 0) + ',' + (b * 255 | 0) + ',0.15)';
+    }
+  })();
+  function getTrailColor(depth) { return trailLut[(depth * TRAIL_LUT_SIZE) | 0]; }
+
+  function fadeTrails() {
+    tCtx.globalCompositeOperation = 'destination-out';
+    tCtx.fillStyle = 'rgba(0,0,0,0.035)';
+    tCtx.fillRect(0, 0, w, h);
+    tCtx.globalCompositeOperation = 'source-over';
+  }
+
+  function drawTrails() {
+    tCtx.save();
+    tCtx.globalCompositeOperation = 'lighter';
+    const n = count;
+    for (let i = 0; i < n; i++) {
+      const depth = Math.min(1, Math.max(0, (py[i] - h * 0.2) / (h * 0.7)));
+      tCtx.fillStyle = getTrailColor(depth);
+      tCtx.beginPath();
+      tCtx.arc(px[i], py[i], 4.0, 0, Math.PI * 2);
+      tCtx.fill();
+    }
+    tCtx.restore();
+  }
+
+  // === Main draw ===
+  let t = 0;
+
+  function draw() {
+    bgCtx.clearRect(0, 0, w, h);
+    drawBackground();
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(bgCanvas, 0, 0, w, h);
+
+    fadeTrails();
+    drawTrails();
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.35;
+    ctx.drawImage(trailCanvas, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(shakeX, shakeY);
+    ctx.rotate(shakeR);
+
+    drawTub();
+    drawWaterGoo();
+    drawShimmer();
+    drawMotes();
+    drawFx();
+    updateDuck(1 / 60);
+    drawDuck();
+    if (mouse.inside) drawCursor();
+
+    ctx.restore();
+
+    drawLighting();
+    drawPostFX();
+  }
+
+  // === Trauma shake (§5) ===
+  let shakeX = 0, shakeY = 0, shakeR = 0;
+
+  function updateTrauma(dt) {
+    trauma = Math.max(0, trauma - dt * 1.8);
+  }
+
+  // === Fixed timestep loop (§2.1) ===
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+
+  function update(dt) {
+    t += dt;
+
+    // Mouse velocity
+    const dx = mouse.x - mouse.px, dy = mouse.y - mouse.py;
+    mouse.vx = dx / dt; mouse.vy = dy / dt;
+    mouse.px = mouse.x; mouse.py = mouse.y;
+
+    // Spring-driven pour stream origin (follow mouse when pouring)
+    if (pouring && mouse.inside) {
+      pourStreamX = mouse.x;
+      pourStreamY = Math.max(h * 0.1, Math.min(h * 0.5, mouse.y));
+    } else {
+      pourStreamX += (tapDefaultX - pourStreamX) * 3 * dt;
+      pourStreamY += (tapDefaultY - pourStreamY) * 3 * dt;
+    }
+    tapPos.x += (pourStreamX - tapPos.x) * 3 * dt;
+    tapPos.y += (pourStreamY - tapPos.y) * 3 * dt;
+
+    // Pour
+    if (pouring && mouse.inside) {
+      pourAccum += (1 + brushRadius / 22) * dt * 60;
+      while (pourAccum >= 1) { spawnWater(tapPos.x, tapPos.y + 5); pourAccum -= 1; }
+    }
+
+    // Space shake
+    if (spaceHeld) {
+      addTrauma(dt * 2.5);
+      for (let i = 0; i < count; i++) {
+        oldx[i] += (Math.random() - 0.5) * 1.4;
+        oldy[i] += (Math.random() - 0.5) * 0.7;
+      }
+    }
+
+    // Hit-stop check (§5): freeze simulation on big impacts
+    const frozen = updateHitStop(dt);
+
+    if (!frozen) {
+      simulate(dt);
+    }
+    updateFx(dt);
+    updateMotes(dt);
+    updateTrauma(dt);
+
+    // Trauma shake (§5)
+    if (!REDUCED_MOTION && trauma > 0.001) {
+      const s = trauma * trauma;
+      shakeX = (Math.sin(t * 37.1) + Math.sin(t * 19.7)) * 5 * s;
+      shakeY = (Math.cos(t * 29.3) + Math.sin(t * 13.1)) * 5 * s;
+      shakeR = Math.sin(t * 23.0) * 0.02 * s;
+    } else {
+      shakeX = shakeY = shakeR = 0;
+    }
+
+    // UI updates
+    document.getElementById('brushVal').textContent = Math.round(brushRadius);
+    document.getElementById('countVal').textContent = count + ' / ' + MAX;
+    document.getElementById('duckVal').textContent = Math.round(duck.y);
+  }
+
+  function frame(now) {
+    acc += Math.min((now - last) / 1000, 0.1);
+    last = now;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // === Reset (§0.5) ===
+  function reset() {
+    count = 0;
+    pfxCount = 0; pfxCursor = 0;
+    pfxLife.fill(0);
+    hitStopQueue = 0;
+    hitStopTimer = 0;
+    trauma = 0;
+    pourAccum = 0;
+    brushRadius = 55;
+    pouring = false; draining = false;
+    spaceHeld = false;
+    duck.svx = duck.svy = duck.tilt = duck.stilt = 0;
+    duck.blinkTimer = 2;
+    duck.blinking = false;
+    duck.x = tapPos.x; duck.y = h * 0.5;
+    buildGeometry();
+    prefill();
+  }
+
+  document.getElementById('resetBtn').addEventListener('click', reset);
+
+  // === Visibility pause (§6.8) ===
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) last = performance.now();
+  });
+
+  // === Automated introspection hook ===
+  window.__splashStats = function () {
+    const floorY = h * 0.965;
+    let inTub = 0, belowFloor = 0, maxY = -1e9;
+    for (let i = 0; i < count; i++) {
+      if (py[i] > maxY) maxY = py[i];
+      if (py[i] > floorY + 0.5) belowFloor++;
+      if (px[i] > w * 0.10 && px[i] < w * 0.55 && py[i] > h * 0.28 && py[i] < h * 0.82) inTub++;
+    }
+    return { count, inTub, belowFloor, maxY, floorY };
+  };
+
+  // === Boot ===
+  fitCanvas();
+  duck.x = tapPos.x; duck.y = h * 0.5;
+  mouse.x = tapPos.x; mouse.y = tapPos.y;
+  mouse.px = mouse.x; mouse.py = mouse.y;
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

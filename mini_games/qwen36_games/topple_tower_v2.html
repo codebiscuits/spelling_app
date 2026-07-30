@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Topple Tower v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Topple Tower</b><br>
+Move — aim gravity<br>
+Left drag — launch block<br>
+Right drag — attract tower<br>
+Scroll — gravity strength
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+const state={};let w,h;
+function fitCanvas(){const dpr=Math.min(window.devicePixelRatio||1,2);w=window.innerWidth;h=window.innerHeight;canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+fitCanvas();window.addEventListener('resize',fitCanvas);
+document.getElementById('reset').addEventListener('click',()=>reset());
+let mouse={x:0,y:0,left:false,right:false,buttons:0,px:0,py:0};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.px=mouse.x;mouse.py=mouse.y;mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.buttons=e.buttons;mouse.left=!!(mouse.buttons&1);mouse.right=!!(mouse.buttons&2);});
+canvas.addEventListener('mousedown',e=>{if(e.button===0)mouse.left=true;if(e.button===2)mouse.right=true;});
+window.addEventListener('mouseup',e=>{if(e.button===0)mouse.left=false;if(e.button===2)mouse.right=false;});
+canvas.addEventListener('wheel',e=>{e.preventDefault();state.wheel=-Math.sign(e.deltaY);},{passive:false});
+const DT=1/60;let acc=0,last=performance.now();
+function frame(now){acc+=Math.min((now-last)/1000,0.1);last=now;while(acc>=DT){update(DT);acc-=DT;}draw(acc/DT);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+canvas.style.background='#111018';
+
+function reset(){
+  tower=[];
+  const bw=70,bh=28;
+  const sx=w/2-bw/2;
+  for(let i=0;i&lt;6;i++){
+    for(let j=0;j&lt;3;j++){
+      const x=sx+j*bw,y=h-40-i*bh;
+      const pts=[{x,y,px:x,py:y},{x:x+bw,y,px:x+bw,py:y},{x:x+bw,y:y+bh,px:x+bw,py:y+bh},{x,y:y+bh,px:x,py:y+bh}];
+      tower.push({pts,bw,bh});
+    }
+  }
+}
+let grav=1;
+window.addEventListener('wheel',e=>{if(e.target===canvas){e.preventDefault();grav=Math.max(0.2,Math.min(3,grav-Math.sign(e.deltaY)*0.2));}},{passive:false});
+
+function stepBox(b,dt){
+  const pts=b.pts;
+  for(const p of pts){const vx=(p.x-p.px)*0.96;const vy=(p.y-p.py)*0.96;p.px=p.x;p.py=p.y;p.x+=vx;p.y+=vy+300*grav*dt*dt;}
+  for(let iter=0;iter<3;iter++){
+    for(let i=0;i&lt;4;i++){
+      const a=pts[i],c=pts[(i+1)%4];
+      const dx=c.x-a.x,dy=c.y-a.y;const dd=Math.hypot(dx,dy)||0.001;const rest=i<2?b.bw:b.bh;
+      const diff=(dd-rest)/dd*0.5;
+      a.x+=dx*diff;a.y+=dy*diff;c.x-=dx*diff;c.y-=dy*diff;
+    }
+  }
+}
+function collideBoxes(){
+  for(let i=0;i&lt;tower.length;i++){
+    for(let j=i+1;j&lt;tower.length;j++){
+      const a=tower[i],b=tower[j];
+      // cheap overlap push by centroid
+      const ax=a.pts.reduce((s,p)=>s+p.x,0)/4;
+      const ay=a.pts.reduce((s,p)=>s+p.y,0)/4;
+      const bx=b.pts.reduce((s,p)=>s+p.x,0)/4;
+      const by=b.pts.reduce((s,p)=>s+p.y,0)/4;
+      const dx=ax-bx,dy=ay-by;const d=Math.hypot(dx,dy)||1;
+      if(d&lt;Math.max(a.bw,b.bw)*0.8){
+        const overlap=Math.max(a.bw,b.bw)*0.8-d;
+        const push=overlap*0.25;
+        for(const p of a.pts){p.x+=dx/d*push;p.y+=dy/d*push;}
+        for(const p of b.pts){p.x-=dx/d*push;p.y-=dy/d*push;}
+      }
+    }
+    floor(tower[i]);
+  }
+}
+function floor(b){
+  for(const p of b.pts){if(p.y>h-20){const vy=(p.y-p.py)*0.7;p.y=h-20;p.py=p.y-vy*0.3;p.px=p.x;}}
+}
+function update(dt){
+  for(const b of tower)stepBox(b,dt);
+  collideBoxes();
+  if(mouse.right){
+    const mx=w/2,my=h/2;
+    for(const b of tower){
+      for(const p of b.pts){
+        const dx=mx-p.x,dy=my-p.y;const d=Math.hypot(dx,dy)||1;
+        p.x+=dx/d*0.8;p.y+=dy/d*0.8;
+      }
+    }
+  }
+  if(mouse.left){
+    const mx=w/2+Math.sin(performance.now()*0.001)*0.3*w;
+    const my=h*0.3;
+    for(const b of tower){
+      for(const p of b.pts){
+        const dx=p.x-mx,dy=p.y-my;const d=Math.hypot(dx,dy)||1;
+        if(d<160){p.x+=dx/d*2;p.y+=dy/d*2;}
+      }
+    }
+  }
+}
+function drawBox(b){
+  const pts=b.pts;
+  ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);for(let i=1;i&lt;4;i++)ctx.lineTo(pts[i].x,pts[i].y);ctx.closePath();
+  ctx.fillStyle='rgba(200,160,120,0.35)';ctx.fill();
+  ctx.strokeStyle='rgba(220,180,140,0.8)';ctx.lineWidth=2;ctx.stroke();
+}
+function draw(alpha){
+  ctx.clearRect(0,0,w,h);
+  ctx.fillStyle='#241c12';ctx.fillRect(0,h-20,w,20);
+  for(const b of tower)drawBox(b);
+}
+reset();
+
+</script>
+</body>
+</html>

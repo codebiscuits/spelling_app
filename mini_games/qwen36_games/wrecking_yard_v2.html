@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wrecking Yard v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Wrecking Yard</b><br>
+Move — aim<br>
+Left click — grab block<br>
+Right click — smash<br>
+Scroll — pull power
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+const state={};let w,h;
+function fitCanvas(){const dpr=Math.min(window.devicePixelRatio||1,2);w=window.innerWidth;h=window.innerHeight;canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+fitCanvas();window.addEventListener('resize',fitCanvas);
+document.getElementById('reset').addEventListener('click',()=>reset());
+let mouse={x:0,y:0,left:false,right:false,buttons:0,px:0,py:0};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.px=mouse.x;mouse.py=mouse.y;mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.buttons=e.buttons;mouse.left=!!(mouse.buttons&1);mouse.right=!!(mouse.buttons&2);});
+canvas.addEventListener('mousedown',e=>{if(e.button===0)mouse.left=true;if(e.button===2)mouse.right=true;});
+window.addEventListener('mouseup',e=>{if(e.button===0)mouse.left=false;if(e.button===2)mouse.right=false;});
+canvas.addEventListener('wheel',e=>{e.preventDefault();state.wheel=-Math.sign(e.deltaY);},{passive:false});
+const DT=1/60;let acc=0,last=performance.now();
+function frame(now){acc+=Math.min((now-last)/1000,0.1);last=now;while(acc>=DT){update(DT);acc-=DT;}draw(acc/DT);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+canvas.style.background='radial-gradient(ellipse at center,#181510 0%%,#0c0a08 100%)';
+
+function reset(){
+  boxes=[];
+  for(let i=0;i&lt;8;i++){
+    const x=100+Math.random()*(w-200);
+    const y=80+Math.random()*(h*0.4);
+    const pts=[{x,y,px:x,py:y},{x: x+40,y,px:x+40,py:y},{x: x+40,y:y+40,px:x+40,py:y+40},{x,y:y+40,px:x,py:y+40}];
+    boxes.push({pts,r:40/2});
+  }
+}
+let pull=1;
+window.addEventListener('wheel',e=>{if(e.target===canvas){e.preventDefault();pull=Math.max(0.2,Math.min(3,pull-Math.sign(e.deltaY)*0.2));}},{passive:false});
+
+function softStep(dt){
+  for(const b of boxes){
+    const pts=b.pts;
+    for(const p of pts){const vx=(p.x-p.px)*0.95;const vy=(p.y-p.py)*0.95;p.px=p.x;p.py=p.y;p.x+=vx;p.y+=vy+300*dt*dt;}
+    // distance constraints edges
+    for(let iter=0;iter<4;iter++){
+      for(let i=0;i&lt;pts.length;i++){
+        const a=pts[i],c=pts[(i+1)%pts.length];const dx=c.x-a.x,dy=c.y-a.y;const dd=Math.hypot(dx,dy)||0.001;const diff=(dd-40)/dd*0.5;
+        a.x+=dx*diff;a.y+=dy*diff;c.x-=dx*diff;c.y-=dy*diff;
+      }
+    }
+  }
+}
+function collide(){
+  // mouse grab on left
+  if(mouse.left){
+    const mdx=mouse.x-mouse.px||0,mdy=mouse.y-mouse.py||0;
+    for(const b of boxes){
+      for(const p of b.pts){
+        const dx=p.x-mouse.x,dy=p.y-mouse.y;const d=Math.hypot(dx,dy)||1;
+        if(d&lt;40){p.x+=mdx*0.3;p.y+=mdy*0.3;}
+      }
+    }
+  }
+  if(mouse.right){
+    for(const b of boxes){
+      const c=b.pts.reduce((s,p)=>s+{x:p.x,y:p.y},0);
+      const cx=c.x/4,cy=c.y/4;
+      const dx=cx-mouse.x,dy=cy-mouse.y;const d=Math.hypot(dx,dy)||1;
+      for(const p of b.pts){
+        p.x-=dx/d*pull*8;p.y-=dy/d*pull*8;
+      }
+    }
+  }
+  // floor
+  for(const b of boxes){
+    for(const p of b.pts){if(p.y>h-20){const v=(p.y-p.py)*0.8;p.y=h-20;p.py=p.y-v*0.3;p.px=p.x;}}
+  }
+}
+function drawBox(b){
+  const pts=b.pts;
+  ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);for(let i=1;i&lt;4;i++)ctx.lineTo(pts[i].x,pts[i].y);ctx.closePath();
+  ctx.fillStyle='rgba(200,150,80,0.35)';ctx.fill();
+  ctx.strokeStyle='rgba(220,180,120,0.8)';ctx.lineWidth=2;ctx.stroke();
+}
+function draw(alpha){
+  ctx.clearRect(0,0,w,h);
+  for(const b of boxes)drawBox(b);
+  // ground
+  ctx.fillStyle='#241c12';ctx.fillRect(0,h-20,w,20);
+}
+reset();
+
+</script>
+</body>
+</html>

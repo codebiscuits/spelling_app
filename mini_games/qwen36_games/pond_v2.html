@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pond v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Pond</b><br>
+Move — ripple surface<br>
+Left drag — splash<br>
+Right drag — rain<br>
+Scroll — duck size
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+const state={};let w,h;
+function fitCanvas(){const dpr=Math.min(window.devicePixelRatio||1,2);w=window.innerWidth;h=window.innerHeight;canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+fitCanvas();window.addEventListener('resize',fitCanvas);
+document.getElementById('reset').addEventListener('click',()=>reset());
+let mouse={x:0,y:0,left:false,right:false,buttons:0,px:0,py:0};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.px=mouse.x;mouse.py=mouse.y;mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.buttons=e.buttons;mouse.left=!!(mouse.buttons&1);mouse.right=!!(mouse.buttons&2);});
+canvas.addEventListener('mousedown',e=>{if(e.button===0)mouse.left=true;if(e.button===2)mouse.right=true;});
+window.addEventListener('mouseup',e=>{if(e.button===0)mouse.left=false;if(e.button===2)mouse.right=false;});
+canvas.addEventListener('wheel',e=>{e.preventDefault();state.wheel=-Math.sign(e.deltaY);},{passive:false});
+const DT=1/60;let acc=0,last=performance.now();
+function frame(now){acc+=Math.min((now-last)/1000,0.1);last=now;while(acc>=DT){update(DT);acc-=DT;}draw(acc/DT);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+canvas.style.background='radial-gradient(ellipse at top,#0e1525 0%%,#070b14 100%%)';
+
+function reset(){
+  heights=new Float32Array(N).fill(0);
+  vels=new Float32Array(N).fill(0);
+  ducks=[];
+  for(let i=0;i&lt;6;i++)ducks.push({x:w*0.2+Math.random()*w*0.6,y:h*0.3+Math.random()*h*0.4,r:12+Math.random()*8,px:0,py:0});
+  drops=[];
+}
+const N=180;
+let heights,vels;
+const ponds=[];
+
+function addDuck(x,y,r){
+  ponds.push({x,y,r,px:x,py:y});
+}
+
+function update(dt){
+  for(let i=1;i&lt;N;i++){vels[i]+=((heights[i-1]+heights[i+1])*0.5-heights[i])*0.3;vels[i]-=heights[i]*0.02;vels[i]*=0.99;heights[i]+=vels[i]*dt*60;}
+  // interact
+  const mx=mouse.x,my=mouse.y;
+  const idx=Math.floor(mx/w*N);
+  if(idx>=0&&idx&lt;N){
+    if(mouse.left){heights[idx]+=(mouse.y-h*0.6-mouse.py||0)*0.5;}
+    if(mouse.right){if(Math.random()&lt;0.4)drops.push({x:mx+(Math.random()-0.5)*w*0.5,y:-10,v:60+Math.random()*60,r:3+Math.random()*3});}
+  }
+  // drops
+  for(let i=drops.length-1;i>=0;i--){const d=drops[i];d.y+=d.v*dt;d.v+=200*dt;if(d.y>h*0.65){const ix=Math.floor(d.x/w*N);if(ix>=0&&ix&lt;N)heights[ix]-=d.r*2;drops.splice(i,1);}}
+  // ducks float on height
+  for(const d of ponds){
+    const idx=Math.floor(d.x/w*N);
+    const hh=idx>=0&&idx&lt;N?heights[idx]:0;
+    const buoyancy=-hh*0.5;
+    const vx=(d.x-d.px)*0.9;const vy=(d.y-d.py)*0.9;
+    d.px=d.x;d.py=d.y;
+    d.x+=vx;d.y+=vy+80*dt+buoyancy;
+    // mouse push
+    const ddx=d.x-mouse.x,ddy=d.y-mouse.y;
+    const dd=Math.hypot(ddx,ddy)||1;
+    if(dd&lt;150&&mouse.left){d.x+=ddx/dd*3;d.y+=ddy/dd*3;}
+    if(d.x&lt;0)d.x=w;if(d.x>w)d.x=0;
+  }
+}
+
+function drawPond(time){
+  const base=h*0.62;
+  ctx.beginPath();
+  ctx.moveTo(0,h);
+  ctx.lineTo(0,base+heights[0]);
+  for(let i=1;i&lt;N;i++)ctx.lineTo(i/N*w,base+heights[i]);
+  ctx.lineTo(w,base+heights[N-1]);
+  ctx.lineTo(w,h);
+  ctx.closePath();
+  const g=ctx.createLinearGradient(0,base-40,0,h);
+  g.addColorStop(0,'rgba(60,130,180,0.35)');g.addColorStop(1,'rgba(10,20,40,0.85)');
+  ctx.fillStyle=g;ctx.fill();
+  ctx.strokeStyle='rgba(180,220,255,0.3)';ctx.lineWidth=1.5;ctx.stroke();
+  // grid
+  ctx.strokeStyle='rgba(255,255,255,0.04)';ctx.lineWidth=1;
+  for(let i=0;i&lt;N;i+=10){ctx.beginPath();ctx.moveTo(i/N*w,base-20);ctx.lineTo(i/N*w,h);ctx.stroke();}
+  for(let y=base;y&lt;h;y+=20){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}
+}
+
+function drawDuck(d,time){
+  ctx.save();ctx.translate(d.x,d.y);
+  ctx.fillStyle='#f5d742';ctx.beginPath();ctx.arc(0,0,d.r,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#111';
+  ctx.beginPath();ctx.arc(-d.r*0.35,-d.r*0.15,d.r*0.18,0,Math.PI*2);ctx.fill();
+  ctx.beginPath();ctx.arc(d.r*0.35,-d.r*0.15,d.r*0.18,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+function updateActual(dt){
+  // kept for compat
+}
+function draw(alpha){
+  const time=performance.now()*0.001;
+  ctx.clearRect(0,0,w,h);
+  drawPond(time);
+  for(const d of ponds)drawDuck(d,time);
+  // ambient
+  ctx.globalCompositeOperation='lighter';
+  for(let i=0;i&lt;6;i++){
+    const px=(Math.sin(time*0.3+i)*0.5+0.5)*w;
+    const py=h*0.5+(Math.cos(time*0.4+i*2)*0.5)*h*0.35;
+    const g=ctx.createRadialGradient(px,py,0,px,py,80);
+    g.addColorStop(0,'rgba(40,120,200,0.15)');g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g;ctx.fillRect(px-80,py-80,160,160);
+  }
+  ctx.globalCompositeOperation='source-over';
+  // header moon
+  ctx.fillStyle='rgba(255,255,240,0.9)';ctx.beginPath();ctx.arc(w-80,70,28,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#0c0c1e';ctx.beginPath();ctx.arc(w-66,62,26,0,Math.PI*2);ctx.fill();
+}
+reset();
+
+</script>
+</body>
+</html>

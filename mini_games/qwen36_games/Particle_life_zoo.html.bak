@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Particle Life Zoo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; cursor: crosshair; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+  /* §4.1 — subtle radial gradient background instead of pure black */
+  body { background: radial-gradient(ellipse at 50% 50%, #1a1230 0%, #0a0818 100%); }
+  canvas { display: block; position: absolute; top: 0; left: 0; }
+  /* Ambient bokeh canvas sits behind the main canvas */
+  #bgCanvas { z-index: 0; }
+  #c { z-index: 1; }
+
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none; color: #ddd; font-size: 13px; line-height: 1.7;
+    background: rgba(8,10,18,0.72); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; padding: 14px 18px; backdrop-filter: blur(10px); min-width: 236px;
+  }
+  #ui h3 { color: #fff; margin-bottom: 8px; font-size: 15px; letter-spacing: 0.4px; }
+  #ui .row { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+  #ui .key { color: #8a8a9a; }
+  #ui .val { color: #7fd8ff; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #ui .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 50%; vertical-align: middle; margin-right: 6px; box-shadow: 0 0 6px currentColor; }
+  #matrixWrap { margin-top: 8px; }
+  #matrixCanvas { display: block; border-radius: 6px; image-rendering: pixelated; }
+  #matrixLabel { color: #8a8a9a; font-size: 11px; margin-bottom: 4px; }
+
+  #resetBtn, #muteBtn {
+    position: fixed; z-index: 10; padding: 10px 28px; font-size: 14px; font-family: inherit; color: #ddd;
+    background: rgba(8,10,18,0.80); border: 1px solid rgba(255,255,255,0.14); border-radius: 999px; cursor: pointer; backdrop-filter: blur(10px);
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+  }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); }
+  #muteBtn { top: 16px; right: 16px; padding: 10px 14px; font-size: 18px; }
+  #resetBtn:hover, #muteBtn:hover { background: rgba(45,38,86,0.90); color: #fff; border-color: rgba(255,255,255,0.28); }
+
+  @media (prefers-reduced-motion: reduce) { #resetBtn { transition: none; } }
+</style>
+</head>
+<body>
+<!-- Ambient bokeh canvas (behind main canvas) -->
+<canvas id="bgCanvas"></canvas>
+<!-- Main simulation canvas -->
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h3>&#x1F9EA; Particle Life Zoo</h3>
+  <div class="row"><span class="key">Move</span><span class="val">Stir the zoo</span></div>
+  <div class="row"><span class="key">Left drag</span><span class="val">Spray new critters</span></div>
+  <div class="row"><span class="key">Right click</span><span class="val">New rules</span></div>
+  <div class="row"><span class="key">Scroll</span><span class="val">Brush: <span id="speciesVal">0</span></span></div>
+  <br>
+  <div class="row">
+    <span class="key"><span class="swatch" id="speciesSwatch"></span>Brush</span>
+    <span class="val" id="brushVal">1 / 6</span>
+  </div>
+  <div class="row"><span class="key">Particles</span><span class="val" id="countVal">0</span></div>
+  <div class="row"><span class="key">FPS</span><span class="val" id="fpsVal">--</span></div>
+  <div id="matrixWrap">
+    <div id="matrixLabel">Who likes whom<br><span style="opacity:.8">row likes -> column</span></div>
+    <canvas id="matrixCanvas"></canvas>
+  </div>
+</div>
+
+<button id="muteBtn" title="Sound on/off" aria-label="Toggle sound">&#x1F507;</button>
+<button id="resetBtn">&#x21BA; New zoo</button>
+
+<script>
+(function () {
+  'use strict';
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  let w = 0, h = 0;
+
+  function fitCanvas() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildGrid();
+  }
+
+  // ── Ambient bokeh background ──────────────────────────────────────────
+  // §4.1 / parent: ambient background particles for depth
+  const bgCanvas = document.getElementById('bgCanvas');
+  const bgCtx = bgCanvas.getContext('2d');
+  const BOKEH_N = 80;
+  const bokeh = [];
+
+  function initBokeh() {
+    bgCanvas.width = w; bgCanvas.height = h;
+    bgCanvas.style.width = w + 'px';
+    bgCanvas.style.height = h + 'px';
+    bokeh.length = 0;
+    for (let i = 0; i < BOKEH_N; i++) {
+      bokeh.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        r: 1.5 + Math.random() * 5,
+        vx: (Math.random() - 0.5) * 0.15,
+        vy: (Math.random() - 0.5) * 0.1,
+        alpha: 0.03 + Math.random() * 0.06,
+        // Use a species color for subtle variety
+        colorIdx: (Math.random() * SPECIES) | 0
+      });
+    }
+  }
+
+  function updateBokeh() {
+    for (let i = 0; i < BOKEH_N; i++) {
+      const b = bokeh[i];
+      b.x += b.vx; b.y += b.vy;
+      if (b.x < -b.r) b.x = w + b.r;
+      if (b.x > w + b.r) b.x = -b.r;
+      if (b.y < -b.r) b.y = h + b.r;
+      if (b.y > h + b.r) b.y = -b.r;
+    }
+  }
+
+  function drawBokeh() {
+    bgCtx.clearRect(0, 0, w, h);
+    for (let i = 0; i < BOKEH_N; i++) {
+      const b = bokeh[i];
+      const rgb = speciesRGB[b.colorIdx];
+      bgCtx.beginPath();
+      bgCtx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+      bgCtx.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + b.alpha + ')';
+      bgCtx.fill();
+    }
+  }
+
+  // Tunables -----------------------------------------------------------
+  const SPECIES = 6;
+  const MAX_N = 4000;
+  const START_N = 2400;
+  const MAX_R = 64;
+  const FRICTION_RATE = 4.4;
+  const MOUSE_RADIUS = 180;
+  const MOUSE_FORCE = 240;
+  const SPRAY_JITTER = 7;
+  const SPRAY_SPEED = 44;
+  const SPRAY_EVERY_N_TICKS = 2;
+
+  // Cosine palette ------------------------------------------------------
+  function cosinePalette(t) {
+    const a = [0.55,0.50,0.50], b = [0.45,0.45,0.45], c = [1.0,1.0,0.90], d = [0.0,0.33,0.60];
+    return [0,1,2].map(i => Math.max(0, Math.min(1, a[i] + b[i] * Math.cos(6.28318 * (c[i] * t + d[i])))));
+  }
+
+  const speciesRGB = [], speciesColor = [];
+  const sprites = [];
+  const SPRITE_SIZE = 22;
+  for (let i = 0; i < SPECIES; i++) {
+    const rgb = cosinePalette(i / SPECIES).map(x => Math.round(x * 255));
+    speciesRGB.push(rgb);
+    speciesColor.push('rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')');
+    const sc = document.createElement('canvas');
+    sc.width = sc.height = SPRITE_SIZE;
+    const sctx = sc.getContext('2d');
+    const r = SPRITE_SIZE / 2;
+    const grad = sctx.createRadialGradient(r, r, 0, r, r, r);
+    grad.addColorStop(0, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.95)');
+    grad.addColorStop(0.4, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.55)');
+    grad.addColorStop(1, 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0)');
+    sctx.fillStyle = grad; sctx.fillRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+    sprites.push(sc);
+  }
+
+  // Particle storage (Verlet: pos + prevPos, velocity implicit) --------
+  // §6.2: typed arrays (SoA) for cache-friendly, zero-GC access
+  const px = new Float32Array(MAX_N);
+  const py = new Float32Array(MAX_N);
+  const ppx = new Float32Array(MAX_N);  // previous x
+  const ppy = new Float32Array(MAX_N);  // previous y
+  const spec = new Uint8Array(MAX_N);
+  const alive = new Uint8Array(MAX_N);
+  let N = 0;
+  let spawnSlot = 0;
+
+  // §6.2: pre-allocate scratch arrays for rebuildSpatialHash (zero alloc in hot loop)
+  const denseMap = new Int32Array(MAX_N);   // old->dense mapping
+  const dpx = new Float32Array(MAX_N);      // dense temporaries
+  const dpy = new Float32Array(MAX_N);
+  const dppx = new Float32Array(MAX_N);
+  const dppy = new Float32Array(MAX_N);
+  const ds = new Uint8Array(MAX_N);
+  const da = new Uint8Array(MAX_N);
+
+  // Interaction matrix / affinities -------------------------------------
+  const matrix = new Float32Array(SPECIES * SPECIES);
+  const mouseAffinity = new Float32Array(SPECIES);
+
+  function randomizeRules() {
+    for (let i = 0; i < SPECIES; i++) {
+      mouseAffinity[i] = Math.random() * 2 - 1;
+      for (let j = 0; j < SPECIES; j++) matrix[i * SPECIES + j] = Math.random() * 2 - 1;
+    }
+  }
+
+  function scatterParticles(count) {
+    N = Math.min(count, MAX_N);
+    for (let i = 0; i < N; i++) {
+      px[i] = Math.random() * w;
+      py[i] = Math.random() * h;
+      ppx[i] = px[i];  // prev = pos (zero velocity)
+      ppy[i] = py[i];
+      spec[i] = (Math.random() * SPECIES) | 0;
+      alive[i] = 1;
+    }
+    spawnSlot = 0;
+  }
+
+  // Spatial hash --------------------------------------------------------
+  const cellSize = MAX_R;
+  let gridW = 1, gridH = 1, cellCount = 1;
+  let gridCount = new Int32Array(1);
+  let cellStart = new Int32Array(2);
+  let cellCursor = new Int32Array(1);
+  let cellEntries = new Int32Array(MAX_N);
+  const cellOf = new Int32Array(MAX_N);
+
+  function buildGrid() {
+    gridW = Math.max(1, Math.ceil(w / cellSize) + 1);
+    gridH = Math.max(1, Math.ceil(h / cellSize) + 1);
+    cellCount = gridW * gridH;
+    gridCount = new Int32Array(cellCount);
+    cellStart = new Int32Array(cellCount + 1);
+    cellCursor = new Int32Array(cellCount);
+  }
+
+  function rebuildSpatialHash() {
+    gridCount.fill(0);
+    let j = 0;
+    for (let i = 0; i < N; i++) {
+      if (!alive[i]) continue;
+      let cx = (px[i] / cellSize) | 0, cy = (py[i] / cellSize) | 0;
+      if (cx < 0) cx = 0; else if (cx >= gridW) cx = gridW - 1;
+      if (cy < 0) cy = 0; else if (cy >= gridH) cy = gridH - 1;
+      cellOf[j++] = cy * gridW + cx;
+    }
+    const live = j;
+    // Count sort by cell
+    for (let i = 0; i < live; i++) gridCount[cellOf[i]]++;
+    cellStart[0] = 0;
+    for (let k = 0; k < cellCount; k++) cellStart[k + 1] = cellStart[k] + gridCount[k];
+    for (let k = 0; k < cellCount; k++) cellCursor[k] = cellStart[k];
+    // rebuild loose->dense entry mapping — §6.2: uses pre-allocated denseMap
+    let dense = 0;
+    for (let i = 0; i < N; i++) {
+      if (!alive[i]) continue;
+      denseMap[i] = dense++;
+    }
+    j = 0;
+    for (let i = 0; i < N; i++) {
+      if (!alive[i]) continue;
+      const srcCell = cellOf[j++];
+      cellEntries[cellCursor[srcCell]++] = denseMap[i];
+    }
+    // remap state arrays to dense order so cellEntries/px/py/ppx/ppy stay aligned
+    if (live > 0 && denseMap[0] !== 0) {
+      // §6.2: uses pre-allocated dpx/dpy/dppx/dppy/ds/da — zero alloc
+      for (let i = 0; i < N; i++) {
+        if (!alive[i]) continue;
+        const d = denseMap[i];
+        dpx[d] = px[i]; dpy[d] = py[i];
+        dppx[d] = ppx[i]; dppy[d] = ppy[i];
+        ds[d] = spec[i]; da[d] = alive[i];
+      }
+      for (let i = 0; i < live; i++) {
+        px[i] = dpx[i]; py[i] = dpy[i];
+        ppx[i] = dppx[i]; ppy[i] = dppy[i];
+        spec[i] = ds[i]; alive[i] = da[i];
+      }
+      N = live;
+      spawnSlot = 0;
+    }
+  }
+
+  // Force law -----------------------------------------------------------
+  const BETA = 0.28;
+  function forceAt(r, a) {
+    if (r < BETA) return r / BETA - 1;
+    if (r < 1) return a * (1 - Math.abs(2 * r - 1 - BETA) / (1 - BETA));
+    return 0;
+  }
+
+  // Input ---------------------------------------------------------------
+  const mouse = { x: -9999, y: -9999, inside: false, buttons: 0 };
+  let selectedSpecies = 0;
+  let spawnTickCounter = 0;
+  let flashAlpha = 0;
+
+  canvas.addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.inside = true; mouse.buttons = e.buttons;
+  });
+  canvas.addEventListener('mouseenter', () => { mouse.inside = true; });
+  canvas.addEventListener('mouseleave', () => { mouse.inside = false; });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('mousedown', e => {
+    mouse.buttons = e.buttons;
+    if (e.button === 2) shuffleZoo();
+  });
+  window.addEventListener('mouseup', e => { mouse.buttons = e.buttons; });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const dir = Math.sign(e.deltaY);
+    selectedSpecies = ((selectedSpecies + dir) % SPECIES + SPECIES) % SPECIES;
+  }, { passive: false });
+
+  // Visual FX -----------------------------------------------------------
+  const glow = document.createElement('canvas');
+  glow.width = glow.height = 64;
+  (function () {
+    const g = glow.getContext('2d');
+    const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    grad.addColorStop(0, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  })();
+
+  const POOL = 360;
+  // §6.2: particle pool uses typed arrays (SoA) — zero alloc per particle
+  const partX = new Float32Array(POOL);
+  const partY = new Float32Array(POOL);
+  const partVx = new Float32Array(POOL);
+  const partVy = new Float32Array(POOL);
+  const partLife = new Float32Array(POOL);
+  const partMax = new Float32Array(POOL);
+  const partSize = new Float32Array(POOL);
+  const partColor = new Array(POOL); // color strings (small, not per-frame)
+  const partMode = new Uint8Array(POOL);
+  let partHead = 0;
+  function spawnPart(x, y, vx, vy, size, color, life, mode) {
+    if (!life || life <= 0) return;
+    const p = partHead; partHead = (partHead + 1) % POOL;
+    partX[p] = x; partY[p] = y;
+    partVx[p] = vx; partVy[p] = vy;
+    partSize[p] = size; partColor[p] = color;
+    partLife[p] = life; partMax[p] = life;
+    partMode[p] = mode | 0;
+  }
+
+  // ── §5 screenshake: trauma accumulates on events, shake amplitude = trauma² ──
+  let trauma = 0, shakeT = 0;
+
+  // ── §5 hit-stop: freeze physics for 40–80 ms on big impacts ──
+  const HIT_STOP_MS = 50; // ~3 frames at 60 Hz
+  let hitStop = 0;
+
+  // ── §5 ambient life: noise for idle wobble ──
+  const hash = (x, y) => {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  function noise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    return hash(xi, yi) * (1-u) * (1-v) + hash(xi+1, yi) * u * (1-v)
+         + hash(xi, yi+1) * (1-u) * v + hash(xi+1, yi+1) * u * v;
+  }
+  // FBM: sum octaves for smoother noise
+  function fbm(x, y, octaves) {
+    let val = 0, amp = 0.5, freq = 1;
+    for (let i = 0; i < octaves; i++) {
+      val += amp * noise(x * freq, y * freq);
+      freq *= 2; amp *= 0.5;
+    }
+    return val;
+  }
+
+  // ── §5 Blink timers per particle (ambient life) ──
+  const blinkTimer = new Float32Array(MAX_N);
+  const blinkState = new Float32Array(MAX_N); // 1 = open, 0 = closing/opening
+  function initBlinkTimers() {
+    for (let i = 0; i < MAX_N; i++) {
+      blinkTimer[i] = 1 + Math.random() * 4; // first blink in 1–5 seconds
+      blinkState[i] = 1;
+    }
+  }
+
+  function updateBlinkTimers(dt) {
+    for (let i = 0; i < N; i++) {
+      if (!alive[i]) continue;
+      blinkTimer[i] -= dt;
+      if (blinkTimer[i] < 0) {
+        // Blink: close for ~130ms, then reopen
+        if (blinkState[i] === 1) {
+          blinkState[i] = 0;
+          blinkTimer[i] = -0.13; // closing duration
+        } else {
+          blinkState[i] = 1;
+          blinkTimer[i] = 1 + Math.random() * 4; // next blink in 1–5s
+        }
+      }
+    }
+  }
+
+  // ── §5 ZzFX-style pentatonic synth (off by default) ──
+  const PENTATONIC = [0, 2, 4, 7, 9]; // semitone offsets
+  let audioCtx = null;
+  let muted = true;
+  let audioInitialized = false;
+
+  function initAudio() {
+    if (audioInitialized) return;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioInitialized = true;
+    } catch (e) {
+      // Audio not available
+    }
+  }
+
+  // Simple tone generator (ZzFX-inspired)
+  function playTone(freq, duration, volume, attack, type) {
+    if (!audioCtx || muted || !audioInitialized) return;
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = type || 'sine';
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+    // Envelope: attack -> decay -> release
+    const now = audioCtx.currentTime;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(volume, now + attack);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    osc.start(now);
+    osc.stop(now + duration);
+  }
+
+  // Play a pentatonic tone based on species index
+  function playPentatonic(species, volume, duration, type) {
+    const noteIdx = PENTATONIC[species % PENTATONIC.length];
+    const baseFreq = 220; // A3
+    const freq = baseFreq * Math.pow(2, noteIdx / 12);
+    playTone(freq, duration || 0.15, volume || 0.08, 0.01, type || 'sine');
+  }
+
+  // Mute toggle button
+  const muteBtn = document.getElementById('muteBtn');
+  muteBtn.addEventListener('click', () => {
+    initAudio();
+    muted = !muted;
+    muteBtn.textContent = muted ? '\uD83D\uDD07' : '\uD83D\uDD0A';
+    muteBtn.title = muted ? 'Sound on' : 'Sound off';
+  });
+
+  // Shuffle zoo with screenshake + sound
+  function shuffleZoo() {
+    randomizeRules();
+    flashAlpha = 1;
+    // §5 screenshake: add trauma on shuffle
+    trauma = Math.min(1, trauma + 0.5);
+    // §5 ambient life: burst particles from center
+    const cx = w / 2, cy = h / 2;
+    for (let i = 0; i < 20; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const spd = 2 + Math.random() * 4;
+      spawnPart(cx, cy, Math.cos(angle) * spd, Math.sin(angle) * spd,
+                3 + Math.random() * 5, speciesColor[(Math.random() * SPECIES) | 0],
+                0.3 + Math.random() * 0.3);
+    }
+    // §5 sound: pentatonic chord on shuffle
+    if (!muted && audioInitialized) {
+      playTone(220, 0.3, 0.1, 0.01, 'sine');
+      playTone(277, 0.25, 0.07, 0.01, 'triangle');
+      playTone(330, 0.2, 0.05, 0.01, 'sine');
+    }
+  }
+
+  function spawnAt(x, y, species) {
+    let idx;
+    if (N < MAX_N) { idx = N; N++; }
+    else {
+      for (let t = 0; t < MAX_N; t++) {
+        if (!alive[spawnSlot]) { idx = spawnSlot; break; }
+        spawnSlot = (spawnSlot + 1) % MAX_N;
+      }
+      if (idx === undefined) { idx = spawnSlot; N = Math.min(MAX_N, N + 1); }
+      spawnSlot = (spawnSlot + 1) % MAX_N;
+    }
+    px[idx] = x + (Math.random() - 0.5) * SPRAY_JITTER;
+    py[idx] = y + (Math.random() - 0.5) * SPRAY_JITTER;
+    ppx[idx] = px[idx];  // zero velocity
+    ppy[idx] = py[idx];
+    spec[idx] = species;
+    alive[idx] = 1;
+    // §5 ambient life: init blink timer for new particle
+    blinkTimer[idx] = 1 + Math.random() * 4;
+    blinkState[idx] = 1;
+    // §5 sound on spawn (quiet)
+    if (!muted && audioInitialized && spawnTickCounter === 0) {
+      playPentatonic(species, 0.02, 0.08, 'sine');
+    }
+  }
+
+  // ── Bloom offscreen canvas (§4.4) ─────────────────────────────────────
+  const bloomCanvas = document.createElement('canvas');
+  const bloomCtx = bloomCanvas.getContext('2d');
+
+  function fitBloom() {
+    // Bloom at half resolution for perf
+    bloomCanvas.width = Math.round(w / 2);
+    bloomCanvas.height = Math.round(h / 2);
+  }
+
+  // Vignette gradient (reused each frame) ────────────────────────────────
+  // §4.4 — subtle vignette overlay
+  const vignetteCanvas = document.createElement('canvas');
+  const vignetteCtx = vignetteCanvas.getContext('2d');
+  let vignetteDirty = true;
+
+  function buildVignette() {
+    vignetteCanvas.width = w;
+    vignetteCanvas.height = h;
+    const grad = vignetteCtx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.75);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.35)');
+    vignetteCtx.fillStyle = grad;
+    vignetteCtx.fillRect(0, 0, w, h);
+    vignetteDirty = false;
+  }
+
+  // ---------------------------------------------------------------------
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const DT = 1 / 60;
+  let acc = 0, last = performance.now();
+  let running = true;
+  // §6.2: zero-alloc FPS counter — running sum with fixed-size circular buffer
+  const FPS_N = 60;
+  const fpsBuf = new Float32Array(FPS_N);
+  let fpsIdx = 0, fpsSum = 0, fpsCount = 0;
+  let lastFrame = performance.now();
+
+  function init() {
+    fitCanvas();
+    fitBloom();
+    buildVignette();
+    initBokeh();
+    randomizeRules();
+    scatterParticles(START_N);
+    initBlinkTimers();
+    selectedSpecies = 0;
+    flashAlpha = 0;
+    trauma = 0;
+    hitStop = 0;
+    shakeT = 0;
+    mouse.buttons = 0;
+    drawMatrixPanel();
+  }
+  init();
+
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    initAudio();
+    init();
+  });
+  window.addEventListener('resize', init);
+  document.addEventListener('visibilitychange', () => {
+    running = !document.hidden;
+    if (running) last = performance.now();
+  });
+
+  const speciesSwatchEl = document.getElementById('speciesSwatch');
+  const speciesValEl = document.getElementById('speciesVal');
+  const brushValEl = document.getElementById('brushVal');
+  const countValEl = document.getElementById('countVal');
+  const fpsValEl = document.getElementById('fpsVal');
+  const matrixCanvas = document.getElementById('matrixCanvas');
+  const mctx = matrixCanvas.getContext('2d');
+  const MCELL = 18;
+  matrixCanvas.width = SPECIES * MCELL;
+  matrixCanvas.height = SPECIES * MCELL;
+  let lastSelected = -1, lastN = -1;
+
+  function drawMatrixPanel() {
+    mctx.clearRect(0, 0, matrixCanvas.width, matrixCanvas.height);
+    for (let i = 0; i < SPECIES; i++) {
+      for (let j = 0; j < SPECIES; j++) {
+        const v = matrix[i * SPECIES + j];
+        if (v >= 0) { const rgb = speciesRGB[j]; mctx.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + (0.15 + v * 0.85) + ')'; }
+        else mctx.fillStyle = 'rgba(255,60,80,' + (0.15 + (-v) * 0.85) + ')';
+        mctx.fillRect(j * MCELL, i * MCELL, MCELL - 1, MCELL - 1);
+      }
+    }
+    mctx.strokeStyle = '#fff'; mctx.lineWidth = 1.5;
+    mctx.strokeRect(0.5, selectedSpecies * MCELL + 0.5, SPECIES * MCELL - 1, MCELL - 2);
+  }
+
+  function updateUI() {
+    speciesSwatchEl.style.color = speciesColor[selectedSpecies];
+    speciesSwatchEl.style.background = speciesColor[selectedSpecies];
+    speciesValEl.textContent = selectedSpecies + 1;
+    brushValEl.textContent = (selectedSpecies + 1) + ' / ' + SPECIES;
+    if (N !== lastN) { countValEl.textContent = N; lastN = N; }
+    if (selectedSpecies !== lastSelected) { lastSelected = selectedSpecies; drawMatrixPanel(); }
+    const now = performance.now(); const dt = now - lastFrame; lastFrame = now;
+    if (dt > 0) {
+      const fps = 1000 / dt;
+      // §6.2: zero-alloc circular buffer — subtract old, add new
+      const old = fpsBuf[fpsIdx];
+      fpsSum += fps - old;
+      fpsBuf[fpsIdx] = fps;
+      fpsIdx = (fpsIdx + 1) % FPS_N;
+      if (fpsCount < FPS_N) fpsCount++;
+      fpsValEl.textContent = Math.round(fpsSum / fpsCount);
+    }
+  }
+
+  // Fixed timestep with interpolation (§2.1) ----------------------------
+  function frame(now) {
+    if (running) {
+      acc += Math.min((now - last) / 1000, 0.1);
+      last = now;
+      while (acc >= DT) { update(DT); acc -= DT; }
+      draw(acc / DT);       // pass leftover fraction for interpolation
+      updateUI();
+    } else {
+      last = now;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // Verlet integration (§3.1) -------------------------------------------
+  function update(dt) {
+    // ── §5 hit-stop: freeze physics briefly on big impacts ──
+    if (hitStop > 0) {
+      hitStop -= dt;
+      // Still update particles and timers during hit-stop
+      updateParticles(dt);
+      return;
+    }
+
+    rebuildSpatialHash();
+    const frictionFactor = Math.exp(-FRICTION_RATE * dt);
+    const maxR2 = MAX_R * MAX_R;
+    const liveCount = N;
+    const mouseActive = mouse.inside && mouse.x > -999;
+
+    for (let i = 0; i < liveCount; i++) {
+      if (!alive[i]) continue;
+      let fx = 0, fy = 0;
+      const xi = px[i], yi = py[i], si = spec[i];
+      const cell = cellOf[i];
+      const cx = cell % gridW, cy = (cell / gridW) | 0;
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        if (gy < 0 || gy >= gridH) continue;
+        const rowBase = gy * gridW;
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          if (gx < 0 || gx >= gridW) continue;
+          const ncell = rowBase + gx;
+          const start = cellStart[ncell], end = cellStart[ncell + 1];
+          for (let k = start; k < end; k++) {
+            const j = cellEntries[k];
+            if (!alive[j]) continue;
+            const dx = px[j] - xi, dy = py[j] - yi;
+            const d2 = dx * dx + dy * dy;
+            if (d2 > maxR2 || d2 < 1e-8) continue;
+            // §6.2: one sqrt per pair — compute d, r, and inv in one pass
+            const d = Math.sqrt(d2);
+            const inv = 1 / d;
+            const r = d / MAX_R;
+            const a = matrix[si * SPECIES + spec[j]];
+            const f = forceAt(r, a);
+            if (f === 0) continue;
+            fx += dx * inv * f; fy += dy * inv * f;
+          }
+        }
+      }
+      if (mouseActive) {
+        // §6.2: squared distance check — skip sqrt when outside radius
+        const mdx = mouse.x - xi, mdy = mouse.y - yi;
+        const dm2 = mdx * mdx + mdy * mdy;
+        if (dm2 < maxR2) {
+          const dm = Math.sqrt(dm2);
+          const influence = mouseAffinity[si] * (1 - dm / MOUSE_RADIUS) * MOUSE_FORCE;
+          fx += (mdx / dm) * influence;
+          fy += (mdy / dm) * influence;
+        }
+      }
+
+      // Verlet integration: velocity is implicit in (pos - prevPos)
+      const vx = (px[i] - ppx[i]) * frictionFactor;
+      const vy = (py[i] - ppy[i]) * frictionFactor;
+      ppx[i] = px[i];
+      ppy[i] = py[i];
+      px[i] += vx + fx * dt;
+      py[i] += vy + fy * dt;
+
+      // Boundary: bounce (Verlet: reflect prevPos across wall, damped 0.25)
+      if (px[i] < 0) { px[i] = 0; ppx[i] = px[i] + (px[i] - ppx[i]) * 0.25; }
+      if (px[i] > w) { px[i] = w; ppx[i] = px[i] + (px[i] - ppx[i]) * 0.25; }
+      if (py[i] < 0) { py[i] = 0; ppy[i] = py[i] + (py[i] - ppy[i]) * 0.25; }
+      if (py[i] > h) { py[i] = h; ppy[i] = py[i] + (py[i] - ppy[i]) * 0.25; }
+    }
+
+    if (mouseActive && (mouse.buttons & 1)) {
+      spawnTickCounter++;
+      if (spawnTickCounter >= SPRAY_EVERY_N_TICKS) {
+        spawnTickCounter = 0;
+        spawnAt(mouse.x, mouse.y, selectedSpecies);
+        spawnAt(mouse.x, mouse.y, selectedSpecies);
+      }
+    }
+    if (flashAlpha > 0) flashAlpha = Math.max(0, flashAlpha - dt / 0.35);
+
+    // ── §5 Ambient life: noise-driven wobble (tiny, so nothing is still) ──
+    if (!reducedMotion) {
+      const wobbleStrength = 0.08;
+      for (let i = 0; i < N; i++) {
+        if (!alive[i]) continue;
+        const wx = (fbm(blinkTimer[i] * 0.5 + i * 0.1, i * 0.01, 2) - 0.5) * wobbleStrength;
+        const wy = (fbm(i * 0.01, blinkTimer[i] * 0.5 + i * 0.1, 2) - 0.5) * wobbleStrength;
+        px[i] += wx;
+        py[i] += wy;
+      }
+    }
+
+    // Update blink timers
+    updateBlinkTimers(dt);
+
+    // Update spawned particles
+    updateParticles(dt);
+
+    // Decay trauma
+    trauma = Math.max(0, trauma - 0.02);
+    shakeT += dt;
+  }
+
+  // Update the particle pool (sparks, burst effects)
+  function updateParticles(dt) {
+    for (let i = 0; i < POOL; i++) {
+      if (partLife[i] <= 0) continue;
+      partLife[i] -= dt;
+      partVx[i] *= 0.97;
+      partVy[i] *= 0.97;
+      partVy[i] += 0.05;
+      partX[i] += partVx[i];
+      partY[i] += partVy[i];
+      if (partLife[i] <= 0) {
+        partLife[i] = 0;
+      }
+    }
+  }
+
+  // Draw with interpolation (§2.1) --------------------------------------
+  function draw(alpha) {
+    alpha = alpha || 0;  // alpha is the interpolation fraction (0 = at prev, 1 = at curr)
+
+    // ── Ambient bokeh update & draw ──────────────────────────────────────
+    if (!reducedMotion) {
+      updateBokeh();
+      drawBokeh();
+    }
+
+    // ── §4.2 Trails: destination-out fade (not source-over) ──────────────
+    // destination-out erases toward transparency, completing cleanly
+    // without the 8-bit alpha-compositing ghost-smear stall.
+    if (!reducedMotion) {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = 'rgba(0,0,0,0.08)';
+      ctx.fillRect(0, 0, w, h);
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.clearRect(0, 0, w, h);
+    }
+
+    // ── §5 screenshake: amplitude = trauma², offset AND rotation ──
+    const sh = trauma * trauma;
+    ctx.save();
+    if (sh > 0.001) {
+      ctx.translate(w / 2, h / 2);
+      // Rotation shake (Squirrel Eiserloh GDC: "Math for Game Programmers")
+      ctx.rotate((Math.sin(shakeT * 41) + Math.sin(shakeT * 27.7) * 0.6) * 0.012 * sh);
+      ctx.translate(-w / 2 + Math.sin(shakeT * 47.3) * 11 * sh, -h / 2 + Math.sin(shakeT * 38.9) * 11 * sh);
+    }
+
+    // ── Flash overlay ────────────────────────────────────────────────────
+    if (flashAlpha > 0) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = 'rgba(255,255,255,' + (flashAlpha * 0.24).toFixed(3) + ')';
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    // ── Draw particles with additive blending (§4.2 glow sprites) ────────
+    // §6.2: batch by species — draw one species at a time, change sprite once
+    // §6.2: squash/stretch without per-particle save/restore (use transform matrix)
+    ctx.globalCompositeOperation = 'lighter';
+    const half = SPRITE_SIZE / 2;
+
+    for (let s = 0; s < SPECIES; s++) {
+      for (let i = 0; i < N; i++) {
+        if (!alive[i] || spec[i] !== s) continue;
+        const ix = ppx[i] + (px[i] - ppx[i]) * alpha;
+        const iy = ppy[i] + (py[i] - ppy[i]) * alpha;
+
+        // §5 Squash and stretch: scale by velocity (Disney's first principle)
+        // §6.2: use setTransform to avoid save/restore per particle
+        const velX = px[i] - ppx[i];
+        const velY = py[i] - ppy[i];
+        const speed = Math.sqrt(velX * velX + velY * velY);
+        if (speed > 0.3 && !reducedMotion) {
+          const scaleY = 1 + velY * 0.015;
+          const scaleX = 1 / scaleY;
+          const stretchAmt = Math.min(speed * 0.04, 0.3);
+          const angle = Math.atan2(velY, velX);
+          // §6.2: single setTransform replaces save/restore
+          ctx.setTransform(
+            scaleX * Math.cos(angle) * (1 + stretchAmt),
+            scaleX * Math.sin(angle) * (1 + stretchAmt),
+            -scaleY * Math.sin(angle) * (1 - stretchAmt * 0.5),
+            scaleY * Math.cos(angle) * (1 - stretchAmt * 0.5),
+            ix, iy
+          );
+          ctx.drawImage(sprites[s], -half, -half);
+          // reset to identity for next particle
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+        } else {
+          ctx.drawImage(sprites[s], ix - half, iy - half);
+        }
+
+        // ── §5 Ambient life: blinking eyes on particles ──
+        // Only draw eyes on a subset (every 3rd) to stay within Canvas 2D budget
+        if (!reducedMotion && speed > 0.5 && (i % 3) === 0) {
+          const blink = blinkState[i];
+          const eyeSize = 2.5;
+          const eyeY = -2;
+          const eyeSpacing = 3.5;
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.globalAlpha = 0.85;
+          ctx.fillStyle = '#fff';
+          ctx.beginPath();
+          ctx.ellipse(ix - eyeSpacing, iy + eyeY, eyeSize, eyeSize * blink, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.beginPath();
+          ctx.ellipse(ix + eyeSpacing, iy + eyeY, eyeSize, eyeSize * blink, 0, 0, Math.PI * 2);
+          ctx.fill();
+          if (blink > 0.5) {
+            ctx.fillStyle = '#111';
+            ctx.beginPath();
+            ctx.arc(ix - eyeSpacing + 0.8, iy + eyeY + 0.3, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(ix + eyeSpacing + 0.8, iy + eyeY + 0.3, 1.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
+          ctx.globalCompositeOperation = 'lighter';
+        }
+      }
+    }
+
+    // ── §4.4 Bloom: downsample + blur + composite with lighter ───────────
+    // Draw scene to half-res offscreen, then blur and add back on top.
+    // This creates a soft bloom where particles cluster densely.
+    if (!reducedMotion) {
+      // Draw main scene to bloom canvas (half res)
+      bloomCtx.setTransform(0.5, 0, 0, 0.5, 0, 0);
+      bloomCtx.clearRect(0, 0, w, h);
+      // Copy the main canvas to bloom (particles only — trails are already baked)
+      bloomCtx.drawImage(canvas, 0, 0);
+
+      // Apply blur + lighter composite
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.filter = 'blur(8px)';
+      ctx.globalAlpha = 0.3;
+      ctx.drawImage(bloomCanvas, 0, 0, w, h);
+      ctx.globalAlpha = 1;
+      ctx.filter = 'none';
+    }
+
+    // ── §4.4 Vignette ────────────────────────────────────────────────────
+    if (!reducedMotion) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.drawImage(vignetteCanvas, 0, 0);
+    }
+
+    // ── Draw spawned particles (sparks, burst effects) ───────────────────
+    if (!reducedMotion) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < POOL; i++) {
+        if (partLife[i] <= 0) continue;
+        const lifeRatio = partLife[i] / partMax[i];
+        ctx.globalAlpha = lifeRatio * 0.9;
+        ctx.fillStyle = partColor[i];
+        ctx.beginPath();
+        ctx.arc(partX[i], partY[i], partSize[i] * lifeRatio, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // ── Mouse cursor indicator ───────────────────────────────────────────
+    if (mouse.inside && mouse.x > -999) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = speciesColor[selectedSpecies]; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(mouse.x, mouse.y, 9, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(mouse.x, mouse.y, MOUSE_RADIUS, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    ctx.restore(); // screenshake transform
+  }
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

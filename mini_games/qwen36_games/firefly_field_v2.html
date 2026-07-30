@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Firefly Field v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0a0818;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#controls .key{color:#8aa}
+#controls .val{color:#ffe58a;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>&#x1F3EE; Firefly Field v2</b><br>
+<span class="key">Move</span> — idle attract gently<br>
+<span class="key">Left drag</span> — warm lantern (gather)<br>
+<span class="key">Right click</span> — pulse (desync nearby)<br>
+<span class="key">Scroll</span> — swarm count: <span class="val" id="countVal">120</span><br>
+<span class="key">Sync</span>: <span class="val" id="syncVal">0%</span>
+</div>
+<button id="reset">&#x21BA; Reset field</button>
+<script>
+(function(){
+'use strict';
+
+/* ── constants ─────────────────────────────────────────────── */
+const TWO_PI = Math.PI * 2;
+const DT = 1 / 60;
+const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ── canvas setup (DPR-aware, §2.2) ───────────────────────── */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const glowCanv = document.createElement('canvas');
+const gctx = glowCanv.getContext('2d');
+const bloomCanv = document.createElement('canvas');
+const bctx = bloomCanv.getContext('2d');
+const blurCanv = document.createElement('canvas');
+const blctx = blurCanv.getContext('2d');
+let w, h, dpr;
+
+function fitCanvas() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  w = window.innerWidth; h = window.innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  glowCanv.width = w * dpr; glowCanv.height = h * dpr;
+  glowCanv.style.width = w + 'px'; glowCanv.style.height = h + 'px';
+  gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  bloomCanv.width = (w / 2) | 0; bloomCanv.height = (h / 2) | 0;
+  blurCanv.width = (w / 2) | 0; blurCanv.height = (h / 2) | 0;
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+/* ── pre-rendered glow sprites (§4.2) ─────────────────────── */
+function makeSprite(sz, stops) {
+  const c = document.createElement('canvas');
+  c.width = c.height = sz;
+  const g = c.getContext('2d');
+  const r = sz / 2;
+  const grad = g.createRadialGradient(r, r, 0, r, r, r);
+  for (let i = 0; i < stops.length; i++) grad.addColorStop(stops[i][0], stops[i][1]);
+  g.fillStyle = grad; g.fillRect(0, 0, sz, sz);
+  return c;
+}
+
+const SPRITE_IDLE = makeSprite(64, [
+  [0, 'rgba(210,255,160,0.95)'], [0.35, 'rgba(150,230,120,0.35)'], [1, 'rgba(120,200,90,0)']
+]);
+const SPRITE_FLASH = makeSprite(128, [
+  [0, 'rgba(255,250,210,1)'], [0.3, 'rgba(255,225,140,0.55)'], [1, 'rgba(255,200,110,0)']
+]);
+const SPRITE_LANTERN = makeSprite(280, [
+  [0, 'rgba(255,225,170,0.85)'], [0.4, 'rgba(255,180,90,0.35)'], [1, 'rgba(255,140,60,0)']
+]);
+
+const SPRITE_FLASH_DEEP = makeSprite(256, [
+  [0, 'rgba(255,255,240,1)'], [0.15, 'rgba(255,240,180,0.8)'],
+  [0.4, 'rgba(255,200,100,0.35)'], [0.7, 'rgba(255,160,60,0.12)'], [1, 'rgba(255,120,40,0)']
+]);
+
+/* ── cosine palette (§4.1a) — precomputed, zero alloc per frame ── */
+const PAL_SIZE = 64;
+const palR = new Float32Array(PAL_SIZE);
+const palG = new Float32Array(PAL_SIZE);
+const palB = new Float32Array(PAL_SIZE);
+const palCSS = new Array(PAL_SIZE);
+(function() {
+  const palA = [.5,.5,.5], palB = [.5,.5,.5];
+  const palC = [1, 1.1, .7], palD = [.00, .33, .67];
+  for (let i = 0; i < PAL_SIZE; i++) {
+    const t = i / PAL_SIZE;
+    let r = 0, g = 0, b = 0;
+    for (let j = 0; j < 3; j++) {
+      const v = palA[j] + palB[j] * Math.cos(TWO_PI * (palC[j] * t + palD[j]));
+      const cv = Math.max(0, Math.min(1, v));
+      if (j === 0) r = cv; else if (j === 1) g = cv; else b = cv;
+    }
+    palR[i] = r; palG[i] = g; palB[i] = b;
+    palCSS[i] = 'rgb(' + ((r*255)|0) + ',' + ((g*255)|0) + ',' + ((b*255)|0) + ')';
+  }
+})();
+
+/* ── precomputed fade value for trails (§6.2: no per-frame strings) ── */
+const TRAIL_FADE_STR = 'rgba(0,0,0,0.09)';
+
+/* ── background: sky, stars, moon, grass ──────────────────── */
+const STAR_COUNT = 140;
+const stars = Array.from({length: STAR_COUNT}, () => ({
+  fx: Math.random(), fy: Math.random() * 0.55,
+  r: Math.random() * 1.6 + 0.3,
+  phase: Math.random() * TWO_PI,
+  speed: 0.3 + Math.random() * 1.2,
+  hue: Math.random() > 0.7 ? 200 + Math.random() * 60 : 0,
+  bright: 0.5 + Math.random() * 0.5,
+  twinkleMode: Math.random() > 0.6 ? 'blink' : 'fade',
+  blinkSpeed: 3 + Math.random() * 8,
+  breatheAmp: 0.1 + Math.random() * 0.2,
+  breatheSpeed: 0.5 + Math.random() * 1.5,
+  breathePhase: Math.random() * TWO_PI
+}));
+
+const moon = {fx: 0.82, fy: 0.16, r: 46, breathePhase: 0, breatheSpeed: 0.3};
+
+const BLADE_COUNT = 120;
+const grass = Array.from({length: BLADE_COUNT}, () => ({
+  fx: Math.random(), baseH: 35 + Math.random() * 80,
+  phase: Math.random() * TWO_PI, swayAmp: 0.06 + Math.random() * 0.10,
+  depth: Math.random(), bend: 0, bendVel: 0,
+  palT: Math.random() * 0.15,
+  blinkPhase: Math.random() * 100, blinkSpeed: 0.5 + Math.random() * 2,
+  blinkActive: false, blinkTimer: 0
+})).sort((a, b) => a.depth - b.depth);
+
+/* ── fireflies — typed arrays (SOA, §6.2) ─────────────────── */
+const DEFAULT_COUNT = 120, MIN_COUNT = 15, MAX_COUNT = 300, COUNT_STEP = 10;
+const PERCEP_R = 100, PERCEP_R2 = PERCEP_R * PERCEP_R;
+const SEP_R = 30;
+const FOV_HALF_COS = Math.cos(100 * Math.PI / 180);
+const maxSpeed = reducedMotion ? 30 : 55, minSpeed = 8;
+const KURAMOTO_K = 3.0;
+const BOUNDARY_MARGIN = 80, BOUNDARY_ACCEL = 300;
+const MOUSE_INFLUENCE_R = 220, MOUSE_SLOW_THRESH = 55;
+const MOUSE_CURIOUS_ACCEL = 45, MOUSE_SCATTER_ACCEL_MAX = 400;
+const LANTERN_R = 280, LANTERN_ACCEL = 320;
+
+let N = DEFAULT_COUNT;
+
+// Structure-of-Arrays (SOA) with typed arrays — no GC pressure (§6.2)
+let fx_arr, fy_arr, fvx_arr, fvy_arr, fpx_arr, fpy_arr; // positions + velocity
+let fphase_arr, ffreq_arr, fheat_arr, fseed_arr, fwarmth_arr, fhueOff_arr;
+let ftrailLen_arr, ftrailMax_arr;
+// Trails stored as flat typed arrays: ftrail_x[i*trailMax + t]
+const MAX_TRAIL = 18;
+let ftrail_x, ftrail_y, ftrail_heat;
+
+// Freelist for firefly count changes
+let freeList = [];
+let freeTop = 0;
+
+function allocFireflies(count) {
+  fx_arr = new Float32Array(count);
+  fy_arr = new Float32Array(count);
+  fvx_arr = new Float32Array(count);
+  fvy_arr = new Float32Array(count);
+  fpx_arr = new Float32Array(count);
+  fpy_arr = new Float32Array(count);
+  fphase_arr = new Float32Array(count);
+  ffreq_arr = new Float32Array(count);
+  fheat_arr = new Float32Array(count);
+  fseed_arr = new Float32Array(count);
+  fwarmth_arr = new Float32Array(count);
+  fhueOff_arr = new Float32Array(count);
+  ftrailLen_arr = new Int32Array(count);
+  ftrailMax_arr = new Int32Array(count);
+  ftrail_x = new Float32Array(count * MAX_TRAIL);
+  ftrail_y = new Float32Array(count * MAX_TRAIL);
+  ftrail_heat = new Float32Array(count * MAX_TRAIL);
+}
+
+function makeFirefly(i, x, y) {
+  const ang = Math.random() * TWO_PI;
+  fx_arr[i] = x !== undefined ? x : Math.random() * w;
+  fy_arr[i] = y !== undefined ? y : Math.random() * h;
+  fvx_arr[i] = Math.cos(ang) * 12;
+  fvy_arr[i] = Math.sin(ang) * 12;
+  fphase_arr[i] = Math.random() * TWO_PI;
+  ffreq_arr[i] = TWO_PI / (3.5 + Math.random() * 3);
+  fheat_arr[i] = 0;
+  fseed_arr[i] = Math.random() * TWO_PI;
+  fwarmth_arr[i] = Math.random();
+  fhueOff_arr[i] = Math.random() * 40 - 20;
+  ftrailLen_arr[i] = 0;
+  ftrailMax_arr[i] = MAX_TRAIL;
+}
+
+function seedField(n) {
+  if (fx_arr && fx_arr.length === n) {
+    for (let i = 0; i < n; i++) makeFirefly(i);
+    N = n;
+    return;
+  }
+  // Resize: copy old data if possible
+  const oldN = fx_arr ? fx_arr.length : 0;
+  allocFireflies(n);
+  for (let i = 0; i < n; i++) {
+    if (i < oldN) {
+      fx_arr[i] = fx_arr[i] || Math.random() * w;
+      fy_arr[i] = fy_arr[i] || Math.random() * h;
+    } else {
+      makeFirefly(i);
+    }
+  }
+  N = n;
+}
+seedField(DEFAULT_COUNT);
+let targetCount = DEFAULT_COUNT;
+
+/* ── spatial hash grid (§6.2, §3.3) — O(n) neighbor lookups ── */
+const CELL_SIZE = PERCEP_R; // maxRadius * 2 ≈ 100
+const HASH_MULT_X = 73856093, HASH_MULT_Y = 19349663;
+let hashGrid = new Map();
+let gridCols, gridRows;
+
+function gridReset() {
+  hashGrid.clear();
+  gridCols = ((w / CELL_SIZE) | 0) + 2;
+  gridRows = ((h / CELL_SIZE) | 0) + 2;
+}
+
+function gridKey(cx, cy) {
+  return cx * HASH_MULT_X ^ cy * HASH_MULT_Y;
+}
+
+function gridInsert(i) {
+  const cx = ((fx_arr[i] / CELL_SIZE) | 0);
+  const cy = ((fy_arr[i] / CELL_SIZE) | 0);
+  const key = gridKey(cx, cy);
+  let bucket = hashGrid.get(key);
+  if (!bucket) { bucket = []; hashGrid.set(key, bucket); }
+  bucket.push(i);
+}
+
+// Pre-allocated neighbor array to avoid per-frame allocations (§6.2)
+let neighborBuf = new Int32Array(256);
+function gridQuery(cx, cy, result) {
+  let count = 0;
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const key = gridKey(cx + dx, cy + dy);
+      const bucket = hashGrid.get(key);
+      if (bucket) {
+        for (let k = 0; k < bucket.length && count < result.length; k++) {
+          result[count++] = bucket[k];
+        }
+      }
+    }
+  }
+  return count;
+}
+
+/* ── particles — typed freelist pool (§6.2, §3.3) ─────────── */
+const MAX_PARTICLES = 300;
+const p_alive = new Uint8Array(MAX_PARTICLES);
+const p_x = new Float32Array(MAX_PARTICLES);
+const p_y = new Float32Array(MAX_PARTICLES);
+const p_vx = new Float32Array(MAX_PARTICLES);
+const p_vy = new Float32Array(MAX_PARTICLES);
+const p_life = new Float32Array(MAX_PARTICLES);
+const p_maxLife = new Float32Array(MAX_PARTICLES);
+const p_colorIdx = new Int32Array(MAX_PARTICLES); // index into palCSS
+const p_size = new Float32Array(MAX_PARTICLES);
+let freelist = [];
+for (let i = 0; i < MAX_PARTICLES; i++) freelist.push(i);
+
+function spawnParticles(x, y, count, colorIdx) {
+  let spawned = 0;
+  while (freelist.length > 0 && spawned < count) {
+    const i = freelist.pop();
+    p_alive[i] = 1;
+    p_x[i] = x; p_y[i] = y;
+    const a = Math.random() * TWO_PI, sp = 30 + Math.random() * 60;
+    p_vx[i] = Math.cos(a) * sp; p_vy[i] = Math.sin(a) * sp;
+    p_life[i] = 0.4 + Math.random() * 0.5;
+    p_maxLife[i] = p_life[i];
+    p_colorIdx[i] = colorIdx !== undefined ? colorIdx : ((Math.random() * 19) | 0);
+    p_size[i] = 1.5 + Math.random() * 2.5;
+    spawned++;
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    if (!p_alive[i]) continue;
+    p_x[i] += p_vx[i] * dt; p_y[i] += p_vy[i] * dt;
+    p_vx[i] *= 0.97; p_vy[i] *= 0.97;
+    p_life[i] -= dt;
+    if (p_life[i] <= 0) { p_alive[i] = 0; freelist.push(i); }
+  }
+}
+
+/* ── ambient floating particles (§4.5 noise + §5 ambient life) ── */
+const AMBIENT_COUNT = 40;
+const amb_x = new Float32Array(AMBIENT_COUNT);
+const amb_y = new Float32Array(AMBIENT_COUNT);
+const amb_vx = new Float32Array(AMBIENT_COUNT);
+const amb_vy = new Float32Array(AMBIENT_COUNT);
+const amb_r = new Float32Array(AMBIENT_COUNT);
+const amb_hue = new Float32Array(AMBIENT_COUNT);
+const amb_phase = new Float32Array(AMBIENT_COUNT);
+(function initAmbient() {
+  for (let i = 0; i < AMBIENT_COUNT; i++) {
+    amb_x[i] = Math.random(); amb_y[i] = Math.random();
+    amb_vx[i] = (Math.random() - 0.5) * 0.003;
+    amb_vy[i] = -0.002 - Math.random() * 0.004;
+    amb_r[i] = 1 + Math.random() * 2.5;
+    amb_hue[i] = 60 + Math.random() * 40;
+    amb_phase[i] = Math.random() * TWO_PI;
+  }
+})();
+
+function updateAmbient(dt) {
+  for (let i = 0; i < AMBIENT_COUNT; i++) {
+    amb_x[i] += amb_vx[i] * dt * 60 + Math.sin(simTime * 0.3 + amb_phase[i]) * 0.0003;
+    amb_y[i] += amb_vy[i] * dt * 60;
+    if (amb_y[i] < -0.05) { amb_y[i] = 1.05; amb_x[i] = Math.random(); }
+    if (amb_x[i] < -0.1) amb_x[i] = 1.1;
+    if (amb_x[i] > 1.1) amb_x[i] = -0.1;
+  }
+}
+
+/* ── pulses (right click) ─────────────────────────────────── */
+const PULSE_SPEED = 550;
+let pulses = [];
+
+/* ── lantern (left hold) ──────────────────────────────────── */
+const lantern = {active: false, x: 0, y: 0};
+
+/* ── screenshake (§5) ─────────────────────────────────────── */
+let trauma = 0;
+let shakePhaseX = Math.random() * 1000;
+let shakePhaseY = Math.random() * 1000;
+let shakePhaseRot = Math.random() * 1000;
+
+// Pre-allocated noise lattice (avoids per-frame Math.sin for hash)
+const HASH_TABLE_SIZE = 1024;
+const hashTable = new Float32Array(HASH_TABLE_SIZE);
+(function initHash() {
+  for (let i = 0; i < HASH_TABLE_SIZE; i++) {
+    hashTable[i] = Math.sin(i * 127.1) * 43758.5453 - Math.floor(Math.sin(i * 127.1) * 43758.5453);
+  }
+})();
+
+function smoothNoise(t) {
+  const i = (t % HASH_TABLE_SIZE + HASH_TABLE_SIZE) | 0;
+  const f = t - Math.floor(t);
+  const i1 = (i + 1) % HASH_TABLE_SIZE;
+  const u = f * f * (3 - 2 * f);
+  return hashTable[i] * (1 - u) + hashTable[i1] * u;
+}
+
+/* ── hit-stop (§5) ────────────────────────────────────────── */
+let hitStopRemaining = 0;
+
+/* ── mouse ─────────────────────────────────────────────────── */
+const mouse = {x: w / 2, y: h / 2};
+let lastMouse = {x: w / 2, y: h / 2, t: performance.now()};
+let cursorSpeed = 0;
+let lastMoveTime = performance.now();
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('mousemove', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  const now = performance.now();
+  const dt = Math.max(1, now - lastMouse.t) / 1000;
+  const d = Math.hypot(mouse.x - lastMouse.x, mouse.y - lastMouse.y);
+  const inst = d / dt;
+  cursorSpeed = cursorSpeed * 0.75 + inst * 0.25;
+  lastMouse = {x: mouse.x, y: mouse.y, t: now};
+  lastMoveTime = now;
+  if (lantern.active) { lantern.x = mouse.x; lantern.y = mouse.y; }
+});
+canvas.addEventListener('mousedown', e => {
+  if (e.button === 0) { lantern.active = true; lantern.x = mouse.x; lantern.y = mouse.y; }
+  if (e.button === 2) {
+    const diag = Math.hypot(w, h);
+    pulses.push({x: mouse.x, y: mouse.y, age: 0, maxAge: diag / PULSE_SPEED + 0.2, hit: new Set()});
+    playPulse();
+    trauma = Math.min(1, trauma + 0.15);
+  }
+});
+window.addEventListener('mouseup', e => { if (e.button === 0) lantern.active = false; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  targetCount = Math.max(MIN_COUNT, Math.min(MAX_COUNT, targetCount - Math.sign(e.deltaY) * COUNT_STEP));
+  if (fireflyCount < targetCount) {
+    while (fireflyCount < targetCount) { makeFirefly(fireflyCount); fireflyCount++; }
+  } else if (fireflyCount > targetCount) {
+    fireflyCount = targetCount;
+  }
+}, {passive: false});
+
+/* ── ZzFX sound (§5) ──────────────────────────────────────── */
+const zzfx=(...u)=>{let a=Math.pow(2,1/12),b=440*a/440,s=u[0]||440,e=(u[1]||0)/12,r=u[2]||.1,c=(u[3]||0)/100,d=u[4]||0,f=(u[5]||0)/100,g=u[6]!==undefined?u[6]:0,h=u[7]||0,j=u[8]||0,l=u[9]||0,m=u[10]||0,v=u[11]!==undefined?u[11]:0,w=u[12]||0,x=u[13]||0,y=u[14]||0,z=u[15]||0,A=u[16]||0,B=u[17]||0,C=u[18]||0,D=u[19]||0,E=u[20]||0,F=u[21]||0;let G=Math.pow(2,e)*s,b=0,I=new Float32Array(Math.floor(44100*(c+0.01+d+f+0.01+Math.min(m,1)/20)));for(let k=0;k<I.length;k++){let n=k/44100;if(n<c){let o=n/c;g===0?o=o*o:g===1?o=Math.sin(Math.PI/2*o):g===2?o=Math.log(1+o*2)/Math.log(3):g===3?o=Math.pow(o,.3):o=Math.sqrt(o);let p=0;if(h>0){let q=Math.floor(n*44100/h)%2===0?1:-1;p=q*0.02*h}let r=0;if(j>0){let s=Math.floor(n*44100/j)%2===0?1:-1;r=s*0.02*j}let t=0;if(x>0){let u=Math.floor(n*44100/x)%2===0?1:-1;t=u*0.01*x}let v=Math.sin(2*Math.PI*(G+n*(B-A)/2+0.5*A)*n)*((0.3+0.3*y)*o+(0.3+0.3*C)*o*Math.sin(2*Math.PI*(D+n*(E-D)/2+0.5*D)*n))+(0.2+0.1*w)*o*Math.sin(2*Math.PI*(G*1.01+n*(F-G*1.01)/2+0.5*G*1.01)*n)+p+r+t;v*=Math.pow(2,z/80);v*=Math.min(1,1/Math.abs(v||1));I[k]=v}}if(!audioCtx)return I;let K=audioCtx.createBuffer(1,I.length,44100),L=K.getChannelData(0);for(let k=0;k<I.length;k++)L[k]=I[k];let M=audioCtx.createBufferSource();M.buffer=K;let N=audioCtx.createGain();N.gain.value=0.12;M.connect(N);N.connect(audioCtx.destination);M.start();return M};
+let audioCtx = null;
+
+const ZZFX_CHIME = [800, 200, 0.3, 0.15, 0, 0.01, 0.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0];
+const ZZFX_POP = [400, 300, 0.08, 0.12, 0, 0.005, 0.05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.15, 0, 0, 0, 0];
+const ZZFX_PULSE = [200, 150, 0.5, 0.1, 0.3, 0.01, 0.3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.5, 0, 0, 0, 0];
+
+function playChime() {
+  if (reducedMotion || !audioCtx) return;
+  try { zzfx(...ZZFX_CHIME); } catch(e) {}
+}
+function playPop() {
+  if (reducedMotion || !audioCtx) return;
+  try { zzfx(...ZZFX_POP); } catch(e) {}
+}
+function playPulse() {
+  if (reducedMotion || !audioCtx) return;
+  try { zzfx(...ZZFX_PULSE); } catch(e) {}
+}
+
+/* ── OKLCH helper (§4.1b) ─────────────────────────────────── */
+function oklchCSS(l, c, hDeg, a) {
+  const ha = a !== undefined ? a : 1;
+  return a !== undefined
+    ? 'oklch(' + l.toFixed(2) + ' ' + c.toFixed(3) + ' ' + hDeg.toFixed(0) + ' / ' + ha.toFixed(2) + ')'
+    : 'oklch(' + l.toFixed(2) + ' ' + c.toFixed(3) + ' ' + hDeg.toFixed(0) + ')';
+}
+
+/* ── simulation ────────────────────────────────────────────── */
+let simTime = 0;
+let syncPercent = 0;
+let lastSyncFlash = 0;
+let fireflyCount = DEFAULT_COUNT;
+
+/* ── scratch vectors (pre-allocated, §6.2: zero alloc in hot loop) ── */
+// Reusable arrays for neighbor iteration
+const _neighbors = new Int32Array(256);
+
+function updateGrass(dt) {
+  for (let bi = 0; bi < BLADE_COUNT; bi++) {
+    const b = grass[bi];
+    const bx = b.fx * w;
+    let push = 0;
+    for (let fi = 0; fi < fireflyCount; fi++) {
+      if (fy_arr[fi] < h - 140) continue;
+      const dx = fx_arr[fi] - bx;
+      if (Math.abs(dx) > 38) continue;
+      push += (1 - Math.abs(dx) / 38) * (fvx_arr[fi] > 0 ? 1 : -1) * 0.35;
+    }
+    const target = push;
+    b.bendVel += (target - b.bend) * 10 * dt;
+    b.bendVel *= 0.9;
+    b.bend += b.bendVel * dt;
+
+    b.blinkPhase += dt;
+    if (!b.blinkActive && b.blinkPhase > b.blinkSpeed) {
+      b.blinkActive = true;
+      b.blinkTimer = 0.15 + Math.random() * 0.25;
+      b.blinkPhase = 0;
+    }
+    if (b.blinkActive) {
+      b.blinkTimer -= dt;
+      if (b.blinkTimer <= 0) b.blinkActive = false;
+    }
+  }
+}
+
+function updatePulses(dt) {
+  for (let pi = 0; pi < pulses.length; pi++) {
+    const p = pulses[pi];
+    p.age += dt;
+    const ringR = p.age * PULSE_SPEED;
+    for (let fi = 0; fi < fireflyCount; fi++) {
+      if (p.hit.has(fi)) continue;
+      const dx = fx_arr[fi] - p.x, dy = fy_arr[fi] - p.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= ringR * ringR) {
+        p.hit.add(fi);
+        fphase_arr[fi] = Math.random() * TWO_PI;
+        fheat_arr[fi] = 1;
+        const ang = Math.atan2(dy, dx);
+        fvx_arr[fi] += Math.cos(ang) * 40;
+        fvy_arr[fi] += Math.sin(ang) * 40;
+      }
+    }
+  }
+  // Compact pulses array (only one splice per frame, not per firefly)
+  let write = 0;
+  for (let read = 0; read < pulses.length; read++) {
+    if (pulses[read].age < pulses[read].maxAge) {
+      pulses[write++] = pulses[read];
+    }
+  }
+  pulses.length = write;
+}
+
+/* ── Boids update with spatial hashing (§6.2, §3.3) ───────── */
+function updateFireflies(dt) {
+  if (performance.now() - lastMoveTime > 100) cursorSpeed *= 0.9;
+
+  // Build spatial hash grid
+  gridReset();
+  for (let i = 0; i < fireflyCount; i++) gridInsert(i);
+
+  let sumCos = 0, sumSin = 0;
+  const _nb = _neighbors; // reuse pre-allocated buffer
+
+  for (let i = 0; i < fireflyCount; i++) {
+    const fx = fx_arr[i], fy = fy_arr[i];
+    const speed = Math.sqrt(fvx_arr[i] * fvx_arr[i] + fvy_arr[i] * fvy_arr[i]) || 1e-4;
+    const hx = fvx_arr[i] / speed, hy = fvy_arr[i] / speed;
+
+    let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0;
+    let count = 0, phaseSum = 0;
+
+    // Spatial hash: only check 9 cells (§3.3)
+    const cx = (fx / CELL_SIZE) | 0;
+    const cy = (fy / CELL_SIZE) | 0;
+    let nCount = gridQuery(cx, cy, _nb);
+
+    for (let ni = 0; ni < nCount; ni++) {
+      const j = _nb[ni];
+      if (j === i) continue;
+      const dx = fx_arr[j] - fx, dy = fy_arr[j] - fy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > PERCEP_R2) continue;
+      const d = Math.sqrt(d2) + 1e-6;
+
+      if (d < SEP_R) { sepX -= dx / d; sepY -= dy / d; }
+
+      const dot = (dx / d) * hx + (dy / d) * hy;
+      if (dot < FOV_HALF_COS) continue;
+
+      aliX += fvx_arr[j]; aliY += fvy_arr[j];
+      cohX += fx_arr[j]; cohY += fy_arr[j];
+      phaseSum += Math.sin(fphase_arr[j] - fphase_arr[i]);
+      count++;
+    }
+
+    let ax = 0, ay = 0;
+    if (count > 0) {
+      ax += (aliX / count - fvx_arr[i]) * 1.4;
+      ay += (aliY / count - fvy_arr[i]) * 1.4;
+      ax += (cohX / count - fx_arr[i]) * 0.5;
+      ay += (cohY / count - fy_arr[i]) * 0.5;
+    }
+    ax += sepX * 80;
+    ay += sepY * 80;
+
+    // mouse influence
+    const mdx = mouse.x - fx, mdy = mouse.y - fy;
+    const md = Math.sqrt(mdx * mdx + mdy * mdy) + 1e-4;
+    if (md < MOUSE_INFLUENCE_R) {
+      const falloff = 1 - md / MOUSE_INFLUENCE_R;
+      if (cursorSpeed < MOUSE_SLOW_THRESH) {
+        ax += (mdx / md) * MOUSE_CURIOUS_ACCEL * falloff;
+        ay += (mdy / md) * MOUSE_CURIOUS_ACCEL * falloff;
+      } else {
+        const s = Math.min(cursorSpeed / 900, 1);
+        ax -= (mdx / md) * MOUSE_SCATTER_ACCEL_MAX * s * falloff;
+        ay -= (mdy / md) * MOUSE_SCATTER_ACCEL_MAX * s * falloff;
+      }
+    }
+
+    // lantern
+    if (lantern.active) {
+      const ldx = lantern.x - fx, ldy = lantern.y - fy;
+      const ld = Math.sqrt(ldx * ldx + ldy * ldy) + 1e-4;
+      if (ld < LANTERN_R) {
+        const falloff = 1 - ld / LANTERN_R;
+        ax += (ldx / ld) * LANTERN_ACCEL * falloff;
+        ay += (ldy / ld) * LANTERN_ACCEL * falloff;
+      }
+    }
+
+    // ambient wobble
+    const wobble = Math.sin(simTime * 1.6 + fseed_arr[i]) * (reducedMotion ? 6 : 16);
+    ax += -hy * wobble; ay += hx * wobble;
+
+    // boundary
+    if (fx < BOUNDARY_MARGIN) ax += BOUNDARY_ACCEL * (1 - fx / BOUNDARY_MARGIN);
+    if (fx > w - BOUNDARY_MARGIN) ax -= BOUNDARY_ACCEL * (1 - (w - fx) / BOUNDARY_MARGIN);
+    if (fy < BOUNDARY_MARGIN) ay += BOUNDARY_ACCEL * (1 - fy / BOUNDARY_MARGIN);
+    if (fy > h - BOUNDARY_MARGIN) ay -= BOUNDARY_ACCEL * (1 - (h - fy) / BOUNDARY_MARGIN);
+
+    fvx_arr[i] += ax * dt; fvy_arr[i] += ay * dt;
+    let sp = Math.sqrt(fvx_arr[i] * fvx_arr[i] + fvy_arr[i] * fvy_arr[i]);
+    if (sp > maxSpeed) { fvx_arr[i] = (fvx_arr[i] / sp) * maxSpeed; fvy_arr[i] = (fvy_arr[i] / sp) * maxSpeed; }
+    else if (sp < minSpeed && sp > 1e-4) { fvx_arr[i] = (fvx_arr[i] / sp) * minSpeed; fvy_arr[i] = (fvy_arr[i] / sp) * minSpeed; }
+
+    fx_arr[i] += fvx_arr[i] * dt; fy_arr[i] += fvy_arr[i] * dt;
+    if (fx_arr[i] < 0) fx_arr[i] = 0;
+    else if (fx_arr[i] > w) fx_arr[i] = w;
+    if (fy_arr[i] < 0) fy_arr[i] = 0;
+    else if (fy_arr[i] > h) fy_arr[i] = h;
+
+    // Kuramoto phase
+    let rate = ffreq_arr[i] + (count > 0 ? KURAMOTO_K * (phaseSum / count) : 0);
+    if (rate < 0.15) rate = 0.15; else if (rate > 5) rate = 5;
+    fphase_arr[i] += rate * dt;
+    if (fphase_arr[i] >= TWO_PI) { fphase_arr[i] -= TWO_PI; fheat_arr[i] = 1; }
+    fheat_arr[i] *= Math.exp(-6 * dt);
+
+    // trail accumulation
+    const tLen = ftrailLen_arr[i];
+    const tMax = ftrailMax_arr[i];
+    const base = i * MAX_TRAIL;
+    ftrail_x[base + tLen] = fx_arr[i];
+    ftrail_y[base + tLen] = fy_arr[i];
+    ftrail_heat[base + tLen] = fheat_arr[i];
+    ftrailLen_arr[i] = tLen + 1;
+    if (ftrailLen_arr[i] > tMax) ftrailLen_arr[i] = tMax;
+
+    sumCos += Math.cos(fphase_arr[i]);
+    sumSin += Math.sin(fphase_arr[i]);
+  }
+
+  syncPercent = fireflyCount > 0 ? Math.sqrt(sumCos * sumCos + sumSin * sumSin) / fireflyCount : 0;
+
+  // screenshake on sync peaks
+  if (syncPercent > 0.7) {
+    const now = performance.now();
+    if (now - lastSyncFlash > 1500) {
+      trauma = Math.min(1, trauma + syncPercent * 0.3);
+      lastSyncFlash = now;
+      playChime();
+      hitStopRemaining = 0.05;
+      // spawn particles on some fireflies (batch by color index, §6.2)
+      for (let fi = 0; fi < fireflyCount; fi += 4) {
+        if (fheat_arr[fi] > 0.5) {
+          const colorIdx = ((fheat_arr[fi] * 15 + simTime * 3) | 0) % 19;
+          spawnParticles(fx_arr[fi], fy_arr[fi], 3, colorIdx);
+          playPop();
+        }
+      }
+    }
+  }
+}
+
+function update(dt) {
+  if (hitStopRemaining > 0) {
+    hitStopRemaining -= dt;
+    simTime += dt;
+    trauma *= Math.exp(-4 * dt);
+    updateParticles(dt);
+    updateAmbient(dt);
+    return;
+  }
+
+  simTime += dt;
+  trauma *= Math.exp(-4 * dt);
+  updatePulses(dt);
+  updateGrass(dt);
+  updateFireflies(dt);
+  updateParticles(dt);
+  updateAmbient(dt);
+}
+
+/* ── drawing ───────────────────────────────────────────────── */
+function drawSky() {
+  const g = ctx.createRadialGradient(w * 0.5, h * 0.4, 0, w * 0.5, h * 0.4, Math.max(w, h) * 0.8);
+  g.addColorStop(0, '#0a1428');
+  g.addColorStop(0.5, '#08171c');
+  g.addColorStop(1, '#060e12');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function drawMoon() {
+  const mx = moon.fx * w, my = moon.fy * h;
+  const breathe = 1 + 0.03 * Math.sin(simTime * moon.breatheSpeed + moon.breathePhase);
+  const mr = moon.r * breathe;
+  const glowR = mr * 5;
+  const g = ctx.createRadialGradient(mx, my, mr * 0.5, mx, my, glowR);
+  g.addColorStop(0, 'rgba(220,235,210,0.15)');
+  g.addColorStop(0.5, 'rgba(200,220,190,0.05)');
+  g.addColorStop(1, 'rgba(200,220,190,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(mx, my, glowR, 0, TWO_PI); ctx.fill();
+
+  const core = ctx.createRadialGradient(mx - mr * 0.3, my - mr * 0.3, mr * 0.1, mx, my, mr);
+  core.addColorStop(0, '#fbfbe8'); core.addColorStop(1, '#d8dfc0');
+  ctx.fillStyle = core;
+  ctx.beginPath(); ctx.arc(mx, my, mr, 0, TWO_PI); ctx.fill();
+}
+
+function drawStars() {
+  for (let si = 0; si < STAR_COUNT; si++) {
+    const s = stars[si];
+    const sx = s.fx * w, sy = s.fy * h;
+    let twinkle;
+    if (s.twinkleMode === 'blink') {
+      twinkle = Math.pow(Math.max(0, Math.sin(simTime * s.blinkSpeed + s.phase)), 4);
+    } else {
+      twinkle = 0.3 + 0.5 * s.bright * (0.5 + 0.5 * Math.sin(simTime * s.speed + s.phase));
+    }
+    const breathe = 1 + s.breatheAmp * Math.sin(simTime * s.breatheSpeed + s.breathePhase);
+    const r = s.r * breathe;
+    if (s.hue > 0) {
+      ctx.fillStyle = oklchCSS(0.85 * twinkle, 0.03, s.hue);
+    } else {
+      ctx.fillStyle = 'rgba(230,240,255,' + twinkle.toFixed(3) + ')';
+    }
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, TWO_PI); ctx.fill();
+  }
+}
+
+function drawGrass() {
+  for (let bi = 0; bi < BLADE_COUNT; bi++) {
+    const b = grass[bi];
+    const bx = b.fx * w;
+    const height = b.baseH * (0.6 + b.depth * 0.7);
+    const sway = Math.sin(simTime * (0.7 + b.depth * 0.3) + b.phase) * b.swayAmp + b.bend;
+    const tipX = bx + Math.sin(sway) * height * 0.5;
+    const tipY = h - height;
+    const midX = bx + Math.sin(sway) * height * 0.22;
+    const midY = h - height * 0.45;
+    const gcR = palR[(b.palT * 15) | 0];
+    const gcG = palG[(b.palT * 15) | 0];
+    const gcB = palB[(b.palT * 15) | 0];
+    const shade = 10 + b.depth * 14;
+    let blinkAlpha = 1;
+    if (b.blinkActive) {
+      const blinkProgress = 1 - b.blinkTimer / 0.4;
+      blinkAlpha = 0.4 + 0.6 * (1 - Math.abs(blinkProgress - 0.5) * 2);
+    }
+    ctx.globalAlpha = blinkAlpha;
+    ctx.strokeStyle = 'rgb(' + ((gcR*shade*3)|0) + ',' + ((gcG*(shade+10)*3)|0) + ',' + ((gcB*(shade+8)*3)|0) + ')';
+    ctx.lineWidth = 2 + b.depth * 2.2;
+    ctx.beginPath();
+    ctx.moveTo(bx, h + 2);
+    ctx.quadraticCurveTo(midX, midY, tipX, tipY);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawPulses() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let pi = 0; pi < pulses.length; pi++) {
+    const p = pulses[pi];
+    const r = p.age * PULSE_SPEED;
+    const a = Math.max(0, 1 - p.age / p.maxAge);
+    ctx.strokeStyle = 'rgba(255,235,180,' + (a * 0.5).toFixed(3) + ')';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TWO_PI); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ── glow layer with batched drawing (§6.2: batch by state) ─ */
+function drawGlowLayer() {
+  // fade trail on glow layer (destination-out, §4.2)
+  gctx.globalCompositeOperation = 'destination-out';
+  gctx.fillStyle = TRAIL_FADE_STR; // precomputed string
+  gctx.fillRect(0, 0, w, h);
+
+  gctx.globalCompositeOperation = 'lighter';
+
+  // lantern glow
+  if (lantern.active) {
+    const pulse = 1 + Math.sin(simTime * 6) * 0.08;
+    const size = 220 * pulse;
+    gctx.drawImage(SPRITE_LANTERN, lantern.x - size/2, lantern.y - size/2, size, size);
+  }
+
+  // ── Batched firefly rendering (§6.2: batch by type, minimize save/restore) ──
+  // Group 1: trails (no transform needed)
+  gctx.globalAlpha = 1;
+  for (let fi = 0; fi < fireflyCount; fi++) {
+    const tLen = ftrailLen_arr[fi];
+    if (tLen < 2) continue;
+    const base = fi * MAX_TRAIL;
+    for (let t = 1; t < tLen; t++) {
+      const trailA = (t / tLen) * 0.4 * (0.5 + 0.5 * ftrail_heat[base + t]);
+      gctx.globalAlpha = trailA;
+      const trailSize = 6 + ftrail_heat[base + t] * 10;
+      gctx.drawImage(SPRITE_IDLE, ftrail_x[base + t] - trailSize/2, ftrail_y[base + t] - trailSize/2, trailSize, trailSize);
+    }
+  }
+
+  // Group 2: idle sprites (batch: single save/restore, no per-particle transform)
+  // Use drawImage with scale to avoid save/restore per particle (§6.2)
+  gctx.globalAlpha = 1;
+  for (let fi = 0; fi < fireflyCount; fi++) {
+    const speed = Math.sqrt(fvx_arr[fi] * fvx_arr[fi] + fvy_arr[fi] * fvy_arr[fi]);
+    const stretch = Math.min(speed / 60, 0.3);
+    const scaleX = 1 - stretch * 0.5;
+    const scaleY = 1 + stretch;
+    const baseA = 0.4 + 0.15 * Math.sin(simTime * 1.3 + fseed_arr[fi]);
+    const idleSize = 24 + baseA * 12;
+    const drawSize = idleSize * scaleY; // approximate with scaleY
+
+    gctx.globalAlpha = baseA;
+    gctx.drawImage(SPRITE_IDLE,
+      fx_arr[fi] - idleSize/2, fy_arr[fi] - idleSize/2,
+      idleSize, idleSize);
+
+    // flash when heat is high
+    const heat = fheat_arr[fi];
+    if (heat > 0.02) {
+      const flashSize = 40 + heat * 70;
+      gctx.globalAlpha = heat;
+      gctx.drawImage(SPRITE_FLASH, fx_arr[fi] - flashSize/2, fy_arr[fi] - flashSize/2, flashSize, flashSize);
+      if (heat > 0.3) {
+        gctx.globalAlpha = heat * 0.6;
+        gctx.drawImage(SPRITE_FLASH_DEEP, fx_arr[fi] - flashSize, fy_arr[fi] - flashSize, flashSize * 2, flashSize * 2);
+      }
+    }
+  }
+  gctx.globalAlpha = 1;
+}
+
+function drawFireflyCores() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  // Batch: single beginPath, draw all arcs, then fill once (§6.2: batch by state)
+  for (let fi = 0; fi < fireflyCount; fi++) {
+    const b = 0.5 + fheat_arr[fi] * 0.5;
+    const coreHue = 80 + fhueOff_arr[fi] + fheat_arr[fi] * 20;
+    ctx.fillStyle = oklchCSS(0.85 * b, 0.12 + fheat_arr[fi] * 0.08, coreHue, b.toFixed(2));
+    ctx.beginPath(); ctx.arc(fx_arr[fi], fy_arr[fi], 1.6 + fheat_arr[fi] * 1.2, 0, TWO_PI); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawVignette() {
+  const g = ctx.createRadialGradient(w/2, h/2, Math.min(w,h) * 0.3, w/2, h/2, Math.max(w,h) * 0.75);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.4)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function drawNoiseGrain() {
+  if (!drawNoiseGrain._noiseCanvas) {
+    const nc = document.createElement('canvas');
+    nc.width = nc.height = 128;
+    const nctx = nc.getContext('2d');
+    const img = nctx.createImageData(128, 128);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = Math.random() * 255;
+      img.data[i] = img.data[i+1] = img.data[i+2] = v;
+      img.data[i+3] = 3;
+    }
+    nctx.putImageData(img, 0, 0);
+    drawNoiseGrain._noiseCanvas = nc;
+  }
+  ctx.globalAlpha = 0.5;
+  ctx.globalCompositeOperation = 'overlay';
+  ctx.drawImage(drawNoiseGrain._noiseCanvas, 0, 0, w, h);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawScreenshake() {
+  if (trauma < 0.01) return null;
+  const intensity = trauma * trauma;
+  shakePhaseX += 15 * trauma;
+  shakePhaseY += 15 * trauma;
+  shakePhaseRot += 3 * trauma;
+  const ox = (smoothNoise(shakePhaseX) - 0.5) * intensity * 10;
+  const oy = (smoothNoise(shakePhaseY) - 0.5) * intensity * 10;
+  const rot = (smoothNoise(shakePhaseRot) - 0.5) * intensity * 0.02;
+  return {ox, oy, rot};
+}
+
+/* ── bloom pass (§4.4) ────────────────────────────────────── */
+function drawBloom() {
+  bctx.clearRect(0, 0, bloomCanv.width, bloomCanv.height);
+  bctx.drawImage(glowCanv, 0, 0, bloomCanv.width, bloomCanv.height);
+
+  blctx.clearRect(0, 0, blurCanv.width, blurCanv.height);
+  blctx.filter = 'blur(8px)';
+  blctx.drawImage(bloomCanv, 0, 0);
+  blctx.filter = 'none';
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = 0.35;
+  ctx.drawImage(blurCanv, 0, 0, w, h);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function draw(alpha) {
+  ctx.save();
+
+  const shake = drawScreenshake();
+  if (shake) ctx.translate(shake.ox, shake.oy);
+
+  drawSky();
+  drawMoon();
+  drawStars();
+  drawGrass();
+  drawPulses();
+
+  // glow layer composited
+  drawGlowLayer();
+  ctx.drawImage(glowCanv, 0, 0, w, h);
+
+  drawBloom();
+
+  drawFireflyCores();
+  drawParticles();
+  drawAmbient();
+
+  drawVignette();
+  drawNoiseGrain();
+
+  ctx.restore();
+}
+
+/* ── draw ambient particles (typed arrays, §6.2) ─────────── */
+function drawAmbient() {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < AMBIENT_COUNT; i++) {
+    const px = amb_x[i] * w, py = amb_y[i] * h;
+    const twinkle = 0.3 + 0.3 * Math.sin(simTime * 1.5 + amb_phase[i]);
+    ctx.globalAlpha = twinkle * 0.5;
+    ctx.fillStyle = oklchCSS(0.75, 0.08, amb_hue[i]);
+    ctx.beginPath();
+    ctx.arc(px, py, amb_r[i], 0, TWO_PI);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+/* ── draw particles (typed arrays, §6.2) ─────────────────── */
+function drawParticles() {
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    if (!p_alive[i]) continue;
+    const a = Math.max(0, p_life[i] / p_maxLife[i]);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = palCSS[p_colorIdx[i]]; // precomputed palette string
+    ctx.beginPath();
+    ctx.arc(p_x[i], p_y[i], p_size[i] * a, 0, TWO_PI);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ── UI update ─────────────────────────────────────────────── */
+function updateUI() {
+  document.getElementById('countVal').textContent = fireflyCount;
+  document.getElementById('syncVal').textContent = Math.round(syncPercent * 100) + '%';
+}
+
+/* ── reset ─────────────────────────────────────────────────── */
+document.getElementById('reset').addEventListener('click', () => {
+  targetCount = DEFAULT_COUNT;
+  seedField(DEFAULT_COUNT);
+  fireflyCount = DEFAULT_COUNT;
+  pulses = [];
+  lantern.active = false;
+  cursorSpeed = 0;
+  simTime = 0;
+  trauma = 0;
+  lastSyncFlash = 0;
+  hitStopRemaining = 0;
+  shakePhaseX = Math.random() * 1000;
+  shakePhaseY = Math.random() * 1000;
+  shakePhaseRot = Math.random() * 1000;
+  for (let i = 0; i < MAX_PARTICLES; i++) { p_alive[i] = 0; freelist.push(i); }
+  for (let i = 0; i < BLADE_COUNT; i++) { grass[i].bend = 0; grass[i].bendVel = 0; }
+});
+
+/* ── audio init on first interaction ───────────────────────── */
+canvas.addEventListener('mousedown', () => {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}, {once: false});
+
+/* ── fixed-timestep loop (§2.1) ────────────────────────────── */
+let acc = 0, last = performance.now();
+function frame(now) {
+  acc += Math.min((now - last) / 1000, 0.1);
+  last = now;
+  while (acc >= DT) { update(DT); acc -= DT; }
+  draw(acc / DT);
+  updateUI();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) last = performance.now();
+});
+
+})();
+</script>
+</body>
+</html>

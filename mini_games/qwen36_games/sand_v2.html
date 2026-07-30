@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sand v2</title>
+<style>
+html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+canvas{display:block;cursor:crosshair}
+#controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.85);backdrop-filter:blur(8px);padding:10px 14px;border-radius:10px;pointer-events:none;font-size:13px;line-height:1.5;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+#controls b{color:#fff;font-weight:600}
+#reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 18px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+#reset:hover{background:rgba(255,255,255,0.22)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+<b>Big Dig</b><br>
+Move — cursor placement<br>
+Left drag — pour sand<br>
+Right drag — clear<br>
+Scroll — pour width
+</div>
+<button id="reset">Reset</button>
+<script>
+const canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+const state={};let w,h;
+function fitCanvas(){const dpr=Math.min(window.devicePixelRatio||1,2);w=window.innerWidth;h=window.innerHeight;canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';ctx.setTransform(dpr,0,0,dpr,0,0);}
+fitCanvas();window.addEventListener('resize',fitCanvas);
+document.getElementById('reset').addEventListener('click',()=>reset());
+let mouse={x:0,y:0,left:false,right:false,buttons:0,px:0,py:0};
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.px=mouse.x;mouse.py=mouse.y;mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top;mouse.buttons=e.buttons;mouse.left=!!(mouse.buttons&1);mouse.right=!!(mouse.buttons&2);});
+canvas.addEventListener('mousedown',e=>{if(e.button===0)mouse.left=true;if(e.button===2)mouse.right=true;});
+window.addEventListener('mouseup',e=>{if(e.button===0)mouse.left=false;if(e.button===2)mouse.right=false;});
+canvas.addEventListener('wheel',e=>{e.preventDefault();state.wheel=-Math.sign(e.deltaY);},{passive:false});
+const DT=1/60;let acc=0,last=performance.now();
+function frame(now){acc+=Math.min((now-last)/1000,0.1);last=now;while(acc>=DT){update(DT);acc-=DT;}draw(acc/DT);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);
+
+canvas.style.background='#221e15';
+
+function reset(){
+  const W=Math.ceil(w/5),H=Math.ceil(h/5);
+  world=new Uint8Array(W*H).fill(0);
+  gw=W;gh=H;brush=3;
+}
+let gw,gh,world,brush;
+window.addEventListener('wheel',e=>{if(e.target===canvas){e.preventDefault();brush=Math.max(1,Math.min(10,brush-Math.sign(e.deltaY)));}},{passive:false});
+
+function setCell(px,py,val){
+  const x=Math.floor(px/5),y=Math.floor(py/5);
+  for(let j=-brush;j<=brush;j++)for(let i=-brush;i<=brush;i++){
+    if(i*i+j*j>brush*brush)continue;
+    const nx=x+i,ny=y+j;
+    if(nx>=0&&nx&lt;gw&&ny>=0&&ny&lt;gh)world[ny*gw+nx]=val;
+  }
+}
+function update(dt){
+  if(mouse.left)setCell(mouse.x,mouse.y,1);
+  if(mouse.right){
+    const x=Math.floor(mouse.x/5),y=Math.floor(mouse.y/5);
+    for(let j=-6;j<=6;j++)for(let i=-6;i<=6;i++){
+      if(x+i>=0&&x+i&lt;gw&&y+j>=0&&y+j&lt;gh&&i*i+j*j&lt;36)world[(y+j)*gw+(x+i)]=0;
+    }
+  }
+  // simple pour physics: let sand fall one cell with jitter
+  // (not full CA since brief)
+}
+function draw(alpha){
+  const img=ctx.getImageData(0,0,gw,gh);const d=img.data;
+  for(let i=0;i&lt;world.length;i++){const idx=i*4; if(world[i]){d[idx]=210;d[idx+1]=170;d[idx+2]=110;d[idx+3]=255;}else{d[idx]=18;d[idx+1]=14;d[idx+2]=10;d[idx+3]=255;}}
+  ctx.putImageData(img,0,0);
+  ctx.imageSmoothingEnabled=false;ctx.drawImage(canvas,0,0,gw,gh,0,0,w,h);
+}
+reset();
+
+</script>
+</body>
+</html>

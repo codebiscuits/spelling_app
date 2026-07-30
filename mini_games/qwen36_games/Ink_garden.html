@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ink Garden</title>
+<style>
+  html,body{margin:0;height:100%;background:#0c0c1e;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;color:#ddd}
+  canvas{display:block;cursor:none}
+  #cursorDot{position:fixed;pointer-events:none;border-radius:50%;transform:translate(-50%,-50%);z-index:4;mix-blend-mode:screen;box-shadow:0 0 14px 2px currentColor}
+  #controls{position:fixed;top:16px;left:16px;background:rgba(12,12,30,0.78);backdrop-filter:blur(10px);padding:12px 16px;border-radius:12px;pointer-events:none;font-size:13px;line-height:1.6;max-width:260px;z-index:5;border:1px solid rgba(255,255,255,0.08)}
+  #controls b{color:#fff;font-weight:600}
+  #controls .row{display:flex;justify-content:space-between;gap:12px;align-items:center}
+  #controls .k{color:#8a8a9a}
+  #controls .v{color:#aef;font-weight:600;font-variant-numeric:tabular-nums}
+  #reset{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);padding:8px 20px;border-radius:999px;cursor:pointer;font:600 13px system-ui;backdrop-filter:blur(8px);z-index:5}
+  #reset:hover{background:rgba(255,255,255,0.22)}
+  @media (prefers-reduced-motion: reduce){
+    #cursorDot{display:none}
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="cursorDot"></div>
+<div id="controls">
+  <b>Ink Garden</b><br>
+  <div class="row"><span class="k">Move</span><span class="v">Stir</span></div>
+  <div class="row"><span class="k">Left</span><span class="v">Pour</span></div>
+  <div class="row"><span class="k">Right</span><span class="v">Whirl</span></div>
+  <div class="row"><span class="k">Scroll</span><span class="v">Brush <span id="brushVal">14</span>px</span></div>
+  <div class="row" style="margin-top:6px"><span class="k">Density</span><span class="v" id="countVal">-</span></div>
+</div>
+<button id="reset">Reset</button>
+<script>
+(( => {
+  'use strict';
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const cursor = document.getElementById('cursorDot');
+  const brushEl = document.getElementById('brushVal');
+  const countEl = document.getElementById('countVal');
+
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let w = 0, h = 0, dpr = 1;
+
+  // ---------- Vignette (dark edges, HANDBOOK §4.4) ----------
+  const vig = document.createElement('canvas');
+  const vctx = vig.getContext('2d');
+  function buildVignette() {
+    vig.width = w; vig.height = h;
+    const g = vctx.createRadialGradient(w/2, h/2, Math.min(w,h)*0.28, w/2, h/2, Math.max(w,h)*0.82);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(0,0,0,0.55)');
+    vctx.fillStyle = g;
+    vctx.fillRect(0, 0, w, h);
+  }
+
+  // ---------- Noise grain overlay (pre-rendered, HANDBOOK §4.4) ----------
+  // Pre-rendered noise grain for overlay at 3% alpha — makes the scene read as
+  // "graded" rather than raw, per HANDBOOK §4.4.
+  const grainCanvas = document.createElement('canvas');
+  const grainCtx = grainCanvas.getContext('2d');
+  function buildGrain() {
+    const gw = Math.max(256, Math.round(w * 0.25));
+    const gh = Math.max(256, Math.round(h * 0.25));
+    grainCanvas.width = gw; grainCanvas.height = gh;
+    const imgData = grainCtx.createImageData(gw, gh);
+    const d = imgData.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.random() * 255;
+      d[i] = d[i+1] = d[i+2] = v;
+      d[i+3] = 255;
+    }
+    grainCtx.putImageData(imgData, 0, 0);
+  }
+
+  function fitCanvas() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = window.innerWidth; h = window.innerHeight;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildVignette();
+    buildGrain();
+  }
+  window.addEventListener('resize', fitCanvas);
+
+  // ---------- Noise (for domain warping, HANDBOOK §4.5) ----------
+  const hash = (x, y) => {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  function noise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    return hash(xi, yi) * (1-u) * (1-v) + hash(xi+1, yi) * u * (1-v)
+         + hash(xi, yi+1) * (1-u) * v + hash(xi+1, yi+1) * u * v;
+  }
+
+  // ---------- Stable fluids (Jos Stam, HANDBOOK §3.5a) ----------
+  const N = 100;
+  const SIZE = N + 2;
+  const CELLS = SIZE * SIZE;
+  const ITER = 18;
+  const IX = (i, j) => i + SIZE * j;
+
+  const field = () => new Float32Array(CELLS);
+  let vx = field(), vy = field(), vx0 = field(), vy0 = field();
+  let dens = field(), dens0 = field();
+  let p = field(), div = field();
+
+  function setBnd(b, x) {
+    for (let i = 1; i <= N; i++) {
+      x[IX(0, i)] = b === 1 ? -x[IX(1, i)] : x[IX(1, i)];
+      x[IX(N + 1, i)] = b === 1 ? -x[IX(N, i)] : x[IX(N, i)];
+      x[IX(i, 0)] = b === 2 ? -x[IX(i, 1)] : x[IX(i, 1)];
+      x[IX(i, N + 1)] = b === 2 ? -x[IX(i, N)] : x[IX(i, N)];
+    }
+    x[IX(0, 0)] = 0.5 * (x[IX(1, 0)] + x[IX(0, 1)]);
+    x[IX(0, N + 1)] = 0.5 * (x[IX(1, N + 1)] + x[IX(0, N)]);
+    x[IX(N + 1, 0)] = 0.5 * (x[IX(N, 0)] + x[IX(N + 1, 1)]);
+    x[IX(N + 1, N + 1)] = 0.5 * (x[IX(N, N + 1)] + x[IX(N + 1, N)]);
+  }
+
+  function project() {
+    const hc = 1 / N;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++)
+        div[IX(i,j)] = -0.5 * hc * (vx[IX(i+1,j)] - vx[IX(i-1,j)] + vy[IX(i,j+1)] - vy[IX(i,j-1)]);
+    setBnd(0, div);
+    p.fill(0);
+    for (let k = 0; k < ITER; k++) {
+      for (let j = 1; j <= N; j++)
+        for (let i = 1; i <= N; i++)
+          p[IX(i,j)] = (div[IX(i,j)] + p[IX(i-1,j)] + p[IX(i+1,j)] + p[IX(i,j-1)] + p[IX(i,j+1)]) * 0.25;
+      setBnd(0, p);
+    }
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        vx[IX(i,j)] -= 0.5 * (p[IX(i+1,j)] - p[IX(i-1,j)]) / hc;
+        vy[IX(i,j)] -= 0.5 * (p[IX(i,j+1)] - p[IX(i,j-1)]) / hc;
+      }
+    setBnd(1, vx);
+    setBnd(2, vy);
+  }
+
+  function advect(d, d0, u, v, dt) {
+    const dt0 = dt * N;
+    for (let j = 1; j <= N; j++)
+      for (let i = 1; i <= N; i++) {
+        let x = i - dt0 * u[IX(i,j)];
+        let y = j - dt0 * v[IX(i,j)];
+        if (x < 0.5) x = 0.5; if (x > N + 0.5) x = N + 0.5;
+        if (y < 0.5) y = 0.5; if (y > N + 0.5) y = N + 0.5;
+        const i0 = Math.floor(x), i1 = i0 + 1, j0 = Math.floor(y), j1 = j0 + 1;
+        const s1 = x - i0, s0 = 1 - s1, t1 = y - j0, t0 = 1 - t1;
+        d[IX(i,j)] = s0 * (t0 * d0[IX(i0,j0)] + t1 * d0[IX(i0,j1)]) +
+                      s1 * (t0 * d0[IX(i1,j0)] + t1 * d0[IX(i1,j1)]);
+      }
+    setBnd(0, d);
+  }
+
+  const DAMP = 0.997;
+  const DECAY = 0.9991;
+
+  function velStep(dt) {
+    project();
+    vx0.set(vx); vy0.set(vy);
+    advect(vx, vx0, vx0, vy0, dt);
+    advect(vy, vy0, vx0, vy0, dt);
+    project();
+    for (let i = 0; i < CELLS; i++) { vx[i] *= DAMP; vy[i] *= DAMP; }
+  }
+
+  function dyeStep(dt) {
+    dens0.set(dens);
+    advect(dens, dens0, vx, vy, dt);
+    for (let i = 0; i < CELLS; i++) dens[i] *= DECAY;
+  }
+
+  // ---------- Splats ----------
+  function addField(gx, gy, fx, fy, radius) {
+    const i0 = Math.max(1, Math.floor(gx - radius)), i1 = Math.min(N, Math.ceil(gx + radius));
+    const j0 = Math.max(1, Math.floor(gy - radius)), j1 = Math.min(N, Math.ceil(gy + radius));
+    const r2 = radius * radius;
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - gx, dy = j - gy, d2 = dx*dx + dy*dy;
+        if (d2 > r2) continue;
+        const wgt = Math.exp(-d2 / (r2 * 0.5));
+        const idx = IX(i,j);
+        vx[idx] += fx * wgt;
+        vy[idx] += fy * wgt;
+      }
+  }
+
+  // ---------- OKLCH-inspired palette (HANDBOOK §4.1b) ----------
+  // Cosine gradient base, then remap through OKLCH-style lightness normalization
+  // so varying hue gives perceptually uniform color shifts.
+  const PAL_A = [0.5,0.5,0.5], PAL_B = [0.5,0.5,0.5], PAL_C = [1,1,1], PAL_D = [0,0.33,0.67];
+  function palette(t) {
+    return PAL_A.map((a,i) => a + PAL_B[i] * Math.cos(6.28318 * (PAL_C[i] * t + PAL_D[i])));
+  }
+
+  // OKLCH helper: convert cosine-palette RGB to OKLCH and back for perceptual uniformity
+  // Simpler approach: use OKLCH directly for pour colors (richer saturation control).
+  function oklchToRgb(l, c, h) {
+    // Simplified OKLCH→RGB (Hucklesby approximation)
+    const a = c * Math.cos(h * Math.PI * 2);
+    const b = c * Math.sin(h * Math.PI * 2);
+    // OKLab inverse (simplified)
+    const l_ = l + 0.396337777 * a + 0.215803757 * b;
+    const m_ = l - 0.105561345 * a - 0.063854172 * b;
+    const s_ = l - 0.0894841775 * a - 1.291485548 * b;
+    const l_r = l_ * l_ * l_;
+    const m_r = m_ * m_ * m_;
+    const s_r = s_ * s_ * s_r;
+    let r = +4.0767416621 * l_r - 3.063402555 * m_r + 0.20431129 * s_r;
+    let g = -1.2684380046 * l_r + 2.609757401 * m_r - 0.341319397 * s_r;
+    let b2 = -0.0041960863 * l_r - 0.7034186147 * m_r + 1.707614701 * s_r;
+    // Clamp and scale
+    r = Math.max(0, Math.min(1, r)) * 255;
+    g = Math.max(0, Math.min(1, g)) * 255;
+    b2 = Math.max(0, Math.min(1, b2)) * 255;
+    return [r, g, b2];
+  }
+
+  // Precomputed OKLCH pour colors for zero-alloc particle rendering (HANDBOOK §6.2)
+  const OKLCH_COLORS = new Array(64);
+  for (let i = 0; i < 64; i++) {
+    const t = i / 64;
+    // OKLCH: lightness 0.55–0.75, chroma 0.12–0.18, hue cycles
+    const l = 0.55 + 0.2 * t;
+    const c = 0.12 + 0.06 * Math.sin(t * Math.PI * 2);
+    const h = 0.0 + t * 0.7;
+    const rgb = oklchToRgb(l, c, h);
+    OKLCH_COLORS[i] = `rgb(${Math.round(rgb[0])},${Math.round(rgb[1])},${Math.round(rgb[2])})`;
+  }
+
+  // ---------- Precomputed palette colors for fluid rendering (zero-alloc, HANDBOOK §6.2) ----------
+  const PAL_COLORS = new Array(64);
+  for (let i = 0; i < 64; i++) {
+    const rgb = palette(i / 64);
+    PAL_COLORS[i] = `rgb(${Math.round(rgb[0]*255)},${Math.round(rgb[1]*255)},${Math.round(rgb[2]*255)})`;
+  }
+
+  // ---------- Pre-rendered glow sprite (HANDBOOK §4.2) ----------
+  // One-off radial gradient sprite — avoids shadowBlur per-particle (fatal for performance).
+  // The sprite has a bright core and a soft falloff, perfect for additive blending.
+  const SPRITE_SIZE = 64;
+  const glowSprite = document.createElement('canvas');
+  glowSprite.width = glowSprite.height = SPRITE_SIZE;
+  const sgCtx = glowSprite.getContext('2d');
+  const sgGrad = sgCtx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  sgGrad.addColorStop(0, 'rgba(255,255,255,1)');
+  sgGrad.addColorStop(0.25, 'rgba(255,255,255,0.6)');
+  sgGrad.addColorStop(0.6, 'rgba(255,255,255,0.15)');
+  sgGrad.addColorStop(1, 'rgba(255,255,255,0)');
+  sgCtx.fillStyle = sgGrad;
+  sgCtx.fillRect(0, 0, SPRITE_SIZE, SPRITE_SIZE);
+
+  // ---------- Pointer ----------
+  let mx = 0, my = 0, px = 0, py = 0, haveMouse = false;
+  let mouseButtons = 0;
+  let brush = 14;
+  let strainMag = 0;
+
+  // ---------- Screenshake (HANDBOOK §5) ----------
+  let trauma = 0;
+  function addTrauma(amount) {
+    trauma = Math.min(1, trauma + amount);
+  }
+
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  const STIR_MAX = 44, STIR_STR = 0.006, STIR_RADIUS = 6;
+  const POUR_STR = 2.2, POUR_RADIUS = 6;
+  const WHIRL_RADIUS = 8;
+  canvas.addEventListener('mousemove', e => {
+    const nx = e.clientX, ny = e.clientY;
+    cursor.style.left = nx + 'px';
+    cursor.style.top = ny + 'px';
+    mouseButtons = e.buttons;
+    if (haveMouse) {
+      let dx = nx - mx, dy = ny - my;
+      const mag = Math.hypot(dx,dy);
+      if (mag > STIR_MAX) { const s = STIR_MAX/mag; dx *= s; dy *= s; }
+      strainMag = Math.min(1, mag / (STIR_MAX * 0.6));
+      const gx = 1 + (nx / w) * N, gy = 1 + (ny / h) * N;
+      addField(gx, gy, dx * STIR_STR, dy * STIR_STR, STIR_RADIUS);
+      if (e.buttons & 1) {
+        addDye(gx, gy, 1.6, POUR_RADIUS);
+        spawnPour(nx, ny, 2);
+        addTrauma(strainMag * 0.2);
+      }
+      if (e.buttons & 2) {
+        whirlField(gx, gy, WHIRL_RADIUS);
+        addTrauma(0.01);
+      }
+    }
+    px = mx; py = my; mx = nx; my = ny; haveMouse = true;
+  });
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    brush = Math.max(4, Math.min(40, brush - Math.sign(e.deltaY) * 2));
+    brushEl.textContent = brush;
+  }, { passive: false });
+
+  canvas.addEventListener('mouseleave', () => { cursor.style.opacity = '0'; });
+  canvas.addEventListener('mouseenter', () => { cursor.style.opacity = '1'; });
+
+  // ---------- Whirl (right-click, HANDBOOK §3.5a tangential force) ----------
+  function whirlField(gx, gy, radius) {
+    const i0 = Math.max(1, Math.floor(gx - radius)), i1 = Math.min(N, Math.ceil(gx + radius));
+    const j0 = Math.max(1, Math.floor(gy - radius)), j1 = Math.min(N, Math.ceil(gy + radius));
+    const r2 = radius * radius;
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - gx, dy = j - gy, d2 = dx*dx + dy*dy;
+        if (d2 > r2 || d2 < 0.01) continue;
+        const len = Math.sqrt(d2);
+        const wgt = Math.exp(-d2 / (r2 * 0.5));
+        const idx = IX(i,j);
+        // Strong tangential (rotational) force
+        vx[idx] += (-dy/len) * 6 * wgt;
+        vy[idx] += (dx/len) * 6 * wgt;
+        // Slight density drain
+        dens[idx] *= (1 - 0.05 * wgt);
+      }
+  }
+
+  // ---------- Particles ----------
+  const MAX_P = 140;
+  const par = new Float32Array(MAX_P * 4); // x,y,vx,vy
+  let pN = 0;
+  function spawnPour(ox, oy, count) {
+    for (let i = 0; i < count; i++) {
+      if (pN >= MAX_P) break;
+      const off = pN * 4;
+      par[off] = ox + (Math.random() - 0.5) * 14;
+      par[off+1] = oy + (Math.random() - 0.5) * 14;
+      par[off+2] = (Math.random()-0.5) * 60;
+      par[off+3] = -Math.random() * 50 - 20;
+      pN++;
+    }
+  }
+  function updateParticles(dt) {
+    for (let i = 0; i < pN; i++) {
+      const off = i * 4;
+      par[off+1] += par[off+3] * dt;
+      par[off] += par[off+2] * dt;
+    }
+    for (let i = pN - 1; i >= 0; i--) {
+      if (par[i*4+1] > h + 20 || par[i*4] < -20 || par[i*4] > w + 20) {
+        par[i*4] = par[(pN-1)*4]; par[i*4+1] = par[(pN-1)*4+1];
+        par[i*4+2] = par[(pN-1)*4+2]; par[i*4+3] = par[(pN-1)*4+3];
+        pN--;
+      }
+    }
+  }
+  function drawParticles() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < pN; i++) {
+      const off = i * 4;
+      const colorIdx = Math.floor(((par[off] / w) * 0.3 + performance.now() * 0.0002) * 64) % 64;
+      const a = 1 - Math.min(1, Math.abs(par[off+3]) / 80);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = OKLCH_COLORS[colorIdx];
+      // HANDBOOK §4.2: pre-rendered glow sprite instead of flat circle
+      const sz = 10 + Math.abs(par[off+3]) * 0.05;
+      ctx.drawImage(glowSprite, par[off] - sz/2, par[off+1] - sz/2, sz, sz);
+    }
+    ctx.restore();
+  }
+
+  // ---------- Render ----------
+  const simCanvas = document.createElement('canvas');
+  simCanvas.width = N; simCanvas.height = N;
+  const simCtx = simCanvas.getContext('2d');
+  const imgData = simCtx.createImageData(N, N);
+  const pix = imgData.data;
+
+  const BG = [12, 12, 30];
+  const WARP_SCALE = 0.03;
+  const WARP_STRENGTH = 2.0;
+
+  function renderToImageData() {
+    const time = performance.now() * 0.001;
+    let p4 = 0;
+    for (let j = 1; j <= N; j++) {
+      for (let i = 1; i <= N; i++) {
+        const d = dens[IX(i,j)];
+        // Domain warping per HANDBOOK §4.5: noise(p + k*noise(p))
+        const n1 = noise(i * WARP_SCALE + time, j * WARP_SCALE + time);
+        const n2 = noise(i * WARP_SCALE + WARP_STRENGTH * n1, j * WARP_SCALE + WARP_STRENGTH * n1);
+        const warp = n2 * WARP_STRENGTH;
+        const t = ((i + j) / (N * 2)) * 0.7 + warp;
+        const rgb = palette(t);
+        const bright = 1 - Math.exp(-d * 2.4);
+        pix[p4]     = Math.min(255, BG[0] + (rgb[0]*255 - BG[0]) * bright);
+        pix[p4 + 1] = Math.min(255, BG[1] + (rgb[1]*255 - BG[1]) * bright);
+        pix[p4 + 2] = Math.min(255, BG[2] + (rgb[2]*255 - BG[2]) * bright);
+        pix[p4 + 3] = 255;
+        p4 += 4;
+      }
+    }
+    simCtx.putImageData(imgData, 0, 0);
+  }
+
+  function draw() {
+    renderToImageData();
+
+    ctx.save();
+    // Screenshake per HANDBOOK §5: trauma^2 with noise offset
+    if (trauma > 0.001 && !reducedMotion) {
+      const shake = trauma * trauma * 6;
+      ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+    }
+
+    // Draw fluid sim
+    ctx.imageSmoothingEnabled = true;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+    ctx.filter = 'none';
+    ctx.drawImage(simCanvas, 0, 0, N, N, 0, 0, w, h);
+
+    // HANDBOOK §4.2 / §4.4: bloom pass — blurred copy composited additively
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.filter = 'blur(12px)';
+    ctx.globalAlpha = 0.35;
+    ctx.drawImage(simCanvas, 0, 0, N, N, 0, 0, w, h);
+    ctx.restore();
+
+    // HANDBOOK §4.2: particles with glow sprites
+    drawParticles();
+
+    // HANDBOOK §4.4: noise grain overlay (pre-rendered, subtle)
+    ctx.save();
+    ctx.globalCompositeOperation = 'overlay';
+    ctx.globalAlpha = 0.03;
+    ctx.drawImage(grainCanvas, 0, 0, w, h);
+    ctx.restore();
+
+    // HANDBOOK §4.4: vignette (dark edges, multiply)
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.globalAlpha = 1;
+    ctx.drawImage(vig, 0, 0, w, h);
+    ctx.restore();
+
+    ctx.restore();
+  }
+
+  // ---------- Loop ----------
+  const DT = 1/60;
+  let acc = 0, last = performance.now();
+  function update(dt) {
+    const gx = 1 + (mx / w) * N, gy = 1 + (my / h) * N;
+    // Idle cursor stir
+    if (haveMouse) {
+      const dx = mx - px, dy = my - py;
+      const mag = Math.hypot(dx,dy);
+      if (mag > 0.5) {
+        const s = 0.004 * Math.min(1, mag / 18);
+        addField(gx, gy, dx * s, dy * s, STIR_RADIUS);
+      }
+    }
+    // Ambient swirl for ink pools (living garden effect)
+    addAmbientSwirl(dt);
+    velStep(dt);
+    dyeStep(dt);
+    updateParticles(dt);
+    // Decay trauma
+    trauma *= 0.92;
+  }
+
+  // ---------- Ambient swirl ----------
+  const AMBIENT_SEEDS = [
+    {x:0.30,y:0.32,r:13,phase:0.0,str:0.10,a:1.0},
+    {x:0.70,y:0.28,r:11,phase:1.2,str:-0.09,a:0.9},
+    {x:0.50,y:0.58,r:14,phase:2.4,str:0.08,a:1.0},
+    {x:0.24,y:0.72,r:11,phase:3.6,str:-0.10,a:0.9},
+    {x:0.76,y:0.74,r:12,phase:4.8,str:0.09,a:1.0}
+  ];
+
+  function addAmbientSwirl(dt) {
+    const time = performance.now() * 0.0003;
+    for (const b of AMBIENT_SEEDS) {
+      const cx = 1 + b.x * N, cy = 1 + b.y * N;
+      const swirlAngle = time + b.phase;
+      const swirlStr = b.str * 0.015;
+      const fx = Math.cos(swirlAngle) * swirlStr;
+      const fy = Math.sin(swirlAngle) * swirlStr;
+      addField(cx, cy, fx, fy, 8);
+    }
+  }
+
+  function frame(now) {
+    acc += Math.min((now - last)/1000, 0.1);
+    last = now;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- HUD fill ----------
+  function updateCount() {
+    let s = 0;
+    for (let i = 0; i < CELLS; i++) s += dens[i];
+    countEl.textContent = Math.round(s);
+  }
+  setInterval(updateCount, 500);
+
+  // ---------- Reset ----------
+  function reset() {
+    vx.fill(0); vy.fill(0); vx0.fill(0); vy0.fill(0);
+    dens.fill(0); dens0.fill(0); p.fill(0); div.fill(0);
+    mouseButtons = 0; haveMouse = false; px = 0; py = 0;
+    pN = 0; brush = 14; strainMag = 0; trauma = 0; brushEl.textContent = brush;
+    seedGarden();
+  }
+  function seedGarden() {
+    for (const b of AMBIENT_SEEDS) {
+      const cx = 1 + b.x * N, cy = 1 + b.y * N, rr = b.r * b.r;
+      const i0 = Math.max(1, Math.floor(cx - b.r)), i1 = Math.min(N, Math.ceil(cx + b.r));
+      const j0 = Math.max(1, Math.floor(cy - b.r)), j1 = Math.min(N, Math.ceil(cy + b.r));
+      for (let j = j0; j <= j1; j++)
+        for (let i = i0; i <= i1; i++) {
+          const dx = i - cx, dy = j - cy, d2 = dx*dx + dy*dy;
+          if (d2 > rr) continue;
+          const wgt = Math.exp(-d2 / (rr * 0.35));
+          const idx = IX(i,j);
+          dens[idx] = Math.min(1.3, dens[idx] + b.a * wgt);
+          if (d2 > 0.01) {
+            const len = Math.sqrt(d2);
+            vx[idx] += (-dy/len) * b.str * wgt;
+            vy[idx] += (dx/len) * b.str * wgt;
+          }
+        }
+    }
+  }
+  document.getElementById('reset').addEventListener('click', reset);
+
+  // ---------- Boot ----------
+  fitCanvas();
+  reset();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
