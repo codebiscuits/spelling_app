@@ -32,7 +32,6 @@ brilliantly) with the *technique* (how to actually get there).
 7. [Designing for small hands](#7-designing-for-small-hands)
 8. [Idea gallery: toys worth building](#8-idea-gallery)
 9. [Reading list](#9-reading-list)
-10. [Working as a subagent](#10-working-as-a-subagent)
 
 ---
 
@@ -815,56 +814,6 @@ Everything below is free, canonical, and worth the time:
 - easings.net — every easing curve, interactive
 - ZzFX (github.com/KilledByAPixel/ZzFX) — tiny inline sound synth
 - The Coding Train (Daniel Shiffman, YouTube) + *The Nature of Code* (natureofcode.com) — the friendliest walkthroughs of half the physics in this handbook
-
----
-
-## 10. Working as a subagent
-
-If you are an automated worker picking this up from a kanban task, this section
-is for you. It exists because these exact mistakes have already cost a working
-file and half an hour of compute.
-
-1. **You own one aspect, not the whole game.** Your task title says which:
-   Setup, Physics, Art, Juice, Controls, Perf, or Verify. Do that, and stop.
-   Do not "while I'm here" the other six. A finished Physics task that left the
-   art alone is a success, not a half-measure.
-
-2. **Patch the file, never rewrite it.** By the time you run, the game file
-   already exists and earlier subtasks have put real work into it. Read the
-   region you need, change that region, leave the rest byte-for-byte alone.
-   Rewriting the whole file from scratch discards other people's work and is
-   the single most destructive thing you can do here.
-
-3. **Never "repair" a file with a one-liner.** Shell one-liners that rewrite
-   a file in place are how files get destroyed. A real example from this
-   project: `sed 's/.../.../;q' game.html` — the `;q` quits after the first
-   line, and it reduced a 27 KB working game to 50 bytes. If a file genuinely
-   needs structural repair, read it, write the corrected version to a NEW
-   filename, check that new file, and only then swap it in.
-
-4. **Confirm damage before you act on it.** "The file looks truncated" is a
-   hypothesis, not a fact. Check it: `wc -c`, `tail -5`, `grep -c '</html>'`.
-   A file can be perfectly fine and simply longer than the slice you read.
-   Acting on an unverified hunch is what turns one problem into two.
-
-5. **If the file really is truncated, say so and stop.** Truncation is an
-   infrastructure fault (an output-token limit), not something to code around.
-   Report it and end the task. Do not enter a rewrite/repair loop — it will
-   burn the entire runtime and leave the file worse than you found it.
-
-6. **Expect to finish in one pass.** A single aspect of one game is a handful
-   of focused edits. If you are past twenty tool calls and still fighting the
-   file, something is wrong with your approach; report what you found rather
-   than pushing on.
-
-7. **Always end with the terminal call.** Finish with `kanban_complete` (or
-   `kanban_block` if you are genuinely stuck and need a human). A run that
-   ends without one is recorded as a crash no matter how good the work was —
-   the board cannot see your files, only your report.
-
-8. **Say what you changed.** One or two lines: which file, which region, what
-   a reviewer should look at. The next subtask worker reads that and nothing
-   else about your run.
 
 ---
 
