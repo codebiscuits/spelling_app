@@ -103,6 +103,7 @@
   <div class="row"><span class="label">Scroll</span><span class="value">Brush size</span></div>
   <div class="row"><span class="label">Brush</span><span class="value" id="brush-size">4</span></div>
   <div class="row"><span class="label">Sound</span><span class="value" id="sound-state">🔇 Muted</span></div>
+  <div class="row"><span class="label">FPS</span><span class="value" id="fps-counter">--</span></div>
 </div>
 
 <button id="sound-toggle">🔇 Muted</button>
@@ -117,6 +118,7 @@
 const DT = 1 / 60;
 let acc = 0;
 let last = performance.now();
+let fpsCounter = 0, lastFpsTime = performance.now();
 
 function frame(now) {
   acc += Math.min((now - last) / 1000, 0.1);
@@ -126,6 +128,15 @@ function frame(now) {
     acc -= DT;
   }
   draw(acc / DT);
+
+  // FPS counter — update every 100ms
+  fpsCounter++;
+  if (now - lastFpsTime >= 100) {
+    document.getElementById('fps-counter').textContent = fpsCounter + ' fps';
+    fpsCounter = 0;
+    lastFpsTime = now;
+  }
+
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -210,7 +221,14 @@ let dyeR = new Float32Array(GRID * GRID); // red dye
 let dyeG = new Float32Array(GRID * GRID); // green dye
 let dyeB = new Float32Array(GRID * GRID); // blue dye
 
-// Scratch arrays (allocated once)
+// Scratch arrays — pre-allocated once, reused every frame (§6.2 zero-allocation)
+let auxVx = new Float32Array(GRID * GRID);
+let auxVy = new Float32Array(GRID * GRID);
+let auxR  = new Float32Array(GRID * GRID);
+let auxG  = new Float32Array(GRID * GRID);
+let auxB  = new Float32Array(GRID * GRID);
+let p     = new Float32Array(GRID * GRID);
+let ps    = new Float32Array(GRID * GRID);
 let gridCanvas, gctx, gridImageData, gridData;
 
 function initGridCanvas() {
@@ -255,12 +273,13 @@ let targetColor = [1, 0.8, 0.6];
 
 // --- §5.3 Particles — pool-based, zero-allocation — ---
 const MAX_PARTICLES = 500;
-const particles = new Float32Array(MAX_PARTICLES * 9); // x,y,vx,vy,life,maxLife,r,g,b
+const PARTICLE_STRIDE = 9; // x,y,vx,vy,life,maxLife,r,g,b
+const particles = new Float32Array(MAX_PARTICLES * PARTICLE_STRIDE); // x,y,vx,vy,life,maxLife,r,g,b
 let particleCount = 0;
 
 function spawnParticles(x, y, count, color, speed, life) {
   for (let i = 0; i < count && particleCount < MAX_PARTICLES; i++) {
-    const p = i * 9;
+    const p = i * PARTICLE_STRIDE;
     const angle = Math.random() * Math.PI * 2;
     const spd = speed * (0.3 + Math.random() * 0.7);
     particles[p]   = x;
@@ -278,7 +297,7 @@ function spawnParticles(x, y, count, color, speed, life) {
 
 function updateParticles(dt) {
   for (let i = 0; i < particleCount; i++) {
-    const p = i * 6;
+    const p = i * PARTICLE_STRIDE;
     particles[p+2] *= 0.96;   // drag
     particles[p+3] *= 0.96;
     particles[p]   += particles[p+2] * dt * 60;
@@ -287,7 +306,7 @@ function updateParticles(dt) {
     if (particles[p+4] <= 0) {
       // Recycle to end
       const empty = MAX_PARTICLES - 1;
-      for (let j = 0; j <= 8; j++) particles[p + j] = particles[empty * 6 + j];
+      for (let j = 0; j < PARTICLE_STRIDE; j++) particles[p + j] = particles[empty * PARTICLE_STRIDE + j];
       empty--;
     }
   }
@@ -295,16 +314,35 @@ function updateParticles(dt) {
 
 function drawParticles() {
   ctx.globalCompositeOperation = 'lighter';
+  // Batch particles by colour bucket to reduce fillStyle changes (§6.2: batch by state)
+  const BUCKET_SIZE = 8; // 8 colour buckets
+  const buckets = new Array(BUCKET_SIZE);
+  for (let b = 0; b < BUCKET_SIZE; b++) buckets[b] = [];
+
+  // Classify particles into buckets by colour index
   for (let i = 0; i < particleCount; i++) {
-    const p = i * 9;
-    const alpha = particles[p+4] / particles[p+5];
-    const size  = 2 + alpha * 3;
-    // Apply squash/stretch based on velocity (§5.2)
-    const { sx, sy } = applySquashStretch(particles[p], particles[p+1], particles[p+2], particles[p+3]);
-    ctx.globalAlpha = alpha * 0.8;
+    const p = i * PARTICLE_STRIDE;
+    const cIdx = (particles[p+6] * BUCKET_SIZE) | 0;
+    buckets[Math.min(cIdx, BUCKET_SIZE - 1)].push(i);
+  }
+
+  // Draw each bucket with a single fillStyle
+  for (let b = 0; b < BUCKET_SIZE; b++) {
+    if (buckets[b].length === 0) continue;
+    const idx = buckets[b][0];
+    const p = idx * PARTICLE_STRIDE;
     ctx.fillStyle = `rgba(${particles[p+6]*255|0},${particles[p+7]*255|0},${particles[p+8]*255|0},1)`;
     ctx.beginPath();
-    ctx.ellipse(particles[p], particles[p+1], size * sx, size * sy, 0, 0, Math.PI * 2);
+    for (let bi = 0; bi < buckets[b].length; bi++) {
+      const qi = buckets[b][bi];
+      const q = qi * PARTICLE_STRIDE;
+      const alpha = particles[q+4] / particles[q+5];
+      const size  = 2 + alpha * 3;
+      // Apply squash/stretch based on velocity (§5.2)
+      const { sx, sy } = applySquashStretch(particles[q], particles[q+1], particles[q+2], particles[q+3]);
+      ctx.globalAlpha = alpha * 0.8;
+      ctx.ellipse(particles[q], particles[q+1], size * sx, size * sy, 0, 0, Math.PI * 2);
+    }
     ctx.fill();
   }
   ctx.globalCompositeOperation = 'source-over';
@@ -487,9 +525,7 @@ function addForces() {
  *  §3.5a Step 2: Advect velocity (semi-Lagrangian)
  * ============================================================ */
 function advectVelocity() {
-  const auxVx = new Float32Array(GRID * GRID);
-  const auxVy = new Float32Array(GRID * GRID);
-
+  // Reuse pre-allocated scratch arrays (§6.2)
   for (let y = 0; y < GRID; y++) {
     for (let x = 0; x < GRID; x++) {
       const i = idx(x, y);
@@ -525,9 +561,7 @@ function diffuseVelocity() {
  *  §3.5a Step 4: Project (divergence-free)
  * ============================================================ */
 function projectVelocity() {
-  const p = new Float32Array(GRID * GRID);
-  const ps = new Float32Array(GRID * GRID);
-
+  // Reuse pre-allocated scratch arrays (§6.2)
   // Compute divergence
   for (let y = 0; y < GRID; y++) {
     for (let x = 0; x < GRID; x++) {
@@ -575,10 +609,7 @@ function projectVelocity() {
  *  §3.5a Step 5: Advect dye (same semi-Lagrangian)
  * ============================================================ */
 function advectDye() {
-  const auxR = new Float32Array(GRID * GRID);
-  const auxG = new Float32Array(GRID * GRID);
-  const auxB = new Float32Array(GRID * GRID);
-
+  // Reuse pre-allocated scratch arrays (§6.2)
   for (let y = 0; y < GRID; y++) {
     for (let x = 0; x < GRID; x++) {
       const i = idx(x, y);
@@ -601,12 +632,23 @@ function advectDye() {
  *  §4 — Art style cookbook
  * ============================================================ */
 
-// --- §4.5: Simple value noise + domain warping ---
-const _noiseCache = new Float32Array(256 * 256);
-const _noiseSeed = 127.1;
+// --- §4.5: Pre-computed colour palette lookup (§6.2: zero-allocation) ---
+// 128 entries, indexed by (t * 128) | 0 — avoids per-cell array allocation
+const PALETTE_SIZE = 128;
+const paletteR = new Float32Array(PALETTE_SIZE);
+const paletteG = new Float32Array(PALETTE_SIZE);
+const paletteB = new Float32Array(PALETTE_SIZE);
+{
+  for (let i = 0; i < PALETTE_SIZE; i++) {
+    const t = i / PALETTE_SIZE;
+    paletteR[i] = inkPalette.a[0] + inkPalette.b[0] * Math.cos(6.28318 * (inkPalette.c[0] * t + inkPalette.d[0]));
+    paletteG[i] = inkPalette.a[1] + inkPalette.b[1] * Math.cos(6.28318 * (inkPalette.c[1] * t + inkPalette.d[1]));
+    paletteB[i] = inkPalette.a[2] + inkPalette.b[2] * Math.cos(6.28318 * (inkPalette.c[2] * t + inkPalette.d[2]));
+  }
+}
 
 function _noiseHash(x, y) {
-  const s = Math.sin(x * _noiseSeed + y * 311.7) * 43758.5453;
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
   return s - Math.floor(s);
 }
 
@@ -639,10 +681,19 @@ const inkPalette = {
   d: [0.0,  0.35, 0.7]
 };
 
-function cosinePalette(t) {
-  return [0, 1, 2].map(i =>
-    inkPalette.a[i] + inkPalette.b[i] * Math.cos(6.28318 * (inkPalette.c[i] * t + inkPalette.d[i]))
-  );
+// --- §4.5: Pre-computed colour palette lookup (§6.2: zero-allocation) ---
+// 128 entries, indexed by (t * 128) | 0 — avoids per-cell array allocation
+const PALETTE_SIZE = 128;
+const paletteR = new Float32Array(PALETTE_SIZE);
+const paletteG = new Float32Array(PALETTE_SIZE);
+const paletteB = new Float32Array(PALETTE_SIZE);
+{
+  for (let i = 0; i < PALETTE_SIZE; i++) {
+    const t = i / PALETTE_SIZE;
+    paletteR[i] = inkPalette.a[0] + inkPalette.b[0] * Math.cos(6.28318 * (inkPalette.c[0] * t + inkPalette.d[0]));
+    paletteG[i] = inkPalette.a[1] + inkPalette.b[1] * Math.cos(6.28318 * (inkPalette.c[1] * t + inkPalette.d[1]));
+    paletteB[i] = inkPalette.a[2] + inkPalette.b[2] * Math.cos(6.28318 * (inkPalette.c[2] * t + inkPalette.d[2]));
+  }
 }
 
 // --- §4.2: Pre-rendered glow sprite ---
@@ -684,8 +735,10 @@ function renderDye(alpha) {
       // Domain-warp the colour index for organic texture
       const [wx, wy] = domainWarp(x / GRID, y / GRID, 0.15);
       const cw = Math.max(0, Math.min(1, (wx + 0.5) / 2));
-
-      const [cr, cg, cb] = cosinePalette(cw);
+      const ci = (cw * PALETTE_SIZE) | 0;
+      const cr = paletteR[ci];
+      const cg = paletteG[ci];
+      const cb = paletteB[ci];
 
       // Blend palette colour with raw dye intensity
       const r = Math.min(255, (dyeR[i] * cr + dyeG[i] * 0.8) * 255);
@@ -758,18 +811,27 @@ function update(dt) {
   projectVelocity();
   advectDye();
 
-  // Decay dye slowly
+  // --- Juice: smooth brush size transition via easing (§5.1) ---
+  const t = Math.min(1, dt * 60);
+  inkBrushSize += (targetBrushSize - inkBrushSize) * easeOutCubic(t);
+  document.getElementById('brush-size').textContent = Math.round(inkBrushSize);
+
+  // --- Juice: update particles, shake ---
+  juiceUpdate(dt);
+
+  // --- Merge dye decay + clamping into a single pass (§6.2: one loop over grid) ---
   for (let i = 0; i < GRID * GRID; i++) {
-    dyeR[i] *= INK_DECAY;
-    dyeG[i] *= INK_DECAY;
-    dyeB[i] *= INK_DECAY;
     // Friction on velocity
     vx[i] *= FRICTION;
     vy[i] *= FRICTION;
-  }
 
-  // Clamp dye
-  for (let i = 0; i < GRID * GRID; i++) {
+    // Decay dye
+    const dR = dyeR[i], dG = dyeG[i], dB = dyeB[i];
+    dyeR[i] = dR * INK_DECAY;
+    dyeG[i] = dG * INK_DECAY;
+    dyeB[i] = dB * INK_DECAY;
+
+    // Clamp dye intensity in one shot
     const total = dyeR[i] + dyeG[i] + dyeB[i];
     if (total > DYE_MAX) {
       const scale = DYE_MAX / total;
@@ -778,16 +840,6 @@ function update(dt) {
       dyeB[i] *= scale;
     }
   }
-
-  // --- Juice: smooth brush size transition via easing (§5.1) ---
-  const t = Math.min(1, dt * 60);  // 60 Hz ease speed
-  inkBrushSize += (targetBrushSize - inkBrushSize) * easeOutCubic(t);
-
-  // Update live brush size display in controls pane
-  document.getElementById('brush-size').textContent = Math.round(inkBrushSize);
-
-  // --- Juice: update particles, shake ---
-  juiceUpdate(dt);
 }
 
 function draw(alpha) {
