@@ -52,6 +52,7 @@ MINI_GAMES = [
     {"file": "reaction_diffusion.html", "name": "Pattern Grower", "description": "Grow coral and leopard patterns under your cursor", "tier": "reward", "release_order": 12},
     {"file": "wrecking_yard.html", "name": "Wrecking Yard", "description": "Swing a wrecking ball and smash towers", "tier": "reward", "release_order": 13},
     {"file": "topple_tower.html",  "name": "Topple Tower",  "description": "Topple a block tower with explosions and gravity wells", "tier": "reward", "release_order": 14},
+    {"file": "gear_garden_v1.html", "name": "Gear Garden", "description": "Build and explore expressive semi-real gear machines", "tier": "reward", "release_order": 15},
 ]
 
 REWARD_GAMES = sorted(
