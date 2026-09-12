@@ -1,0 +1,2181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magnetic Field Lines</title>
+<style>
+  /* ============================================================
+     PAGE SHELL
+     Never a pure black background (Handbook §4.1). The canvas
+     clear colour below is matched to this so a slow first frame
+     does not flash.
+     ============================================================ */
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #0b0a16;
+    color: #e8e6f2;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  #gfx {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    cursor: crosshair;
+    touch-action: none;
+  }
+
+  /* ============================================================
+     [JUICE AGENT] THE OVERLAY LAYER  (Handbook §4.2, §5)
+     A second, cheap Canvas 2D layer stacked over the WebGPU
+     canvas. It carries the ambient aurora, the cursor glow and
+     its streamer, the spawn shockwaves and the hover ring.
+     It never takes input and it never touches the render pass.
+     mix-blend-mode: screen makes every mark additive light over
+     the field below, so nothing drawn here can darken a needle.
+     ============================================================ */
+  #juice {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
+    mix-blend-mode: screen;
+  }
+
+  /* A soft vignette, painted once by CSS and never redrawn (§6.5).
+     It darkens the corners so the middle of the field reads
+     brighter. This is half of the fix for the dead resting state:
+     a flat field of dim needles on a flat ground has no focus, and
+     a gentle centre-weighting gives the eye somewhere to land. */
+  #vignette {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 76% 76% at 50% 47%,
+                      rgba(0, 0, 0, 0) 38%,
+                      rgba(2, 3, 9, 0.30) 78%,
+                      rgba(2, 3, 9, 0.48) 100%);
+  }
+
+  /* ============================================================
+     CONTROLS PANE  (House standard §0 rule 3)
+     Fixed top-left, 16px, frosted glass, rounded,
+     pointer-events: none so it never eats mouse input.
+     ============================================================ */
+  #controls {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    z-index: 10;
+    pointer-events: none;
+    min-width: 232px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    background: rgba(14, 12, 28, 0.55);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid rgba(190, 180, 255, 0.16);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+    font-size: 12.5px;
+    line-height: 1.5;
+    user-select: none;
+  }
+
+  #controls h1 {
+    margin: 0 0 8px 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #b9b2e8;
+  }
+
+  #controls .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+  }
+
+  #controls .key {
+    color: #cfc9f0;
+  }
+
+  #controls .val {
+    color: #8f88bb;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #controls .sep {
+    height: 1px;
+    margin: 9px 0 8px 0;
+    background: rgba(190, 180, 255, 0.14);
+  }
+
+  /* Placeholder rows are marked so a later agent can find them fast. */
+  #controls .todo .val {
+    color: #6f6894;
+    font-style: italic;
+  }
+
+  /* ============================================================
+     RESET BUTTON  (House standard §0 rule 5)
+     Pill, fixed bottom-centre. Calls reset().
+     ============================================================ */
+  #reset {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 10px 26px;
+    border: 1px solid rgba(190, 180, 255, 0.28);
+    border-radius: 999px;
+    background: rgba(22, 19, 44, 0.62);
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    color: #e8e6f2;
+    font: inherit;
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 140ms ease, transform 140ms ease, border-color 140ms ease;
+  }
+
+  #reset:hover {
+    background: rgba(38, 32, 72, 0.78);
+    border-color: rgba(190, 180, 255, 0.45);
+  }
+
+  #reset:active {
+    transform: translateX(-50%) scale(0.96);
+  }
+
+  /* ============================================================
+     FALLBACK PANEL
+     Shown when WebGPU is not available. Must never be a blank
+     page or a console-only error.
+     ============================================================ */
+  #fallback {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(1200px 800px at 50% 38%, #1a1436 0%, #0b0a16 70%);
+  }
+
+  #fallback.show {
+    display: flex;
+  }
+
+  #fallback .card {
+    max-width: 560px;
+    padding: 28px 30px;
+    border-radius: 16px;
+    background: rgba(20, 17, 40, 0.72);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid rgba(190, 180, 255, 0.2);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+    text-align: left;
+  }
+
+  #fallback h2 {
+    margin: 0 0 10px 0;
+    font-size: 20px;
+    font-weight: 650;
+    color: #f2eefc;
+  }
+
+  #fallback p {
+    margin: 0 0 12px 0;
+    font-size: 14px;
+    line-height: 1.62;
+    color: #c6bfe6;
+  }
+
+  #fallback ul {
+    margin: 0 0 12px 0;
+    padding-left: 20px;
+    font-size: 14px;
+    line-height: 1.62;
+    color: #c6bfe6;
+  }
+
+  #fallback code {
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.09);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: #e5dfff;
+  }
+
+  #fallback .why {
+    margin: 14px 0 0 0;
+    padding-top: 12px;
+    border-top: 1px solid rgba(190, 180, 255, 0.16);
+    font-size: 12.5px;
+    color: #8f88bb;
+    word-break: break-word;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="gfx"></canvas>
+
+<!-- [JUICE AGENT] Overlay light layer and vignette. Both are
+     pointer-events: none, so the mouse never notices them. -->
+<canvas id="juice"></canvas>
+<div id="vignette"></div>
+
+<!-- ============================================================
+     CONTROLS PANE MARKUP
+     Live values are filled by updateHud(). Rows marked .todo are
+     placeholders for the Physics / Art agents to wire up.
+     ============================================================ -->
+<div id="controls">
+  <h1>Magnetic Field Lines</h1>
+  <div class="row"><span class="key">Move mouse</span><span class="val">cursor is a magnet</span></div>
+  <div class="row"><span class="key">Left button</span><span class="val">place, then drag</span></div>
+  <div class="row"><span class="key">Right drag</span><span class="val">aim the magnet</span></div>
+  <div class="row"><span class="key">Right click</span><span class="val">flip polarity</span></div>
+  <div class="row"><span class="key">Scroll wheel</span><span class="val">magnet strength</span></div>
+  <div class="row"><span class="key">Shift + wheel</span><span class="val">grid density</span></div>
+  <div class="row"><span class="key">X or Delete</span><span class="val">remove nearest</span></div>
+  <div class="row"><span class="key">R</span><span class="val">reset</span></div>
+  <div class="sep"></div>
+  <div class="row"><span class="key">Magnets</span><span class="val" id="hud-magnets">0 / 8</span></div>
+  <div class="row"><span class="key">Grid</span><span class="val" id="hud-grid">--</span></div>
+  <div class="row"><span class="key">Strength</span><span class="val" id="hud-strength">1.00x</span></div>
+  <div class="row"><span class="key">Pointer</span><span class="val" id="hud-pointer">0, 0</span></div>
+  <div class="row"><span class="key">Buttons</span><span class="val" id="hud-buttons">none</span></div>
+  <div class="row"><span class="key">FPS</span><span class="val" id="hud-fps">--</span></div>
+</div>
+
+<button id="reset" type="button">Reset</button>
+
+<!-- ============================================================
+     WEBGPU FALLBACK PANEL
+     ============================================================ -->
+<div id="fallback">
+  <div class="card">
+    <h2>WebGPU is not available</h2>
+    <p id="fallback-lead">This toy draws with WebGPU, and this browser cannot start it.</p>
+    <p>To run it, use one of these:</p>
+    <ul>
+      <li><strong>Chrome or Edge 113+</strong> on Windows, macOS or ChromeOS. WebGPU is on by default.</li>
+      <li><strong>Chrome on Linux</strong>: enable <code>chrome://flags/#enable-unsafe-webgpu</code>, then restart. On some systems you also need <code>--enable-features=Vulkan</code>.</li>
+      <li><strong>Firefox 141+</strong> on Windows, or Firefox Nightly elsewhere with <code>dom.webgpu.enabled</code> set to <code>true</code> in <code>about:config</code>.</li>
+      <li><strong>Safari 26+</strong> on macOS 26 or iOS 26.</li>
+    </ul>
+    <p>The page must also be served over <code>http://localhost</code> or <code>https://</code>. Some browsers block WebGPU on a plain <code>file://</code> page.</p>
+    <p class="why" id="fallback-reason">Reason: unknown.</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ================================================================
+ * MAGNETIC FIELD LINES - ENGINE SKELETON
+ * ================================================================
+ * Built from The Browser Mini-Game Handbook:
+ *   §2.1 fixed timestep with interpolation
+ *   §2.2 DPR-aware canvas
+ *   §2.3 mouse input done right
+ *   §0   house standards (controls pane, reset, contextmenu)
+ *
+ * THIS FILE IS BONES ONLY. The field maths, the compass arrows,
+ * the palette and the juice are NOT here. Look for the banners:
+ *   [PHYSICS AGENT] , [ART AGENT] , [JUICE AGENT]
+ * ================================================================ */
+
+/* ----------------------------------------------------------------
+ * 0. DOM handles
+ * ---------------------------------------------------------------- */
+const canvas      = document.getElementById('gfx');
+const fallbackEl  = document.getElementById('fallback');
+const reasonEl    = document.getElementById('fallback-reason');
+const leadEl      = document.getElementById('fallback-lead');
+const resetBtn    = document.getElementById('reset');
+
+// [JUICE AGENT] The overlay light layer. Canvas 2D, not WebGPU: it
+// is a separate surface, so nothing here can fault the device.
+const juiceCanvas = document.getElementById('juice');
+const jctx        = juiceCanvas.getContext('2d');
+
+const hud = {
+  magnets:  document.getElementById('hud-magnets'),
+  grid:     document.getElementById('hud-grid'),
+  strength: document.getElementById('hud-strength'),
+  pointer:  document.getElementById('hud-pointer'),
+  buttons:  document.getElementById('hud-buttons'),
+  fps:      document.getElementById('hud-fps')
+};
+
+/* ----------------------------------------------------------------
+ * 1. Canvas size state (§2.2)
+ * ---------------------------------------------------------------- */
+const view = {
+  cssW: 1,      // viewport width in CSS pixels
+  cssH: 1,      // viewport height in CSS pixels
+  pxW:  1,      // backing store width in device pixels
+  pxH:  1,      // backing store height in device pixels
+  dpr:  1       // capped device pixel ratio actually in use
+};
+
+// Cap the ratio for performance. A 3x screen is 9x the pixels (§2.2).
+const DPR_CAP = 2;
+
+function fitCanvas() {
+  const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+  const cssW = Math.max(1, window.innerWidth);
+  const cssH = Math.max(1, window.innerHeight);
+  const pxW = Math.max(1, Math.round(cssW * dpr));
+  const pxH = Math.max(1, Math.round(cssH * dpr));
+
+  view.dpr = dpr;
+  view.cssW = cssW;
+  view.cssH = cssH;
+
+  // Only touch the backing store when it truly changes. Assigning
+  // canvas.width reallocates the WebGPU swap chain texture.
+  if (pxW !== view.pxW || pxH !== view.pxH) {
+    view.pxW = pxW;
+    view.pxH = pxH;
+    canvas.width = pxW;
+    canvas.height = pxH;
+  }
+
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+
+  onResize(cssW, cssH, pxW, pxH, dpr);
+}
+
+/* [PHYSICS AGENT] / [ART AGENT]
+ * Rebuild anything that depends on the viewport here: the compass
+ * grid dimensions, any storage buffers sized to the grid, and the
+ * uniform buffer's resolution field. Called on every real size
+ * change, including a monitor change that alters devicePixelRatio. */
+function onResize(cssW, cssH, pxW, pxH, dpr) {
+  // [PHYSICS AGENT] The grid is a pure function of the CSS viewport
+  // and the cell pitch. buildGrid() reallocates fieldBuf and
+  // stateBuf only when the column or row count actually changes.
+  buildGrid();
+  // [JUICE AGENT] The overlay owns its own buffer size (§4.6).
+  fitJuice(cssW, cssH);
+  updateHud();
+}
+
+/* ----------------------------------------------------------------
+ * 2. Mouse input (§2.3)
+ * ----------------------------------------------------------------
+ * Positions are tracked in BOTH spaces:
+ *   cssX / cssY   - CSS pixels, matches layout and the HUD
+ *   pxX  / pxY    - canvas backing-store pixels, matches the
+ *                   coordinates a shader sees
+ * Button state comes from e.buttons (plural) so it cannot go stale
+ * when a button is released outside the window.
+ * ---------------------------------------------------------------- */
+const mouse = {
+  cssX: 0, cssY: 0,
+  pxX: 0,  pxY: 0,
+  prevCssX: 0, prevCssY: 0,   // previous frame, for velocity / stirring
+  dxCss: 0, dyCss: 0,         // movement since the last pointer event
+  left: false,
+  right: false,
+  middle: false,
+  inside: false,
+  wheel: 0,                   // accumulated, normalised, consumed by update()
+  wheelRaw: 0                 // accumulated raw deltaY, if finer control helps
+};
+
+function setPointerFromEvent(e) {
+  const r = canvas.getBoundingClientRect();
+  const nx = e.clientX - r.left;
+  const ny = e.clientY - r.top;
+  mouse.dxCss = nx - mouse.cssX;
+  mouse.dyCss = ny - mouse.cssY;
+  mouse.cssX = nx;
+  mouse.cssY = ny;
+  mouse.pxX = nx * view.dpr;
+  mouse.pxY = ny * view.dpr;
+}
+
+function setButtonsFromMask(mask) {
+  mouse.left   = (mask & 1) !== 0;
+  mouse.right  = (mask & 2) !== 0;
+  mouse.middle = (mask & 4) !== 0;
+}
+
+// House rule §0.4: the right button is a verb, not a context menu.
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('contextmenu', e => {
+  if (e.target === canvas) e.preventDefault();
+});
+
+canvas.addEventListener('mousemove', e => {
+  setPointerFromEvent(e);
+  setButtonsFromMask(e.buttons);
+  mouse.inside = true;
+});
+
+canvas.addEventListener('mouseenter', e => {
+  setPointerFromEvent(e);
+  setButtonsFromMask(e.buttons);
+  mouse.inside = true;
+});
+
+canvas.addEventListener('mouseleave', () => {
+  mouse.inside = false;
+});
+
+canvas.addEventListener('mousedown', e => {
+  setPointerFromEvent(e);
+  setButtonsFromMask(e.buttons);
+  e.preventDefault();
+
+  /* [PHYSICS AGENT] The two verbs of SPEC §4.
+   *   left  : press on empty space spawns a magnet AND grabs it,
+   *           press on an existing magnet grabs that one.
+   *   right : press starts an aim-or-flip gesture. Which one it is
+   *           depends on how far the mouse travels before release.
+   * Both use mouse.cssX / mouse.cssY, CSS pixels, the same space the
+   * shader works in (§1.5). */
+  if (e.button === 0) {
+    let idx = hitMagnet(mouse.cssX, mouse.cssY);
+    const fresh = idx < 0;
+    if (fresh) idx = addMagnet(mouse.cssX, mouse.cssY);
+    const m = state.magnets[idx];
+    state.grab = idx;
+    state.grabDX = m.x - mouse.cssX;
+    state.grabDY = m.y - mouse.cssY;
+    state.strength = m.strengthTarget;
+    // [JUICE AGENT] §5: placing a magnet lands, picking one up
+    // answers. The bar's own scale punch is in vsMagnet.
+    if (fresh) juiceSpawn(m.x, m.y); else juiceGrab(m.x, m.y);
+    updateHud();
+  }
+
+  if (e.button === 2) {
+    // §4: right always targets the nearest magnet, so right-clicking
+    // empty space still does something.
+    state.rightTarget = nearestMagnet(mouse.cssX, mouse.cssY).index;
+    state.rightTravel = 0;
+  }
+});
+
+/* [PHYSICS AGENT] Shift state for the wheel (§4: Shift + wheel is
+ * grid density). Registered as a second, passive listener so the
+ * Setup agent's accumulator above is left exactly as it was. */
+canvas.addEventListener('wheel', e => { mouse.wheelShift = e.shiftKey; }, { passive: true });
+
+// §4.2: keyboard is seasoning only. Nothing here is needed to play.
+window.addEventListener('keydown', e => {
+  if (e.key === 'x' || e.key === 'X' || e.key === 'Delete') {
+    const n = nearestMagnet(mouse.cssX, mouse.cssY);
+    if (n.index >= 0) {
+      state.magnets.splice(n.index, 1);
+      state.grab = -1;
+      state.rightTarget = -1;
+      updateHud();
+    }
+  } else if (e.key === 'r' || e.key === 'R') {
+    reset();
+  }
+});
+
+// §2.3: listen on window so a drag that ends off-canvas still clears.
+window.addEventListener('mouseup', e => {
+  setButtonsFromMask(e.buttons);
+});
+
+// The window can lose focus mid-drag. Clear held state so nothing sticks.
+window.addEventListener('blur', () => {
+  setButtonsFromMask(0);
+});
+
+// §2.3: normalise the wheel with Math.sign. Magnitudes vary wildly
+// between mice, trackpads and browsers. Accumulate, then let
+// update() consume the total.
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  mouse.wheel += -Math.sign(e.deltaY);
+  mouse.wheelRaw += -e.deltaY;
+}, { passive: false });
+
+// §6.8: do not run up a huge accumulator while the tab is hidden.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) last = performance.now();
+});
+
+/* ----------------------------------------------------------------
+ * 3. Simulation state
+ * ----------------------------------------------------------------
+ * [PHYSICS AGENT] This object is the whole mutable world. Add the
+ * magnet list, the grid dimensions and any GPU buffer handles here
+ * so reset() only has to clear one place. */
+const state = {
+  time: 0,          // seconds of simulated time since the last reset
+  frame: 0,         // frames presented since page load
+  magnets: [],      // {x, y, dirX, dirY, strength, halfLen, polarity, spawnAge}
+  gridCols: 0,      // needle columns, rebuilt in onResize()
+  gridRows: 0,      // needle rows
+  strength: 1.0,    // strength of the magnet the wheel last touched (HUD value)
+
+  // --- grid layout, SPEC §3.3 ---
+  cellPitch: 22,
+  pitchIndex: 4,
+  gridOriginX: 0,
+  gridOriginY: 0,
+
+  // --- interaction, SPEC §4 ---
+  grab: -1,          // index of the magnet held by the left button
+  grabDX: 0,
+  grabDY: 0,
+  rightTarget: -1,   // index of the magnet the right button is acting on
+  rightTravel: 0,    // px of travel since the right button went down
+  handX: 0, handY: 0,
+  handDirX: 1, handDirY: 0,
+  handStrength: 0.35,
+
+  pendingSteps: 0    // fixed steps taken since the last render (SPEC §3.1)
+};
+
+/* ================================================================
+ * [PHYSICS AGENT] THE MAGNET MODEL AND THE FIELD CONSTANTS
+ * ================================================================
+ * Every constant here comes from SPEC.md §1.6, §4 and §5.4. Do not
+ * retune them without reading the section that derives them.
+ * ================================================================ */
+const MAX_MAGNETS      = 8;                 // §2.1
+const MAGNET_SLOTS     = MAX_MAGNETS + 1;   // +1 reserved for the hand magnet
+const K_STRENGTH       = 1.0e4;             // px^2, field scale (§1.5)
+const EPS2             = 64.0;              // px^2, Plummer softening (§1.4)
+const DEFAULT_HALF_LEN = 60.0;              // px (§1.6)
+const HAND_HALF_LEN    = 30.0;              // px (§4)
+const HAND_STRENGTH    = 0.35;              // (§4)
+const B_MIN_LOG2       = -12.2877;          // log2(2e-4)   (§5.2)
+const B_SPAN_LOG2      = 18.9316;           // log2(1e2) - log2(2e-4)
+
+const STRENGTH_MIN  = 0.1;                  // §4 wheel clamp
+const STRENGTH_MAX  = 8.0;
+const STRENGTH_STEP = 1.12;                 // per wheel notch, logarithmic
+const WHEEL_REACH   = 220;                  // px: past this the wheel drives the hand
+const GRAB_RADIUS   = 40;                   // px around the centre (§4.3)
+const BAR_RADIUS    = 30;                   // px around the bar segment (§4.3)
+const FLIP_TRAVEL   = 6;                    // px: under this a right-drag is a flip
+
+// §4: Shift + wheel steps through these. Default 22 px (§6).
+const PITCH_STEPS = [48, 40, 34, 28, 22, 18, 14, 11, 8];
+const DEFAULT_PITCH_INDEX = 4;
+
+/* Host-side mirrors of the WGSL structs. The byte layouts are fixed
+ * by SPEC §3.5 and the shader will read garbage if they drift.
+ *   Magnet      : 32 B stride, 8 floats, all f32
+ *   Params      : 48 B, mixed u32 / f32, so it needs a DataView
+ *   NeedleState : 8 B stride, written only by the GPU            */
+const magnetData  = new Float32Array(MAGNET_SLOTS * 8);
+const paramsBytes = new ArrayBuffer(48);
+const paramsView  = new DataView(paramsBytes);
+
+// Params field offsets, SPEC §3.5. Named, never hand-counted.
+const P_GRID_COLS = 0,  P_GRID_ROWS = 4,  P_ORIGIN_X = 8, P_ORIGIN_Y = 12;
+const P_PITCH = 16, P_MAGNET_COUNT = 20, P_EPS2 = 24, P_LOG_MIN = 28;
+const P_LOG_SPAN = 32, P_DT = 36, P_VIEW_W = 40, P_VIEW_H = 44;
+
+function makeMagnet(x, y, dirX, dirY, strength, polarity) {
+  return {
+    x: x, y: y,
+    dirX: dirX, dirY: dirY,          // unit vector, south -> north
+    strength: strength,
+    halfLen: DEFAULT_HALF_LEN,
+    polarity: polarity,              // +1 or -1, never a bool (§3.5 rule 5)
+    spawnAge: 0,                     // seconds, read by the Juice agent
+
+    /* [JUICE AGENT] Feel-only fields. None of them is packed into
+     * the GPU buffer, so the 32 byte Magnet layout is untouched.
+     *   strengthTarget : where the wheel wants strength to be
+     *   flipT          : 0..1 progress of the polarity spin, 1 = idle
+     *   flipFrom       : the axis angle the spin started from
+     *   flipSign       : which way round it turns */
+    strengthTarget: strength,
+    flipT: 1,
+    flipFrom: 0,
+    flipSign: 1
+  };
+}
+
+/* [JUICE AGENT] The polarity spin, SPEC §7.4 and Handbook §5.
+ * Turning the axis through pi negates the dipole moment, which is
+ * the same thing a polarity flip does. Doing it over 180 ms with an
+ * ease means the field swings round instead of jumping. */
+function startFlip(m) {
+  if (m.flipT < 1) return;                 // already spinning
+  m.flipFrom = Math.atan2(m.dirY, m.dirX);
+  m.flipSign = -m.polarity;                // alternates, so repeats unwind
+  m.flipT = 0;
+}
+
+function stepFlip(m, dt) {
+  if (m.flipT >= 1) return;
+  m.flipT = Math.min(1, m.flipT + dt / FLIP_TIME);
+  const u = m.flipT;
+  // easeInOutCubic: it leaves slowly, travels fast, and lands soft.
+  const e = u < 0.5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) * 0.5;
+  const ang = m.flipFrom + Math.PI * e * m.flipSign;
+  m.dirX = Math.cos(ang);
+  m.dirY = Math.sin(ang);
+  if (m.flipT >= 1) {                      // land exactly on the reverse
+    m.dirX = -Math.cos(m.flipFrom);
+    m.dirY = -Math.sin(m.flipFrom);
+  }
+}
+
+// §2.1: the ninth magnet recycles the oldest. Input is never refused.
+function addMagnet(x, y) {
+  if (state.magnets.length >= MAX_MAGNETS) state.magnets.shift();
+  const m = makeMagnet(x, y, state.handDirX, state.handDirY, state.strength, 1);
+  state.magnets.push(m);
+  return state.magnets.length - 1;
+}
+
+// Distance from a point to a magnet: centre, or its bar segment (§4.3).
+function distToMagnet(m, x, y) {
+  const dcx = x - m.x, dcy = y - m.y;
+  const along = dcx * m.dirX + dcy * m.dirY;
+  const clamped = Math.max(-m.halfLen, Math.min(m.halfLen, along));
+  const bx = x - (m.x + m.dirX * clamped);
+  const by = y - (m.y + m.dirY * clamped);
+  const dBar = Math.hypot(bx, by);
+  const dCentre = Math.hypot(dcx, dcy);
+  return Math.min(dBar, dCentre);
+}
+
+function nearestMagnet(x, y) {
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < state.magnets.length; i++) {
+    const d = distToMagnet(state.magnets[i], x, y);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return { index: best, dist: bestD };
+}
+
+// Generous hit test, §7 small hands.
+function hitMagnet(x, y) {
+  const n = nearestMagnet(x, y);
+  if (n.index < 0) return -1;
+  const m = state.magnets[n.index];
+  const dCentre = Math.hypot(x - m.x, y - m.y);
+  if (dCentre <= GRAB_RADIUS || n.dist <= BAR_RADIUS) return n.index;
+  return -1;
+}
+
+function scaleStrength(m, notches) {
+  const f = Math.pow(STRENGTH_STEP, notches);
+  // [JUICE AGENT] The step and the clamps are unchanged (§4). The
+  // notch now moves a target, and update() eases strength onto it,
+  // so the wheel swells the field instead of stepping it.
+  if (m.strengthTarget === undefined) m.strengthTarget = m.strength;
+  m.strengthTarget = Math.max(STRENGTH_MIN,
+                              Math.min(STRENGTH_MAX, m.strengthTarget * f));
+  return m.strengthTarget;
+}
+
+/* ----------------------------------------------------------------
+ * The grid, SPEC §3.3. No positions buffer exists: the compute
+ * shader derives the cell centre from its invocation id, so all JS
+ * has to agree on is the column count, the row count and the origin.
+ * ---------------------------------------------------------------- */
+function buildGrid() {
+  const pitch = state.cellPitch;
+  const W = view.cssW, H = view.cssH;
+  const cols = Math.floor(W / pitch) + 1;
+  const rows = Math.floor(H / pitch) + 1;
+  const changed = (cols !== state.gridCols || rows !== state.gridRows);
+
+  state.gridCols = cols;
+  state.gridRows = rows;
+  state.gridOriginX = (W - (cols - 1) * pitch) * 0.5;
+  state.gridOriginY = (H - (rows - 1) * pitch) * 0.5;
+
+  // §6.2: buffers are recreated here and never in the frame loop.
+  if (gpu.ok && (changed || !gpu.fieldBuf)) allocGridBuffers();
+}
+
+function setPitchIndex(i) {
+  const clamped = Math.max(0, Math.min(PITCH_STEPS.length - 1, i));
+  if (clamped === state.pitchIndex) return;
+  state.pitchIndex = clamped;
+  state.cellPitch = PITCH_STEPS[clamped];
+  buildGrid();
+  updateHud();
+}
+
+/* Pack the magnet array, then the hand magnet, into magnetData.
+ * SPEC §2: the hand is not special cased in the shader. It is simply
+ * slot index magnetCount - 1. Returns the number of filled slots. */
+function packMagnets() {
+  const n = Math.min(state.magnets.length, MAX_MAGNETS);
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    const m = state.magnets[i];
+    magnetData[o]     = m.x;
+    magnetData[o + 1] = m.y;
+    magnetData[o + 2] = m.dirX;
+    magnetData[o + 3] = m.dirY;
+    magnetData[o + 4] = m.strength;
+    magnetData[o + 5] = m.halfLen;
+    magnetData[o + 6] = m.polarity;
+    magnetData[o + 7] = m.spawnAge;
+    o += 8;
+  }
+  // The hand magnet, §4.1. Present whenever the cursor is on the canvas.
+  let count = n;
+  if (mouse.inside) {
+    magnetData[o]     = state.handX;
+    magnetData[o + 1] = state.handY;
+    magnetData[o + 2] = state.handDirX;
+    magnetData[o + 3] = state.handDirY;
+    magnetData[o + 4] = state.handStrength;
+    magnetData[o + 5] = HAND_HALF_LEN;
+    magnetData[o + 6] = 1;
+    // [JUICE AGENT] The hand's age starts when the pointer arrives,
+    // so vsMagnet pops the cursor magnet in. It must never be 0 for
+    // longer than one pop, or the bar would stay collapsed.
+    magnetData[o + 7] = state.handAge || 0;
+    count = n + 1;
+  }
+  return count;
+}
+
+function packParams(magnetCount) {
+  paramsView.setUint32(P_GRID_COLS, state.gridCols, true);
+  paramsView.setUint32(P_GRID_ROWS, state.gridRows, true);
+  paramsView.setFloat32(P_ORIGIN_X, state.gridOriginX, true);
+  paramsView.setFloat32(P_ORIGIN_Y, state.gridOriginY, true);
+  paramsView.setFloat32(P_PITCH, state.cellPitch, true);
+  paramsView.setUint32(P_MAGNET_COUNT, magnetCount, true);
+  paramsView.setFloat32(P_EPS2, EPS2, true);
+  paramsView.setFloat32(P_LOG_MIN, B_MIN_LOG2, true);
+  paramsView.setFloat32(P_LOG_SPAN, B_SPAN_LOG2, true);
+  paramsView.setFloat32(P_DT, DT, true);
+  paramsView.setFloat32(P_VIEW_W, view.cssW, true);
+  paramsView.setFloat32(P_VIEW_H, view.cssH, true);
+}
+
+function reset() {
+  state.time = 0;
+  state.magnets.length = 0;
+  state.strength = 1.0;
+  state.grab = -1;
+  state.rightTarget = -1;
+  state.handStrength = HAND_STRENGTH;
+  state.handTargetStrength = HAND_STRENGTH;
+  state.handAge = 0;
+  state.handDirX = 1;
+  state.handDirY = 0;
+  mouse.wheel = 0;
+  mouse.wheelRaw = 0;
+
+  // [JUICE AGENT] §5: a reset is an event, so it gets a ripple.
+  juiceReset();
+
+  /* [PHYSICS AGENT] §4.4: a reset restores the default density and
+   * re-seeds the needle state, so no angle survives from before.
+   * [JUICE AGENT] a reset is a good moment for a ripple or a
+   * short flash. Add it here, not in the click handler. */
+  state.pitchIndex = DEFAULT_PITCH_INDEX;
+  state.cellPitch = PITCH_STEPS[DEFAULT_PITCH_INDEX];
+  buildGrid();
+  seedNeedleState();
+
+  updateHud();
+}
+
+resetBtn.addEventListener('click', () => {
+  reset();
+  resetBtn.blur();   // stop the button keeping focus and eating keys
+});
+
+/* ----------------------------------------------------------------
+ * 4. WebGPU setup
+ * ---------------------------------------------------------------- */
+const gpu = {
+  ok: false,
+  adapter: null,
+  device: null,
+  context: null,
+  format: null
+};
+
+// The deliberate background. Matches the CSS shell so a slow first
+// frame does not flash a different colour. #0b0a16.
+const CLEAR_COLOR = { r: 0.043, g: 0.039, b: 0.086, a: 1.0 };
+
+function showFallback(reason, lead) {
+  gpu.ok = false;
+  canvas.style.display = 'none';
+  if (lead) leadEl.textContent = lead;
+  reasonEl.textContent = 'Reason: ' + reason;
+  fallbackEl.classList.add('show');
+  console.error('[magnetic_lines] WebGPU unavailable. ' + reason);
+}
+
+async function initWebGPU() {
+  if (!('gpu' in navigator) || !navigator.gpu) {
+    showFallback('navigator.gpu is undefined, so this browser has no WebGPU support.');
+    return false;
+  }
+
+  let adapter;
+  try {
+    adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  } catch (err) {
+    showFallback('requestAdapter() threw: ' + err);
+    return false;
+  }
+
+  if (!adapter) {
+    // Fall back to a software adapter before giving up.
+    try {
+      adapter = await navigator.gpu.requestAdapter({ forceFallbackAdapter: true });
+    } catch (err) {
+      adapter = null;
+    }
+  }
+
+  if (!adapter) {
+    showFallback(
+      'requestAdapter() returned null. The browser knows about WebGPU but found no usable GPU. ' +
+      'This is common on Linux without the Vulkan flags, and inside virtual machines.',
+      'This browser knows about WebGPU but could not reach a GPU.'
+    );
+    return false;
+  }
+
+  let device;
+  try {
+    device = await adapter.requestDevice();
+  } catch (err) {
+    showFallback('requestDevice() failed: ' + err);
+    return false;
+  }
+
+  if (!device) {
+    showFallback('requestDevice() returned no device.');
+    return false;
+  }
+
+  const context = canvas.getContext('webgpu');
+  if (!context) {
+    showFallback('canvas.getContext("webgpu") returned null.');
+    return false;
+  }
+
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  context.configure({
+    device: device,
+    format: format,
+    alphaMode: 'opaque'
+  });
+
+  // Uncaptured errors: validation and out-of-memory faults that no
+  // await surfaced. Log them loudly, they are almost always a bug
+  // in a shader or a bind group.
+  device.onuncapturederror = (e) => {
+    console.error('[magnetic_lines] WebGPU uncaptured error:', e.error && e.error.message ? e.error.message : e.error, e);
+  };
+
+  // Device loss: a driver reset, a tab suspend, or device.destroy().
+  device.lost.then((info) => {
+    if (info.reason === 'destroyed') return;   // an intentional teardown
+    gpu.ok = false;
+    running = false;
+    showFallback(
+      'The GPU device was lost (' + info.reason + '): ' + info.message + ' Reload the page to try again.',
+      'The GPU connection dropped while the page was running.'
+    );
+  });
+
+  gpu.adapter = adapter;
+  gpu.device = device;
+  gpu.context = context;
+  gpu.format = format;
+  gpu.ok = true;
+
+  console.log('[magnetic_lines] WebGPU ready. Format:', format, '| Adapter:', adapter.info || '(info unavailable)');
+
+  /* ============================================================
+   * [PHYSICS AGENT] BUILD YOUR GPU RESOURCES HERE
+   * ============================================================
+   * This is the place, right after the device exists and before
+   * the first frame. You need, roughly:
+   *   - a uniform buffer: resolution, time, pointer, magnet count
+   *   - a storage buffer of magnets, written with device.queue.writeBuffer
+   *   - a storage buffer of compass arrows (position + angle)
+   *   - a compute pipeline (device.createComputePipeline) whose
+   *     shader samples the summed field at each grid point and
+   *     writes the arrow angle
+   *   - a bind group tying those together
+   * Dispatch the compute pass inside renderFrame(), just before
+   * the render pass begins. Look for the [PHYSICS AGENT] banner
+   * there too.
+   * ============================================================ */
+
+  /* The field shader. SPEC §1 (physics), §2 (superposition),
+   * §3.5 (struct layout) and §3.7 (the body). Every constant below
+   * is quoted from §1.6 and §5.4. */
+  const FIELD_WGSL = `
+// ---- constants, SPEC §1.6 and §5.4 ----
+const K_STRENGTH : f32 = 1.0e4;        // px^2, field scale
+const EPS2       : f32 = 64.0;         // px^2, Plummer softening, EPS = 8 px
+const OMEGA      : f32 = 14.0;         // rad/s, needle responsiveness
+const ZETA       : f32 = 0.55;         // damping ratio, under 1 so it overshoots
+const TAU        : f32 = 6.28318530718;
+
+// ---- host-shared structs, SPEC §3.5. Offsets are deliberate. ----
+struct Magnet {
+  pos      : vec2<f32>,   // offset  0
+  dir      : vec2<f32>,   // offset  8   unit vector, S -> N
+  strength : f32,         // offset 16
+  halfLen  : f32,         // offset 20
+  polarity : f32,         // offset 24   +1 or -1
+  spawnAge : f32,         // offset 28
+};                        // size 32, array stride 32
+
+struct NeedleState {
+  angle : f32,            // offset 0
+  omega : f32,            // offset 4
+};                        // size 8, array stride 8
+
+struct Params {
+  @align(16)
+  gridDim     : vec2<u32>,  // offset  0
+  gridOrigin  : vec2<f32>,  // offset  8
+  cellPitch   : f32,        // offset 16
+  magnetCount : u32,        // offset 20
+  eps2        : f32,        // offset 24
+  logMin      : f32,        // offset 28
+  logSpan     : f32,        // offset 32
+  dt          : f32,        // offset 36
+  viewport    : vec2<f32>,  // offset 40
+};                          // size 48
+
+@group(0) @binding(0) var<uniform> P : Params;
+@group(0) @binding(1) var<storage, read>       magnets : array<Magnet>;
+@group(0) @binding(2) var<storage, read_write> field   : array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read_write> state   : array<NeedleState>;
+
+// §1.3 / §1.4: one Gilbert pole, inverse square, Plummer softened.
+fn poleField(p: vec2<f32>, s: vec2<f32>, q: f32) -> vec2<f32> {
+  let d   = p - s;
+  let r2s = dot(d, d) + EPS2;        // softened, always > 0
+  let inv = inverseSqrt(r2s);        // 1 / rs
+  return d * (q * inv * inv * inv);  // q * d / rs^3
+}
+
+// §1.2: the exact 3D point dipole, restricted to the plane.
+// Kept for the cursor probe and for Verify's far-field cross-check.
+fn dipoleField(p: vec2<f32>, c: vec2<f32>, m: vec2<f32>) -> vec2<f32> {
+  let d   = p - c;
+  let r2s = dot(d, d) + EPS2;
+  let inv = inverseSqrt(r2s);
+  let n   = d * inv;
+  return (3.0 * dot(m, n) * n - m) * (inv * inv * inv);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn csField(@builtin(global_invocation_id) gid: vec3<u32>) {
+  // §3.2: cols and rows are almost never multiples of 8.
+  if (gid.x >= P.gridDim.x || gid.y >= P.gridDim.y) { return; }
+  let i = gid.y * P.gridDim.x + gid.x;
+
+  // §3.3: the cell centre comes from the invocation id, in CSS px.
+  let p = P.gridOrigin + vec2<f32>(f32(gid.x), f32(gid.y)) * P.cellPitch;
+
+  // §2: superposition. The hand magnet is the last array element and
+  // is not special cased.
+  var b = vec2<f32>(0.0, 0.0);
+  for (var k: u32 = 0u; k < P.magnetCount; k = k + 1u) {
+    let m = magnets[k];
+    let h = m.dir * m.halfLen;
+    let q = K_STRENGTH * m.strength * m.polarity;
+    b = b + poleField(p, m.pos + h,  q)
+          + poleField(p, m.pos - h, -q);
+  }
+
+  let bmag = length(b);
+  // select(falseValue, trueValue, condition) is the WGSL order.
+  let dir  = select(vec2<f32>(0.0, 0.0), b / max(bmag, 1e-20), bmag > 1e-9);
+  // §5.2: the fixed logarithmic window. Linear would black out 3 of 5 decades.
+  let t    = clamp((log2(bmag + 1e-5) - P.logMin) / P.logSpan, 0.0, 1.0);
+
+  // §5.4: damped spring on the angle, integrated at the fixed step.
+  var st = state[i];
+  if (bmag > 1e-4) {
+    // SPEC §3.7 names this "target". That is a WGSL reserved keyword
+    // and the module fails to parse, so the name is "aim" here.
+    let aim = atan2(dir.y, dir.x);
+    var da = aim - st.angle;
+    da = da - TAU * round(da / TAU);              // shortest way round
+    st.omega = st.omega + da * (OMEGA * OMEGA) * P.dt;
+  }
+  st.omega = st.omega * exp(-2.0 * ZETA * OMEGA * P.dt);
+  st.angle = st.angle + st.omega * P.dt;
+  state[i] = st;
+
+  field[i] = vec4<f32>(dir, t, bmag);
+}
+`;
+
+  // Surface a bad struct layout or a shader typo on the page rather
+  // than only in the console, so a headless run can see it.
+  device.pushErrorScope('validation');
+
+  gpu.shaderModule = device.createShaderModule({ label: 'field-shader', code: FIELD_WGSL });
+
+  // §3.4: created once, never in the frame loop.
+  gpu.paramsBuf = device.createBuffer({
+    label: 'params',
+    size: 48,                                   // SPEC §3.5, exact
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+  });
+  gpu.magnetBuf = device.createBuffer({
+    label: 'magnets',
+    size: MAGNET_SLOTS * 32,                    // 9 x 32 B = 288 B
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+  });
+
+  // §3.8: the compute pass binds field and state writable, the render
+  // pass binds them read-only. That needs two layouts over one set of
+  // buffers, not one.
+  gpu.computeLayout = device.createBindGroupLayout({
+    label: 'field-compute-layout',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
+    ]
+  });
+
+  const RENDER_VIS = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
+  gpu.renderLayout = device.createBindGroupLayout({
+    label: 'field-render-layout',
+    entries: [
+      { binding: 0, visibility: RENDER_VIS, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: RENDER_VIS, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: RENDER_VIS, buffer: { type: 'read-only-storage' } },
+      { binding: 3, visibility: RENDER_VIS, buffer: { type: 'read-only-storage' } }
+    ]
+  });
+
+  gpu.fieldPipeline = device.createComputePipeline({
+    label: 'field-pipeline',
+    layout: device.createPipelineLayout({ bindGroupLayouts: [gpu.computeLayout] }),
+    compute: { module: gpu.shaderModule, entryPoint: 'csField' }
+  });
+
+  gpu.ok = true;
+  allocGridBuffers();          // fieldBuf, stateBuf and both bind groups
+
+  device.popErrorScope().then(err => {
+    if (err) showFallback('The physics pipeline failed validation: ' + err.message,
+                          'The field simulation could not start.');
+  });
+
+  /* ============================================================
+   * [ART AGENT] BUILD YOUR RENDER PIPELINE HERE
+   * ============================================================
+   * You need a render pipeline (device.createRenderPipeline) that
+   * uses gpu.format as its colour target. Draw the arrows as
+   * instanced geometry: one small arrow mesh, instanceCount =
+   * gridCols * gridRows, with the per-arrow angle read from the
+   * physics agent's storage buffer in the vertex shader.
+   * Palette advice is in Handbook §4.1. Use a cosine palette or
+   * OKLCH, never a raw HSL rainbow.
+   * ============================================================ */
+
+  /* ART, SPEC §5. Three pipelines over one shader module and the
+   * read-only render bind group: the graded background, the needle
+   * field, and the magnet bars. Structs below are copied verbatim
+   * from FIELD_WGSL, with field and state rebound read-only. */
+  const ART_WGSL = `
+// ---- host-shared structs, copied verbatim from FIELD_WGSL ----
+struct Magnet {
+  pos      : vec2<f32>,   // offset  0
+  dir      : vec2<f32>,   // offset  8   unit vector, S -> N
+  strength : f32,         // offset 16
+  halfLen  : f32,         // offset 20
+  polarity : f32,         // offset 24   +1 or -1
+  spawnAge : f32,         // offset 28
+};                        // size 32, array stride 32
+
+struct NeedleState {
+  angle : f32,            // offset 0
+  omega : f32,            // offset 4
+};                        // size 8, array stride 8
+
+struct Params {
+  @align(16)
+  gridDim     : vec2<u32>,  // offset  0
+  gridOrigin  : vec2<f32>,  // offset  8
+  cellPitch   : f32,        // offset 16
+  magnetCount : u32,        // offset 20
+  eps2        : f32,        // offset 24
+  logMin      : f32,        // offset 28
+  logSpan     : f32,        // offset 32
+  dt          : f32,        // offset 36
+  viewport    : vec2<f32>,  // offset 40
+};                          // size 48
+
+@group(0) @binding(0) var<uniform> P : Params;
+@group(0) @binding(1) var<storage, read> magnets : array<Magnet>;
+@group(0) @binding(2) var<storage, read> field   : array<vec4<f32>>;
+@group(0) @binding(3) var<storage, read> state   : array<NeedleState>;
+
+// CSS pixels, y down, to clip space.
+fn toClip(w : vec2<f32>) -> vec4<f32> {
+  return vec4<f32>(w.x / max(P.viewport.x, 1.0) * 2.0 - 1.0,
+                   1.0 - w.y / max(P.viewport.y, 1.0) * 2.0, 0.0, 1.0);
+}
+
+fn rot(p : vec2<f32>, c : f32, s : f32) -> vec2<f32> {
+  return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+/* SPEC §5.3, five explicit stops. Deliberate palette, not an HSL
+ * sweep: indigo -> steel -> teal -> amber -> hot near white. */
+fn ramp(tin : f32) -> vec3<f32> {
+  let x  = clamp(tin, 0.0, 1.0) * 4.0;
+  var c  = mix(vec3<f32>(0.1373, 0.1647, 0.3216),
+               vec3<f32>(0.1843, 0.4353, 0.6588), clamp(x, 0.0, 1.0));
+  c = mix(c, vec3<f32>(0.2078, 0.6902, 0.7216), clamp(x - 1.0, 0.0, 1.0));
+  c = mix(c, vec3<f32>(0.8510, 0.6431, 0.2549), clamp(x - 2.0, 0.0, 1.0));
+  c = mix(c, vec3<f32>(1.0000, 0.9490, 0.8157), clamp(x - 3.0, 0.0, 1.0));
+  return c;
+}
+
+// ---- 1. background: #0c1020 with a slow radial fall to #05070f ----
+struct BgOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0)       ndc : vec2<f32>,
+};
+
+@vertex
+fn vsBg(@builtin(vertex_index) vi : u32) -> BgOut {
+  var tri = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  var o : BgOut;
+  o.pos = vec4<f32>(tri[vi], 0.0, 1.0);
+  o.ndc = tri[vi];
+  return o;
+}
+
+@fragment
+fn fsBg(o : BgOut) -> @location(0) vec4<f32> {
+  let asp = vec2<f32>(max(P.viewport.x / max(P.viewport.y, 1.0), 1.0), 1.0);
+  let r   = length(o.ndc * asp) / length(asp);
+  let c   = mix(vec3<f32>(0.0471, 0.0627, 0.1255),
+                vec3<f32>(0.0196, 0.0275, 0.0588), smoothstep(0.0, 1.05, r));
+  return vec4<f32>(c, 1.0);
+}
+
+// ---- 2. the needles, SPEC §5.1 ----
+struct NdOut {
+  @builtin(position) pos  : vec4<f32>,
+  @location(0)       lp   : vec2<f32>,   // needle local px, x along the axis
+  @location(1) @interpolate(flat) geom : vec4<f32>,  // lenN, lenS, halfWide, t
+};
+
+@vertex
+fn vsNeedle(@builtin(vertex_index) vi : u32,
+            @builtin(instance_index) ii : u32) -> NdOut {
+  let cols   = max(P.gridDim.x, 1u);
+  let centre = P.gridOrigin
+             + vec2<f32>(f32(ii % cols), f32(ii / cols)) * P.cellPitch;
+
+  let t   = field[ii].z;
+  let ang = state[ii].angle;          // §5.4: the SPRING angle, never atan2
+
+  let len = P.cellPitch * mix(0.45, 0.95, t);
+  let hw  = P.cellPitch * 0.13;       // wide = 0.26 * pitch, halved
+  let lN  = len * 0.62;
+  let lS  = len * 0.38;
+  let pad = 1.25;                     // room for the antialias skirt
+
+  let u  = f32(vi & 1u);
+  let v  = f32(vi >> 1u);
+  let lx = mix(-lS - pad, lN + pad, u);
+  let ly = mix(-hw - pad, hw + pad, v);
+
+  var o : NdOut;
+  o.pos  = toClip(centre + rot(vec2<f32>(lx, ly), cos(ang), sin(ang)));
+  o.lp   = vec2<f32>(lx, ly);
+  o.geom = vec4<f32>(lN, lS, hw, t);
+  return o;
+}
+
+/* Half of the needle: an isoceles triangle with its base on x = 0 and
+ * its point at (L, 0). Intersection of the back half plane with the
+ * mirrored slant edge, so min() of the two halves is the whole needle. */
+fn halfNeedle(p : vec2<f32>, L : f32, hw : f32) -> f32 {
+  let q = vec2<f32>(p.x, abs(p.y));
+  let n = normalize(vec2<f32>(hw, max(L, 0.001)));
+  return max(-p.x, dot(n, q - vec2<f32>(L, 0.0)));
+}
+
+@fragment
+fn fsNeedle(o : NdOut) -> @location(0) vec4<f32> {
+  let lN = o.geom.x; let lS = o.geom.y; let hw = o.geom.z; let t = o.geom.w;
+
+  let dN = halfNeedle(o.lp, lN, hw);
+  let dS = halfNeedle(vec2<f32>(-o.lp.x, o.lp.y), lS, hw);
+  let covN = clamp(0.5 - dN / max(fwidth(dN), 1e-4), 0.0, 1.0);
+  let covS = clamp(0.5 - dS / max(fwidth(dS), 1e-4), 0.0, 1.0);
+
+  let base = ramp(t);
+  /* §5.3, with the floor raised by the JUICE agent: 0.22 -> 0.40.
+   * At 0.22 the weakest needles sat on stop 0 (#232a52) over a
+   * near-matching ground, and a screen with no magnets read as
+   * empty rather than as a field at rest. 0.40 makes the resting
+   * grid legible as a grid of compasses while the smoothstep still
+   * keeps it well under the strong field. The ramp itself, the log
+   * mapping and B_MIN are untouched. */
+  let a    = mix(0.40, 1.0, smoothstep(0.0, 1.0, t));   // §5.3
+  let aN   = a * covN;
+  let aS   = a * 0.55 * covS;                            // §5.3, south is quiet
+  let alpha = aN + aS;
+  if (alpha < 0.003) { discard; }
+  // Premultiplied: the north half carries the hue, the south half the
+  // same hue at 70% luminance, so direction reads without a new axis.
+  return vec4<f32>(base * aN + base * 0.70 * aS, alpha);
+}
+
+// ---- 3. the magnet bars, SPEC §5.5 ----
+struct MgOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0)       lp  : vec2<f32>,                 // bar local px
+  @location(1) @interpolate(flat) g : vec4<f32>,      // halfLen, halfW, polarity, _
+};
+
+fn sdBox(p : vec2<f32>, b : vec2<f32>) -> f32 {
+  let q = abs(p) - b;
+  return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+fn sdRoundBox(p : vec2<f32>, b : vec2<f32>, r : f32) -> f32 {
+  return sdBox(p, b - vec2<f32>(r, r)) - r;
+}
+
+@vertex
+fn vsMagnet(@builtin(vertex_index) vi : u32,
+            @builtin(instance_index) ii : u32) -> MgOut {
+  var o : MgOut;
+  if (ii >= P.magnetCount) {
+    // Unused slot: collapse all four corners, so nothing rasterises.
+    o.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+    o.lp  = vec2<f32>(0.0, 0.0);
+    o.g   = vec4<f32>(1.0, 1.0, 1.0, 0.0);
+    return o;
+  }
+  let m = magnets[ii];
+  // §5.5: 26 px wide at strength 0.1, 38 px at 8.0, so the wheel shows.
+  let w    = 26.0 + 12.0 * clamp(log2(max(m.strength, 0.1) / 0.1) / 6.3219, 0.0, 1.0);
+
+  /* [JUICE AGENT] SPEC §7.4, Handbook §5: the bar pops in. scale
+   * runs 0 -> 1 with easeOutBack over 220 ms, driven by spawnAge,
+   * which the host already ages one fixed step at a time. The
+   * overshoot is what makes it land rather than appear. The cursor
+   * magnet uses the same path: its age starts when the pointer
+   * arrives on the canvas. */
+  let sa   = clamp(m.spawnAge / 0.22, 0.0, 1.0);
+  let sb   = sa - 1.0;
+  let pop  = max(1.0 + sb * sb * (2.70158 * sb + 1.70158), 0.02);
+
+  let hwid = w * 0.5 * pop;
+  let hlen = max(m.halfLen, 8.0) * pop;
+  let pad  = 3.0;
+
+  let u  = f32(vi & 1u);
+  let v  = f32(vi >> 1u);
+  let lx = mix(-hlen - pad, hlen + pad, u);
+  let ly = mix(-hwid - pad, hwid + pad, v);
+
+  o.pos = toClip(m.pos + rot(vec2<f32>(lx, ly), m.dir.x, m.dir.y));
+  o.lp  = vec2<f32>(lx, ly);
+  o.g   = vec4<f32>(hlen, hwid, m.polarity, 0.0);
+  return o;
+}
+
+@fragment
+fn fsMagnet(o : MgOut) -> @location(0) vec4<f32> {
+  let hlen = o.g.x; let hwid = o.g.y; let pol = o.g.z;
+  let d    = sdRoundBox(o.lp, vec2<f32>(hlen, hwid), min(hwid * 0.5, 9.0));
+  let cov  = clamp(0.5 - d / max(fwidth(d), 1e-4), 0.0, 1.0);
+  if (cov < 0.004) { discard; }
+
+  // North end is whichever end the polarity points to.
+  let side = smoothstep(-1.2, 1.2, o.lp.x * pol);
+  var col  = mix(vec3<f32>(0.2275, 0.4784, 0.9098),   // #3a7ae8 south
+                 vec3<f32>(0.9098, 0.2667, 0.2275),   // #e8443a north
+                 side);
+  col = col * mix(0.62, 1.0, clamp(-d / 4.0, 0.0, 1.0));  // dark rim for contrast
+
+  // Two small white marks, §5.5: plus on the north end, bar on the south.
+  let gx  = hlen * 0.55;
+  let arm = min(hwid * 0.42, 8.0);
+  let th  = max(arm * 0.30, 1.2);
+  let pN  = o.lp - vec2<f32>( pol * gx, 0.0);
+  let pS  = o.lp - vec2<f32>(-pol * gx, 0.0);
+  let dm  = min(min(sdBox(pN, vec2<f32>(arm, th)), sdBox(pN, vec2<f32>(th, arm))),
+                sdBox(pS, vec2<f32>(arm, th)));
+  let gm  = clamp(0.5 - dm / max(fwidth(dm), 1e-4), 0.0, 1.0);
+  col = mix(col, vec3<f32>(1.0, 0.98, 0.95), gm);
+
+  return vec4<f32>(col * cov, cov);      // premultiplied
+}
+`;
+
+  device.pushErrorScope('validation');
+
+  gpu.artModule = device.createShaderModule({ label: 'art-shader', code: ART_WGSL });
+
+  const artPipeLayout = device.createPipelineLayout({
+    label: 'art-layout', bindGroupLayouts: [gpu.renderLayout]
+  });
+  // Premultiplied source alpha, so hundreds of overlapping needles
+  // composite without the double-darkening of straight alpha.
+  const PREMUL = {
+    color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }
+  };
+
+  gpu.bgPipeline = device.createRenderPipeline({
+    label: 'bg-pipeline',
+    layout: artPipeLayout,
+    vertex:   { module: gpu.artModule, entryPoint: 'vsBg' },
+    fragment: { module: gpu.artModule, entryPoint: 'fsBg',
+                targets: [{ format: gpu.format }] },
+    primitive: { topology: 'triangle-list' }
+  });
+
+  gpu.needlePipeline = device.createRenderPipeline({
+    label: 'needle-pipeline',
+    layout: artPipeLayout,
+    vertex:   { module: gpu.artModule, entryPoint: 'vsNeedle' },
+    fragment: { module: gpu.artModule, entryPoint: 'fsNeedle',
+                targets: [{ format: gpu.format, blend: PREMUL }] },
+    primitive: { topology: 'triangle-strip' }
+  });
+
+  gpu.magnetPipeline = device.createRenderPipeline({
+    label: 'magnet-pipeline',
+    layout: artPipeLayout,
+    vertex:   { module: gpu.artModule, entryPoint: 'vsMagnet' },
+    fragment: { module: gpu.artModule, entryPoint: 'fsMagnet',
+                targets: [{ format: gpu.format, blend: PREMUL }] },
+    primitive: { topology: 'triangle-strip' }
+  });
+
+  device.popErrorScope().then(err => {
+    if (err) showFallback('The render pipeline failed validation: ' + err.message,
+                          'The field could not be drawn.');
+  });
+
+  return true;
+}
+
+/* ================================================================
+ * [ART AGENT] THE NEEDLE BUFFERS. READ THIS BEFORE YOU DRAW.
+ * ================================================================
+ * The physics writes two storage buffers, one element per needle,
+ * indexed  i = row * state.gridCols + col.  Instance count for your
+ * draw call is  state.gridCols * state.gridRows  (gpu.cellCount).
+ *
+ *   gpu.fieldBuf   binding 2   array<vec4<f32>>, stride 16 B
+ *                              .x .y  unit direction of B, (0,0) in a null
+ *                              .z     t, log-mapped strength in [0,1] (§5.2)
+ *                              .w     raw |B|, for readouts and juice
+ *
+ *   gpu.stateBuf   binding 3   array<NeedleState>, stride 8 B
+ *                              .angle  f32, the SMOOTHED angle to draw (§5.4)
+ *                              .omega  f32, angular velocity
+ *   Draw with state.angle, NOT with atan2(fieldBuf.xy). The spring is
+ *   the whole point: the smoothed angle is what makes the needles swing.
+ *
+ *   gpu.paramsBuf  binding 0   Params, SPEC §3.5. gridDim, gridOrigin,
+ *                              cellPitch and viewport are all there, so
+ *                              your vertex shader needs no extra uniforms.
+ *   gpu.magnetBuf  binding 1   array<Magnet, 9>, for the bar bodies.
+ *
+ * Use gpu.renderLayout and gpu.renderBindGroup. They bind all four at
+ * the same binding numbers, read-only, visible to vertex and fragment.
+ * Copy the Magnet / NeedleState / Params struct declarations out of
+ * FIELD_WGSL verbatim. Do not retype the offsets.
+ * gpu.renderBindGroup is REPLACED on every resize and density change,
+ * so read it from gpu at draw time. Never cache it in a local.
+ * ================================================================ */
+
+// §3.4: the only two buffers that depend on the grid size. Recreated
+// on resize and on a density change, never in the frame loop.
+function allocGridBuffers() {
+  const device = gpu.device;
+  if (!device) return;
+
+  const cells = Math.max(1, state.gridCols * state.gridRows);
+  const align16 = (n) => Math.ceil(n / 16) * 16;
+
+  if (gpu.fieldBuf) gpu.fieldBuf.destroy();
+  if (gpu.stateBuf) gpu.stateBuf.destroy();
+
+  gpu.cellCount = cells;
+  gpu.fieldBuf = device.createBuffer({
+    label: 'field',
+    size: align16(cells * 16),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+  });
+  gpu.stateBuf = device.createBuffer({
+    label: 'needle-state',
+    size: align16(cells * 8),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
+  });
+
+  const entries = [
+    { binding: 0, resource: { buffer: gpu.paramsBuf } },
+    { binding: 1, resource: { buffer: gpu.magnetBuf } },
+    { binding: 2, resource: { buffer: gpu.fieldBuf } },
+    { binding: 3, resource: { buffer: gpu.stateBuf } }
+  ];
+  gpu.computeBindGroup = device.createBindGroup({
+    label: 'field-compute', layout: gpu.computeLayout, entries: entries
+  });
+  gpu.renderBindGroup = device.createBindGroup({
+    label: 'field-render', layout: gpu.renderLayout, entries: entries
+  });
+
+  seedNeedleState();
+}
+
+/* §3.4, the known trap: a resized grid must not inherit angles from
+ * the old layout, or the first frames look like static. A fresh
+ * WebGPU buffer is already zero filled, so this only does real work
+ * on a reset, where the buffer is reused. */
+function seedNeedleState() {
+  if (!gpu.device || !gpu.stateBuf) return;
+  gpu.device.queue.writeBuffer(gpu.stateBuf, 0, new Uint8Array(gpu.stateBuf.size));
+}
+
+/* ----------------------------------------------------------------
+ * 5. Update and render
+ * ---------------------------------------------------------------- */
+
+/* [PHYSICS AGENT] THE SIMULATION STEP
+ * Called at a fixed 60 Hz, whatever the display refresh is. Every
+ * constant you tune here means the same thing on every machine.
+ * dt is always DT. Do not read performance.now() in here. */
+function update(dt) {
+  state.time += dt;
+
+  // How far the pointer moved during this step, in CSS pixels.
+  const mvX = mouse.cssX - mouse.prevCssX;
+  const mvY = mouse.cssY - mouse.prevCssY;
+  const mvLen = Math.hypot(mvX, mvY);
+
+  /* --- the hand magnet, SPEC §4.1 -------------------------------
+   * The cursor is a weak magnet whose axis follows the smoothed
+   * direction of travel, so a flick sweeps the whole field. When the
+   * mouse is still the velocity direction is undefined, so hold the
+   * last one. It must never become a zero vector. */
+  state.handX = mouse.cssX;
+  state.handY = mouse.cssY;
+  if (mvLen > 0.001) {
+    const k = 1 - Math.exp(-8 * dt);          // Handbook §3.2 exponential ease
+    state.handDirX += (mvX / mvLen - state.handDirX) * k;
+    state.handDirY += (mvY / mvLen - state.handDirY) * k;
+    const hl = Math.hypot(state.handDirX, state.handDirY);
+    if (hl > 1e-4) { state.handDirX /= hl; state.handDirY /= hl; }
+    else { state.handDirX = 1; state.handDirY = 0; }
+  }
+
+  /* --- left button: place and drag, §4 -------------------------- */
+  if (state.grab >= 0) {
+    if (!mouse.left || state.grab >= state.magnets.length) {
+      state.grab = -1;
+    } else {
+      /* [JUICE AGENT] §3.2 and §5: a held magnet has weight. It
+       * eases toward the cursor instead of being teleported onto
+       * it. The time constant is about 40 ms, so it still feels
+       * direct, but a fast drag leaves the bar a few pixels behind
+       * and it settles when the hand stops. Frame-rate independent:
+       * the ease is 1 - exp(-k*dt), never a fixed 0.1 per frame. */
+      const m = state.magnets[state.grab];
+      const tx = mouse.cssX + state.grabDX;
+      const ty = mouse.cssY + state.grabDY;
+      const gk = 1 - Math.exp(-GRAB_OMEGA * dt);
+      m.x += (tx - m.x) * gk;
+      m.y += (ty - m.y) * gk;
+    }
+  }
+
+  /* --- right button: aim while dragging, flip on a click, §4 ---- */
+  if (state.rightTarget >= 0) {
+    if (state.rightTarget >= state.magnets.length) {
+      state.rightTarget = -1;
+    } else if (mouse.right) {
+      state.rightTravel += mvLen;
+      if (state.rightTravel > FLIP_TRAVEL) {
+        // The north end turns to point at the cursor.
+        const m = state.magnets[state.rightTarget];
+        m.flipT = 1;                    // [JUICE] aiming cancels a spin
+        const ax = mouse.cssX - m.x, ay = mouse.cssY - m.y;
+        const al = Math.hypot(ax, ay);
+        if (al > 1e-4) { m.dirX = ax / al; m.dirY = ay / al; }
+      }
+    } else {
+      // Released. Under 6 px of travel means it was a click: flip.
+      if (state.rightTravel <= FLIP_TRAVEL) {
+        /* [JUICE AGENT] SPEC §7.4: the flip is a 180 degree spin of
+         * the bar over 180 ms, not a silent swap. Rotating the axis
+         * by pi is exactly equivalent to negating the polarity, so
+         * this is the same physics arriving continuously: the whole
+         * needle field swings round with the bar instead of
+         * snapping. startFlip() sets it going; stepFlip() below
+         * integrates it on the fixed clock. */
+        const m = state.magnets[state.rightTarget];
+        startFlip(m);
+        juiceFlip(m.x, m.y);
+      }
+      state.rightTarget = -1;
+      state.rightTravel = 0;
+    }
+  }
+
+  /* --- wheel: strength, or grid density with Shift, §4 ----------
+   * Logarithmic steps, because the field is logarithmic. The wheel
+   * is never dead: with no magnet within 220 px it drives the hand. */
+  if (mouse.wheel !== 0) {
+    const notches = mouse.wheel;
+    if (mouse.wheelShift) {
+      setPitchIndex(state.pitchIndex + (notches > 0 ? 1 : -1));
+    } else {
+      const n = nearestMagnet(mouse.cssX, mouse.cssY);
+      if (n.index >= 0 && n.dist <= WHEEL_REACH) {
+        const m = state.magnets[n.index];
+        // [JUICE] The notch still maps to exactly one 1.12x step
+        // (§4, untouched). It now sets a TARGET, and the strength
+        // eases onto it over about 80 ms, so a spin of the wheel
+        // reads as one continuous swell of the field.
+        state.strength = scaleStrength(m, notches);
+        juiceStrength(m.x, m.y, state.strength, notches > 0);
+      } else {
+        state.handTargetStrength = Math.max(STRENGTH_MIN, Math.min(STRENGTH_MAX,
+          state.handTargetStrength * Math.pow(STRENGTH_STEP, notches)));
+        state.strength = state.handTargetStrength;
+        juiceStrength(mouse.cssX, mouse.cssY, state.strength, notches > 0);
+      }
+    }
+    mouse.wheel = 0;
+    mouse.wheelRaw = 0;
+  }
+
+  /* Age every magnet. vsMagnet reads spawnAge for the pop-in.
+   * [JUICE AGENT] The same loop runs the two per-magnet eases:
+   * the polarity spin and the strength swell. Both are integrated
+   * here, on the fixed step, so they are identical on every
+   * machine (§2.1). */
+  const sk = 1 - Math.exp(-STRENGTH_OMEGA * dt);
+  for (let i = 0; i < state.magnets.length; i++) {
+    const m = state.magnets[i];
+    m.spawnAge += dt;
+    stepFlip(m, dt);
+    if (m.strengthTarget === undefined) m.strengthTarget = m.strength;
+    m.strength += (m.strengthTarget - m.strength) * sk;
+  }
+
+  /* [JUICE AGENT] The cursor magnet gets the same two treatments:
+   * its strength eases, and handAge gives vsMagnet a pop-in when
+   * the pointer arrives on the canvas. */
+  state.handAge = mouse.inside ? (state.handAge || 0) + dt : 0;
+  state.handStrength += (state.handTargetStrength - state.handStrength) * sk;
+
+  // [JUICE AGENT] The overlay layer steps here, never in render().
+  juiceUpdate(dt);
+
+  // Remember the pointer for interpolation and for velocity-driven
+  // effects. Must happen last in the step.
+  mouse.prevCssX = mouse.cssX;
+  mouse.prevCssY = mouse.cssY;
+
+  /* [PHYSICS AGENT] The field solve itself is on the GPU, in the
+   * compute pass in render(). All this step has to do is stage the
+   * data for it: pack the magnets, including the hand magnet as the
+   * last element (§2), and pack the Params struct. §6.2: both writers
+   * reuse one ArrayBuffer, so the step allocates nothing.
+   *
+   * [JUICE AGENT] springs, trauma decay and hit-stop belong here,
+   * because they must be frame-rate independent. See §3.2 and §5. */
+  packParams(packMagnets());
+  state.pendingSteps++;
+}
+
+/* [ART AGENT] THE DRAW CALL
+ * alpha is the leftover fraction of a physics step, in [0, 1).
+ * Interpolate between the previous and current positions with it:
+ *   x = prev + (curr - prev) * alpha
+ * That is what keeps motion smooth on a 144 Hz screen while the
+ * simulation still runs at exactly 60 Hz. */
+function render(alpha) {
+  if (!gpu.ok) return;
+
+  const device = gpu.device;
+  const encoder = device.createCommandEncoder({ label: 'frame' });
+
+  /* [PHYSICS AGENT] THE COMPUTE PASS, SPEC §3.1 and §3.2
+   * ------------------------------------------------------------
+   * The field has no history, but the needle spring does, so the
+   * pass runs once per fixed 60 Hz step, not once per frame. On a
+   * 144 Hz display most frames take zero steps. Skipping the pass
+   * then is free performance. One dispatch per pending step keeps
+   * the spring identical on every machine; the catch-up cap matches
+   * the accumulator clamp in §2.1. */
+  const steps = Math.min(state.pendingSteps, 6);
+  state.pendingSteps = 0;
+
+  if (steps > 0 && gpu.fieldPipeline && gpu.computeBindGroup) {
+    device.queue.writeBuffer(gpu.paramsBuf, 0, paramsBytes);
+    device.queue.writeBuffer(gpu.magnetBuf, 0, magnetData);
+
+    // §3.2: 8x8 = 64 invocations, a whole number of waves on every
+    // common GPU. The shader bounds-checks, because cols and rows
+    // are almost never multiples of 8.
+    const gx = Math.ceil(state.gridCols / 8);
+    const gy = Math.ceil(state.gridRows / 8);
+
+    for (let s = 0; s < steps; s++) {
+      const cpass = encoder.beginComputePass({ label: 'field' });
+      cpass.setPipeline(gpu.fieldPipeline);
+      cpass.setBindGroup(0, gpu.computeBindGroup);
+      cpass.dispatchWorkgroups(gx, gy);
+      cpass.end();
+    }
+  }
+
+  const texture = gpu.context.getCurrentTexture();
+  const pass = encoder.beginRenderPass({
+    label: 'main',
+    colorAttachments: [{
+      view: texture.createView(),
+      clearValue: CLEAR_COLOR,
+      loadOp: 'clear',
+      storeOp: 'store'
+    }]
+  });
+
+  /* [ART AGENT] DRAW THE ARROWS HERE
+   * ------------------------------------------------------------
+   *   pass.setPipeline(arrowPipeline);
+   *   pass.setBindGroup(0, arrowBindGroup);
+   *   pass.setVertexBuffer(0, arrowMeshBuf);
+   *   pass.draw(arrowVertexCount, gridCols * gridRows);
+   *
+   * [JUICE AGENT] glow, bloom and screen shake go after that, as
+   * extra passes or as a shake offset folded into the view matrix
+   * in the uniform buffer. See Handbook §4.2 and §5.
+   * ------------------------------------------------------------ */
+
+  /* ART, SPEC §5. Three draws: graded ground, the needle field, then
+   * the magnet bars on top. gpu.renderBindGroup is read fresh here,
+   * never cached, because a resize or a density change replaces it. */
+  const artGroup = gpu.renderBindGroup;
+  if (artGroup && gpu.bgPipeline) {
+    pass.setBindGroup(0, artGroup);
+
+    pass.setPipeline(gpu.bgPipeline);
+    pass.draw(3, 1);
+
+    if (gpu.cellCount > 0) {
+      pass.setPipeline(gpu.needlePipeline);
+      pass.draw(4, gpu.cellCount);          // one triangle strip per needle
+    }
+
+    pass.setPipeline(gpu.magnetPipeline);
+    pass.draw(4, MAGNET_SLOTS);             // unused slots collapse in the VS
+  }
+
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+
+  state.frame++;
+}
+
+/* ================================================================
+ * [JUICE AGENT] 5b. THE OVERLAY LIGHT LAYER
+ * ================================================================
+ * Handbook §5 applied to this toy, plus §4.2 for the light and
+ * §3.2 for every movement in it.
+ *
+ * Three ground rules for this block:
+ *
+ *  1. It is a separate Canvas 2D surface. It cannot fault the
+ *     WebGPU device, and it does not touch the field maths, the
+ *     log mapping, the palette stops or the control mapping.
+ *  2. Every value here moves on an exponential ease or a spring
+ *     from §3.2, stepped inside update() at the fixed 60 Hz rate,
+ *     so it is frame-rate independent (§2.1). juiceDraw() only
+ *     reads state. It never advances it.
+ *  3. It draws at 0.75 of CSS resolution and CSS scales it back up
+ *     (§4.6). Every mark on it is a soft glow, so the softness is
+ *     invisible and the fill cost drops by nearly half.
+ *
+ * THE RESTING STATE, which is the main job of this block:
+ * with no magnets and the pointer off the canvas, every needle
+ * sits at t = 0 and the screen reads as empty. Three things fix it,
+ * and none of them changes the field:
+ *   - the needle floor alpha, 0.22 -> 0.40 in fsNeedle (§5.3),
+ *     so the grid is legible as a grid of compasses,
+ *   - the CSS vignette, so the picture has a centre,
+ *   - the aurora below: three huge, slow, screen-blended lights
+ *     that drift across the grid and make it shimmer. They rise to
+ *     full strength when nothing is happening and drop back when
+ *     the player takes over, so they invite without competing.
+ * ================================================================ */
+
+// §7: tone the motion down when the reader asked for less of it.
+const REDUCED_MOTION =
+  !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+const JUICE_SCALE  = 0.75;   // overlay buffer resolution, vs CSS px
+const TRAIL_N      = 20;     // cursor streamer samples
+const RING_POOL    = 40;     // §6.2: a pool, never an allocation
+const CURSOR_OMEGA = 20.0;   // §3.2 spring for the cursor glow
+const HOVER_OMEGA  = 16.0;   // hover ring ease
+const CALM_OMEGA   = 0.55;   // how slowly the toy decides it is resting
+const GRAB_OMEGA   = 24.0;   // §3.2: the weight of a held magnet
+const STRENGTH_OMEGA = 13.0; // wheel changes arrive over ~80 ms, not instantly
+const FLIP_TIME    = 0.18;   // s, the polarity spin (SPEC §7.4)
+const REST_PERIOD  = 3.4;    // s between resting pulses
+
+/* Pre-rendered glow sprites, §4.2. Built once. shadowBlur per mark
+ * is the perf trap this avoids. */
+function makeGlow(size, r, g, b, core) {
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const x = c.getContext('2d');
+  const h = size * 0.5;
+  const grd = x.createRadialGradient(h, h, 0, h, h, h);
+  const rgb = r + ',' + g + ',' + b + ',';
+  grd.addColorStop(0.00, 'rgba(' + rgb + core + ')');
+  grd.addColorStop(0.22, 'rgba(' + rgb + (core * 0.42) + ')');
+  grd.addColorStop(0.55, 'rgba(' + rgb + (core * 0.12) + ')');
+  grd.addColorStop(1.00, 'rgba(' + rgb + '0)');
+  x.fillStyle = grd;
+  x.fillRect(0, 0, size, size);
+  return c;
+}
+
+const juice = {
+  bufW: 1, bufH: 1,
+  t: 0,              // seconds of overlay time, fixed step
+  calm: 1,           // 0 busy .. 1 resting; drives the aurora
+  restPhase: 0,      // timer for the resting pulse
+  pulse: 0,          // global brightness kick, decays
+  cx: 0, cy: 0, cvx: 0, cvy: 0,          // cursor spring, §3.2
+  trail: new Float32Array(TRAIL_N * 2),
+  trailN: 0, trailHead: 0,
+  hoverIdx: -1, hoverK: 0, hoverR: 0,
+  rings: [],
+  sprWarm: null, sprCool: null,
+  aurora: null
+};
+
+for (let i = 0; i < RING_POOL; i++) {
+  juice.rings.push({ live: false, x: 0, y: 0, age: 0, life: 1,
+                     r0: 0, r1: 1, w: 2, a: 0, col: '255,255,255' });
+}
+
+/* The aurora: three broad lights on slow Lissajous drifts. The
+ * tints stay inside the family of the needle ramp (§5.3 indigo,
+ * teal, amber) so the lighting never introduces a new hue. */
+function buildJuiceSprites() {
+  juice.sprWarm = makeGlow(256, 255, 236, 198, 1.0);
+  juice.sprCool = makeGlow(256, 168, 214, 255, 1.0);
+  juice.aurora = [
+    { spr: makeGlow(192,  92, 118, 235, 1.0), rad: 0.60, a: 0.115,
+      fx: 0.021, fy: 0.0134, px: 0.0,  py: 1.9, ax: 0.30, ay: 0.24 },
+    { spr: makeGlow(192,  53, 176, 184, 1.0), rad: 0.48, a: 0.085,
+      fx: 0.0163, fy: 0.0241, px: 2.4, py: 0.6, ax: 0.33, ay: 0.21 },
+    { spr: makeGlow(192, 217, 164,  65, 1.0), rad: 0.40, a: 0.055,
+      fx: 0.0117, fy: 0.0186, px: 4.1, py: 3.3, ax: 0.28, ay: 0.26 }
+  ];
+}
+buildJuiceSprites();
+
+function fitJuice(cssW, cssH) {
+  const bw = Math.max(1, Math.round(cssW * JUICE_SCALE));
+  const bh = Math.max(1, Math.round(cssH * JUICE_SCALE));
+  if (bw !== juice.bufW || bh !== juice.bufH) {
+    juice.bufW = bw; juice.bufH = bh;
+    juiceCanvas.width = bw; juiceCanvas.height = bh;
+  }
+  juiceCanvas.style.width = cssW + 'px';
+  juiceCanvas.style.height = cssH + 'px';
+}
+
+/* Take a ring from the pool. Never allocates (§6.2). */
+function addRing(x, y, r0, r1, life, w, a, col) {
+  if (REDUCED_MOTION) { a *= 0.5; }
+  for (let i = 0; i < RING_POOL; i++) {
+    const r = juice.rings[i];
+    if (r.live) continue;
+    r.live = true; r.x = x; r.y = y; r.age = 0; r.life = life;
+    r.r0 = r0; r.r1 = r1; r.w = w; r.a = a; r.col = col;
+    return;
+  }
+}
+
+// --- the event hooks. Each one is called from exactly one place. ---
+
+/* A magnet landed. A fast bright ring plus a slow wide one reads as
+ * a shockwave travelling out through the needles (§5). The bar's own
+ * scale punch is in vsMagnet, driven by spawnAge. */
+function juiceSpawn(x, y) {
+  addRing(x, y, 8, 128, 0.42, 3.0, 0.55, '255,238,205');
+  addRing(x, y, 4, 290, 0.78, 1.6, 0.24, '110,150,255');
+  juice.pulse = Math.min(1, juice.pulse + 0.5);
+}
+
+/* Picking up a magnet that already exists: a small, quick ring, so
+ * a grab is not silent. */
+function juiceGrab(x, y) {
+  addRing(x, y, GRAB_RADIUS * 0.5, GRAB_RADIUS + 26, 0.30, 2.2, 0.34, '200,220,255');
+}
+
+/* The polarity flip. The bar itself spins 180 degrees over 180 ms
+ * (see update()); this is the light that goes with it. Two rings
+ * in the two pole colours, so the change of sign is readable. */
+function juiceFlip(x, y) {
+  addRing(x, y, 10, 96, 0.34, 3.4, 0.50, '232,68,58');
+  addRing(x, y, 10, 150, 0.52, 2.0, 0.34, '58,122,232');
+  juice.pulse = Math.min(1, juice.pulse + 0.28);
+}
+
+/* The wheel. The ring's size follows the new strength, so the
+ * gesture has a physical size as well as a number in the HUD. */
+function juiceStrength(x, y, strength, up) {
+  const k = Math.max(0, Math.min(1, Math.log2(strength / 0.1) / 6.3219));
+  addRing(x, y, up ? 18 : 92 + k * 90, up ? 92 + k * 90 : 18,
+          0.34, 2.0, 0.30, up ? '232,190,110' : '120,150,220');
+}
+
+/* A reset. One wide ripple from the middle of the screen, so the
+ * sweep away is as visible as the sweep in. */
+function juiceReset() {
+  const w = view.cssW, h = view.cssH;
+  // A reset must clear EVERYTHING, per house standards §0 rule 5: the toy
+  // returns to its initial state exactly as if freshly launched. Rings left
+  // running from before the click would keep expanding across the reset, and
+  // pulse must go to zero rather than up.
+  for (let i = 0; i < juice.rings.length; i++) juice.rings[i].live = false;
+  juice.pulse = 0;
+  addRing(w * 0.5, h * 0.5, 20, Math.hypot(w, h) * 0.62, 0.95, 2.4, 0.30, '190,205,255');
+  juice.restPhase = 0;
+  for (let i = 0; i < TRAIL_N * 2; i++) juice.trail[i] = 0;
+  juice.trailN = 0;
+}
+
+/* ----------------------------------------------------------------
+ * The fixed step. Called from update(), so dt is always DT.
+ * ---------------------------------------------------------------- */
+function juiceUpdate(dt) {
+  juice.t += dt;
+
+  // Is the player doing anything? Springs, not booleans, so the
+  // aurora fades rather than switching (§5, easing everywhere).
+  const busy = (mouse.inside || state.magnets.length > 0) ? 1 : 0;
+  const ck = 1 - Math.exp(-CALM_OMEGA * dt);
+  juice.calm += ((1 - busy) - juice.calm) * ck;
+
+  // §3.2 damped spring: the cursor glow trails the pointer slightly
+  // and overshoots on a flick, which is what makes it read as light
+  // rather than as a drawn dot.
+  const om = CURSOR_OMEGA;
+  juice.cvx += (mouse.cssX - juice.cx) * om * om * dt;
+  juice.cvy += (mouse.cssY - juice.cy) * om * om * dt;
+  const damp = Math.exp(-2 * om * 0.85 * dt);
+  juice.cvx *= damp; juice.cvy *= damp;
+  juice.cx += juice.cvx * dt;
+  juice.cy += juice.cvy * dt;
+
+  // The streamer: a ring buffer of past spring positions (§4.2).
+  juice.trail[juice.trailHead * 2]     = juice.cx;
+  juice.trail[juice.trailHead * 2 + 1] = juice.cy;
+  juice.trailHead = (juice.trailHead + 1) % TRAIL_N;
+  if (juice.trailN < TRAIL_N) juice.trailN++;
+
+  // Hover affordance: the magnet under the cursor announces itself.
+  juice.hoverIdx = (state.grab >= 0 || !mouse.inside)
+    ? -1 : hitMagnet(mouse.cssX, mouse.cssY);
+  const want = juice.hoverIdx >= 0 ? 1 : 0;
+  juice.hoverK += (want - juice.hoverK) * (1 - Math.exp(-HOVER_OMEGA * dt));
+
+  // Rings age on the fixed clock, so they travel at the same speed
+  // on a 60 Hz and a 144 Hz screen.
+  for (let i = 0; i < RING_POOL; i++) {
+    const r = juice.rings[i];
+    if (!r.live) continue;
+    r.age += dt;
+    if (r.age >= r.life) r.live = false;
+  }
+
+  juice.pulse *= Math.exp(-6.5 * dt);
+  if (juice.pulse < 0.002) juice.pulse = 0;
+
+  /* The resting invitation. When the toy has been left alone the
+   * field breathes: one very wide, very faint ring every few
+   * seconds, from the middle of the screen outward. It says "this
+   * is a live field, poke it" without anything flashing (§7). */
+  if (juice.calm > 0.55 && !REDUCED_MOTION) {
+    juice.restPhase += dt;
+    if (juice.restPhase >= REST_PERIOD) {
+      juice.restPhase = 0;
+      const w = view.cssW, h = view.cssH;
+      addRing(w * 0.5, h * 0.5, h * 0.10, Math.hypot(w, h) * 0.55,
+              2.6, 26.0, 0.055 * juice.calm, '150,180,255');
+    }
+  } else {
+    juice.restPhase = 0;
+  }
+}
+
+/* ----------------------------------------------------------------
+ * The draw. alpha is the same leftover fraction render() gets.
+ * Reads state only. All marks are additive (§4.2).
+ * ---------------------------------------------------------------- */
+function juiceDraw(alpha) {
+  const x = jctx;
+  if (!x) return;
+  const w = view.cssW, h = view.cssH;
+
+  x.setTransform(1, 0, 0, 1, 0, 0);
+  x.clearRect(0, 0, juice.bufW, juice.bufH);
+  const s = juice.bufW / Math.max(w, 1);
+  x.setTransform(s, 0, 0, s, 0, 0);        // from here on, CSS pixels
+  x.globalCompositeOperation = 'lighter';
+
+  // --- 1. the ambient aurora, §5 "nothing should be perfectly
+  // still". Strongest at rest, still present while playing. ---
+  const diag = Math.hypot(w, h);
+  const breath = 1 + 0.22 * Math.sin(juice.t * 0.37) * (REDUCED_MOTION ? 0.3 : 1);
+  const lit = (REDUCED_MOTION ? 0.45 : 1) * breath * (0.52 + 0.48 * juice.calm);
+  for (let i = 0; i < juice.aurora.length; i++) {
+    const a = juice.aurora[i];
+    const t = juice.t * (REDUCED_MOTION ? 0.35 : 1);
+    const px = w * (0.5 + a.ax * Math.sin(t * a.fx * 6.2832 + a.px));
+    const py = h * (0.5 + a.ay * Math.sin(t * a.fy * 6.2832 + a.py));
+    const rad = diag * a.rad * (1 + 0.06 * Math.sin(t * 0.21 + i));
+    x.globalAlpha = a.a * lit;
+    x.drawImage(a.spr, px - rad, py - rad, rad * 2, rad * 2);
+  }
+  x.globalAlpha = 1;
+
+  // --- 2. the shockwaves, §5 ---
+  for (let i = 0; i < RING_POOL; i++) {
+    const r = juice.rings[i];
+    if (!r.live) continue;
+    const u = Math.min(1, r.age / r.life);
+    const e = 1 - Math.pow(1 - u, 3);            // easeOutCubic
+    const rad = r.r0 + (r.r1 - r.r0) * e;
+    if (rad <= 0.5) continue;
+    const fade = (1 - u) * (1 - u);
+    x.globalAlpha = 1;
+    x.strokeStyle = 'rgba(' + r.col + ',' + (r.a * fade).toFixed(4) + ')';
+    x.lineWidth = r.w * (0.4 + 0.6 * (1 - u));
+    x.beginPath();
+    x.arc(r.x, r.y, rad, 0, 6.28318530718);
+    x.stroke();
+  }
+
+  // --- 3. the cursor: a streamer plus a core glow (§4.2) ---
+  if (mouse.inside) {
+    if (!REDUCED_MOTION) {
+      for (let i = 0; i < juice.trailN; i++) {
+        // 0 = oldest sample, trailN-1 = newest.
+        const idx = (juice.trailHead - juice.trailN + i + TRAIL_N * 2) % TRAIL_N;
+        const k = (i + 1) / juice.trailN;        // 0 tail .. 1 head
+        const rad = 5 + 13 * k;
+        x.globalAlpha = 0.055 * k * k;
+        x.drawImage(juice.sprCool, juice.trail[idx * 2] - rad,
+                    juice.trail[idx * 2 + 1] - rad, rad * 2, rad * 2);
+      }
+    }
+    // The core sits on the true pointer, never on the spring, so
+    // the toy still answers the first movement within one frame (§1).
+    const sp = Math.min(1, Math.hypot(mouse.cssX - juice.cx, mouse.cssY - juice.cy) / 60);
+    const cr = 26 + 16 * sp;
+    x.globalAlpha = 0.30 + 0.18 * sp;
+    x.drawImage(juice.sprWarm, mouse.cssX - cr, mouse.cssY - cr, cr * 2, cr * 2);
+  }
+
+  // --- 4. the hover affordance, §5. A soft ring says "grab me". ---
+  if (juice.hoverK > 0.01 && juice.hoverIdx >= 0 &&
+      juice.hoverIdx < state.magnets.length) {
+    const m = state.magnets[juice.hoverIdx];
+    const k = juice.hoverK;
+    const rad = (GRAB_RADIUS + 16) * (0.72 + 0.28 * k)
+              + 2.5 * Math.sin(juice.t * 3.1);
+    x.globalAlpha = 1;
+    x.strokeStyle = 'rgba(226,236,255,' + (0.20 * k).toFixed(4) + ')';
+    x.lineWidth = 1.6;
+    x.beginPath();
+    x.arc(m.x, m.y, rad, 0, 6.28318530718);
+    x.stroke();
+    const g = rad * 1.5;
+    x.globalAlpha = 0.10 * k;
+    x.drawImage(juice.sprCool, m.x - g, m.y - g, g * 2, g * 2);
+  }
+
+  // --- 5. the global brightness kick, §5. One faint additive
+  // wash, drawn only while a kick is actually decaying. ---
+  if (juice.pulse > 0) {
+    x.globalAlpha = 1;
+    x.fillStyle = 'rgba(150,170,235,' + (0.055 * juice.pulse).toFixed(4) + ')';
+    x.fillRect(0, 0, w, h);
+  }
+
+  x.globalAlpha = 1;
+  x.globalCompositeOperation = 'source-over';
+}
+
+/* ----------------------------------------------------------------
+ * 6. The HUD
+ * ---------------------------------------------------------------- */
+let fpsAccum = 0;
+let fpsFrames = 0;
+let fpsValue = 0;
+
+function updateHud() {
+  hud.fps.textContent = fpsValue > 0 ? fpsValue.toFixed(0) : '--';
+  hud.pointer.textContent =
+    Math.round(mouse.cssX) + ', ' + Math.round(mouse.cssY) + (mouse.inside ? '' : ' (out)');
+
+  const held = [];
+  if (mouse.left) held.push('L');
+  if (mouse.middle) held.push('M');
+  if (mouse.right) held.push('R');
+  hud.buttons.textContent = held.length ? held.join(' + ') : 'none';
+
+  // [PHYSICS AGENT] Live values, SPEC §4.4. Called at most 4 times a
+  // second from the frame loop, so the string building is not a cost.
+  hud.magnets.textContent = state.magnets.length + ' / ' + MAX_MAGNETS;
+  hud.grid.textContent =
+    (state.gridCols && state.gridRows)
+      ? state.cellPitch + ' px (' + state.gridCols + ' x ' + state.gridRows +
+        ' = ' + (state.gridCols * state.gridRows) + ' needles)'
+      : '-';
+  hud.strength.textContent = state.strength.toFixed(2) + 'x';
+}
+
+/* ----------------------------------------------------------------
+ * 7. Fixed timestep with interpolation (§2.1)
+ * ----------------------------------------------------------------
+ * The simulation runs at exactly 60 steps per second whatever the
+ * display does. The clamp on the accumulator is the guard against
+ * the tab-switch spiral: come back after a minute away and we do
+ * not try to catch up 3600 steps in one frame.
+ * ---------------------------------------------------------------- */
+const DT = 1 / 60;
+const MAX_FRAME_TIME = 0.1;    // clamp: at most 6 steps of catch-up
+
+let acc = 0;
+let last = performance.now();
+let running = false;
+let hudTimer = 0;
+
+function frame(now) {
+  if (!running) return;
+
+  let elapsed = (now - last) / 1000;
+  last = now;
+  if (!(elapsed >= 0)) elapsed = 0;          // guard against a clock jump
+  if (elapsed > MAX_FRAME_TIME) elapsed = MAX_FRAME_TIME;
+
+  acc += elapsed;
+  while (acc >= DT) {
+    update(DT);
+    acc -= DT;
+  }
+
+  render(acc / DT);                           // leftover fraction = alpha
+  juiceDraw(acc / DT);                        // [JUICE] the light on top
+
+  // FPS over a rolling half second. Cheap and steady to read.
+  fpsAccum += elapsed;
+  fpsFrames++;
+  hudTimer += elapsed;
+  if (hudTimer >= 0.25) {
+    if (fpsAccum > 0) fpsValue = fpsFrames / fpsAccum;
+    fpsAccum = 0;
+    fpsFrames = 0;
+    hudTimer = 0;
+    updateHud();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* ----------------------------------------------------------------
+ * 8. Boot
+ * ---------------------------------------------------------------- */
+window.addEventListener('resize', fitCanvas);
+
+// A monitor change alters devicePixelRatio without firing 'resize'
+// in some browsers. Re-arm a matchMedia watcher on every change.
+function watchDpr() {
+  const mq = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
+  const handler = () => { fitCanvas(); watchDpr(); };
+  if (mq.addEventListener) mq.addEventListener('change', handler, { once: true });
+  else if (mq.addListener) mq.addListener(handler);
+}
+
+async function boot() {
+  fitCanvas();
+  updateHud();
+
+  const ready = await initWebGPU();
+  if (!ready) return;             // the fallback panel is already showing
+
+  watchDpr();
+  reset();
+
+  running = true;
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+
+boot().catch(err => {
+  showFallback('Startup threw an unexpected error: ' + err);
+});
+</script>
+</body>
+</html>
