@@ -61,6 +61,26 @@ REWARD_GAMES = sorted(
 )
 CLASSIC_GAMES = [g for g in MINI_GAMES if g["tier"] == "classic"]
 
+# Catalogue HTML files live directly in mini_games/, and since the
+# 2026-07-31 tidy-up also in mini_games/originals/.  Search these two roots
+# in order.  The other subdirectories (qwen36_games, w-bonsai-q2,
+# idea_gallery_v3) hold experiments and duplicate basenames, so they are
+# deliberately not searched.
+GAME_DIRS = ("mini_games", os.path.join("mini_games", "originals"))
+
+
+def game_path(filename: str) -> str | None:
+    """Path to a catalogue game's HTML file, or None if it is missing.
+
+    Callers must check `filename` against MINI_GAMES first; this helper
+    does no path-traversal checking of its own.
+    """
+    for directory in GAME_DIRS:
+        path = os.path.join(directory, filename)
+        if os.path.isfile(path):
+            return path
+    return None
+
 
 def current_palette():
     return PALETTES[datetime.today().weekday()]

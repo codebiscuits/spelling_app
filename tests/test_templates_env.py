@@ -1,6 +1,12 @@
 import os
 
-from templates_env import PALETTES, MINI_GAMES, current_palette, static_version
+from templates_env import (
+    PALETTES,
+    MINI_GAMES,
+    current_palette,
+    game_path,
+    static_version,
+)
 
 
 def test_seven_palettes_with_five_colours_each():
@@ -17,10 +23,15 @@ def test_current_palette_is_todays():
 
 def test_every_mini_game_file_exists():
     for game in MINI_GAMES:
-        path = os.path.join("mini_games", game["file"])
-        assert os.path.exists(path), f"Missing mini-game file: {path}"
+        path = game_path(game["file"])
+        assert path is not None, f"Missing mini-game file: {game['file']}"
+        assert os.path.isfile(path)
         assert game["name"]
         assert game["description"]
+
+
+def test_game_path_returns_none_for_a_file_that_is_not_there():
+    assert game_path("no_such_game.html") is None
 
 
 def test_static_version_returns_mtime_for_existing_file():

@@ -354,3 +354,38 @@ def test_locked_reward_game_names_never_leak_on_results_page(child_client):
     for g in REWARD_GAMES:
         assert g["name"] not in resp.text
         assert g["description"] not in resp.text
+
+
+def test_every_catalogued_game_is_actually_servable(admin_client):
+    """Regression for the 2026-07-31 file move.
+
+    Commit 9d26376 moved every game HTML file from mini_games/ into
+    mini_games/originals/, but serve_game still built the path as
+    mini_games/<file>.  FileResponse then raised RuntimeError and the child
+    saw a bare "Internal Server Error" for every game.
+    """
+    from templates_env import MINI_GAMES
+
+    for game in MINI_GAMES:
+        resp = admin_client.get(f"/mini-games/{game['file']}")
+        assert resp.status_code == 200, f"{game['file']} -> {resp.status_code}"
+        assert resp.content, f"{game['file']} served an empty body"
+
+
+def test_catalogued_game_with_a_missing_file_404s_rather_than_500s(
+    admin_client, monkeypatch
+):
+    """One deleted file must not raise a 500 for that game."""
+    import main
+    from templates_env import MINI_GAMES
+
+    ghost = {
+        "file": "definitely_not_on_disk.html",
+        "name": "Ghost",
+        "description": "Catalogued but missing on purpose",
+        "tier": "classic",
+    }
+    monkeypatch.setattr(main, "MINI_GAMES", MINI_GAMES + [ghost])
+
+    resp = admin_client.get("/mini-games/definitely_not_on_disk.html")
+    assert resp.status_code == 404

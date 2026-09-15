@@ -11,7 +11,7 @@ from database import get_db, init_db
 from auth import verify_password, generate_csrf_token, verify_csrf_token
 from seed.curriculum_words import seed
 from services.game_rewards import unlocked_files
-from templates_env import templates, MINI_GAMES
+from templates_env import templates, MINI_GAMES, game_path
 from routers import admin as admin_router
 from routers import child as child_router
 from routers import spelling as spelling_router
@@ -66,16 +66,22 @@ def serve_game(filename: str, request: Request):
     if not user:
         raise HTTPException(404)
 
+    # A catalogued game whose file has been moved or deleted is a 404, not a
+    # 500.  One missing file must not break the rest of the catalogue.
+    path = game_path(filename)
+    if path is None:
+        raise HTTPException(404)
+
     if game["tier"] == "classic":
-        return FileResponse(os.path.join("mini_games", filename))
+        return FileResponse(path)
 
     # Reward tier: admin, or a child with the unlock
     if user.get("is_admin"):
-        return FileResponse(os.path.join("mini_games", filename))
+        return FileResponse(path)
 
     with get_db() as db:
         if filename in unlocked_files(user["user_id"], db):
-            return FileResponse(os.path.join("mini_games", filename))
+            return FileResponse(path)
 
     raise HTTPException(404)
 
