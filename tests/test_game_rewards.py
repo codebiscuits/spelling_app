@@ -1,7 +1,6 @@
 from database import init_db
 from services.game_rewards import (
     BADGE_STEP,
-    badges_until_next,
     check_and_unlock,
     next_locked,
     unlocked_files,

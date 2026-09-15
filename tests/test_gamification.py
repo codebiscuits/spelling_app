@@ -75,7 +75,7 @@ def test_medal_not_awarded_twice(db):
     r1 = check_and_award(uid, lid, db=db)
     assert r1["medal_awarded"] is True
 
-    sid2 = make_session(db, uid, lid)
+    make_session(db, uid, lid)
     r2 = check_and_award(uid, lid, db=db)
     assert r2["medal_awarded"] is False
 
@@ -182,7 +182,7 @@ def test_trophy_not_awarded_twice(db):
     r1 = check_and_award(uid, lid, db=db)
     assert r1["trophy_awarded"] is True
 
-    sid2 = make_session(db, uid, lid)
+    make_session(db, uid, lid)
     r2 = check_and_award(uid, lid, db=db)
     assert r2["trophy_awarded"] is False
 
@@ -290,7 +290,7 @@ def test_no_medal_or_trophy_for_empty_list(db):
     """Badge is still awarded by score alone, but medal/trophy require words."""
     uid = make_user(db)
     lid = make_list(db)
-    sid = make_session(db, uid, lid)
+    make_session(db, uid, lid)
     result = check_and_award(uid, lid, db=db)
     assert result["medal_awarded"] is False
     assert result["trophy_awarded"] is False

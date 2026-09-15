@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import re, sys
+import re
 from pathlib import Path
 p = Path('/home/ross/Stuff/Documents/Coding/2026/spelling_app/mini_games/Ink_garden.html')
 html = p.read_text(encoding='utf-8')
