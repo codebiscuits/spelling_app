@@ -4,12 +4,17 @@ import random
 from datetime import datetime, timezone
 
 from database import get_db
-from auth import require_child
+from auth import require_child, generate_csrf_token
 from services import spelling_progression as progression
 from services.gamification import (
     award_session_badge, award_start_trophies, record_mastery_and_medals,
 )
 from services.game_rewards import check_and_unlock, unlocked_files, next_locked, badges_until_next
+from services.game_activity import (
+    forfeit_game_credits,
+    grant_game_credit,
+    recently_played_files,
+)
 from services.tts import get_audio_url, get_sentence_audio_url
 from templates_env import templates, CLASSIC_GAMES, REWARD_GAMES
 
@@ -314,30 +319,42 @@ def results(request: Request, user=Depends(require_child)):
         # Mini game reward: unlock when score >= 10/20 (50%)
         # When adjusting this threshold, update README.md and SETUP.md as well
         qualifies = session["score"] >= 10
-        games = []
+        recent_games = []
+        older_games = []
         mystery = None
         if qualifies:
+            grant_game_credit(user_id, session_id, session["score"], db)
             reward_unlocked = [g for g in REWARD_GAMES if g["file"] in unlocked_files(user_id, db)]
-            games = CLASSIC_GAMES + reward_unlocked
+            available_games = CLASSIC_GAMES + reward_unlocked
+            recent_files = recently_played_files(user_id, db)
+            recent_games = [g for g in available_games if g["file"] in recent_files]
+            older_games = [g for g in available_games if g["file"] not in recent_files]
+            if new_game:
+                recent_games = [g for g in recent_games if g["file"] != new_game["file"]]
+                older_games = [
+                    g for g in available_games
+                    if g["file"] == new_game["file"] or g["file"] not in recent_files
+                ]
             locked = next_locked(user_id, db)
             if locked:
                 mystery = {"hint": badges_until_next(user_id, db)}
+        else:
+            forfeit_game_credits(user_id, db)
 
     # Clear test session state
     request.session.pop("test", None)
 
-    # Bank a single game-play credit for a qualifying session (spent by
-    # /child/games/...); a sub-threshold session forfeits any stale credit.
-    if qualifies:
-        request.session["game_credit"] = {"score": session["score"]}
-    else:
-        request.session.pop("game_credit", None)
+    # Credit state lives server-side, so replaying an older signed session
+    # cookie cannot mint or spend another game play.
+    request.session.pop("game_credit", None)
 
     return templates.TemplateResponse(request, "child/results.html", {
         "session": session,
         "attempts": attempts,
+        "csrf_token": generate_csrf_token(request),
         "gamification": gamification,
-        "games": games,
+        "recent_games": recent_games,
+        "older_games": older_games,
         "new_game": new_game,
         "mystery": mystery,
     })

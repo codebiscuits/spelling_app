@@ -92,7 +92,6 @@ def test_logout_clears_session(child_client):
 
 @pytest.mark.parametrize("path", [
     "/child/dashboard",
-    "/child/games/circles.html",
     "/test/start",
     "/test/word",
     "/test/results",
@@ -104,3 +103,13 @@ def test_guarded_routes_redirect_anonymous(client, path):
     resp = client.get(path, follow_redirects=False)
     assert resp.status_code == 307
     assert resp.headers["location"] == "/login"
+
+
+def test_start_game_redirects_anonymous_users(client):
+    response = client.post(
+        "/child/games/circles.html",
+        data={"csrf_token": "not-used-without-a-session"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 307
+    assert response.headers["location"] == "/login"

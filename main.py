@@ -11,6 +11,7 @@ from database import get_db, init_db
 from auth import verify_password, generate_csrf_token, verify_csrf_token
 from seed.curriculum_words import seed
 from services.game_rewards import unlocked_files
+from services.game_activity import consume_game_launch
 from templates_env import templates, MINI_GAMES, game_path
 from routers import admin as admin_router
 from routers import admin_progress as admin_progress_router
@@ -76,14 +77,20 @@ def serve_game(filename: str, request: Request):
     if path is None:
         raise HTTPException(404)
 
-    if game["tier"] == "classic":
-        return FileResponse(path)
-
-    # Reward tier: admin, or a child with the unlock
     if user.get("is_admin"):
         return FileResponse(path)
 
+    # A child receives a raw game file only through a short-lived, single-use
+    # capability minted by the CSRF-protected wrapper route.
+    launch = request.query_params.get("launch")
+    if not launch:
+        raise HTTPException(404)
+
     with get_db() as db:
+        if not consume_game_launch(user["user_id"], filename, launch, db):
+            raise HTTPException(404)
+        if game["tier"] == "classic":
+            return FileResponse(path)
         if filename in unlocked_files(user["user_id"], db):
             return FileResponse(path)
 

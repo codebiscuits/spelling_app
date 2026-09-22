@@ -184,6 +184,38 @@ CREATE TABLE IF NOT EXISTS arithmetic_focus (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_arithmetic_focus_one_open
     ON arithmetic_focus(user_id) WHERE completed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS user_game_plays (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    game_file TEXT NOT NULL,
+    played_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_game_plays_recent
+    ON user_game_plays (user_id, played_at);
+
+CREATE TABLE IF NOT EXISTS user_game_launches (
+    nonce      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    game_file  TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_game_launches_expires
+    ON user_game_launches (expires_at);
+
+CREATE TABLE IF NOT EXISTS user_game_credits (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL UNIQUE REFERENCES test_sessions(id) ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    score      INTEGER NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available', 'consumed', 'forfeited')),
+    earned_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_game_credits_user
+    ON user_game_credits (user_id, id);
 """
 
 
@@ -321,6 +353,15 @@ def init_db():
         # After the legacy rebuild above, whose copy relies on the old
         # column list of test_sessions.
         _migrate_arithmetic(con)
+        # Migration: retain terminal credit status so replayed result cookies
+        # cannot re-mint a credit after it was spent or forfeited.
+        try:
+            con.execute(
+                "ALTER TABLE user_game_credits ADD COLUMN status TEXT NOT NULL DEFAULT 'available'"
+            )
+            con.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists, or this database predates game credits
 
         # Launch gift (§1.3): every child with zero user_game_unlocks rows
         # is gifted the first reward-tier game. Idempotent; re-triggers if

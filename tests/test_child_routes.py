@@ -1,7 +1,16 @@
+import re
+
 import pytest
 
 from routers.child import play_duration
-from tests.conftest import app_db, run_full_test, setup_practice_list
+from tests.conftest import (
+    app_db,
+    current_word,
+    extract_csrf,
+    run_full_test,
+    setup_practice_list,
+    submit_answer,
+)
 
 CREDIT_WORDS = ["apple", "banana", "carrot", "dolphin", "eagle",
                 "forest", "garden", "harbor", "island", "jungle"]
@@ -12,6 +21,26 @@ def earn_game_credit(client, answer_fn=lambda w: w, words=CREDIT_WORDS):
     failing answer_fn, withholds) a game-play credit."""
     setup_practice_list(client.child_id, words)
     return run_full_test(client, answer_fn)
+
+
+def qualifying_test_before_results(client):
+    """Complete a 20/20 test but retain the signed cookie before results."""
+    setup_practice_list(client.child_id, CREDIT_WORDS)
+    client.get("/test/start")
+    for _ in range(10):
+        word_id, word, _ = current_word(client)
+        submit_answer(client, word_id, word)
+    assert client.get("/test/topup", follow_redirects=False).headers["location"] == "/test/results"
+    return client.cookies.get("session")
+
+
+def start_game(client, filename, follow_redirects=True):
+    csrf_token = extract_csrf(client.get("/login").text)
+    return client.post(
+        f"/child/games/{filename}",
+        data={"csrf_token": csrf_token},
+        follow_redirects=follow_redirects,
+    )
 
 
 # ── Dashboard ──────────────────────────────────────────────────────────────
@@ -90,30 +119,142 @@ def test_dashboard_lists_recent_sessions_as_mixed_practice(child_client):
 
 # ── Mini-game wrapper ──────────────────────────────────────────────────────
 
+def test_results_shows_recent_games_and_hides_stale_games_under_all_games(child_client):
+    """Only games played in the last 30 days are in the initial picker."""
+    from datetime import datetime, timezone
+    from templates_env import CLASSIC_GAMES
+
+    recent_game = CLASSIC_GAMES[0]
+    stale_game = CLASSIC_GAMES[1]
+    with app_db() as db:
+        db.execute(
+            "INSERT INTO user_game_plays (user_id, game_file, played_at) VALUES (?,?,?)",
+            (child_client.child_id, recent_game["file"], datetime.now(timezone.utc).isoformat()),
+        )
+
+    resp = earn_game_credit(child_client)  # 10 words all correct -> 20/20
+
+    assert resp.status_code == 200
+    assert '<details class="all-games">' in resp.text
+    visible_games, all_games = resp.text.split('<details class="all-games">', 1)
+    assert recent_game["name"] in visible_games
+    assert stale_game["name"] not in visible_games
+    assert "All games" in all_games
+    assert stale_game["name"] in all_games
+
+
+def test_starting_a_game_requires_a_csrf_protected_post(child_client):
+    results = earn_game_credit(child_client)
+
+    assert child_client.get("/child/games/circles.html").status_code == 405
+    assert child_client.post("/child/games/circles.html", data={"csrf_token": "wrong"}).status_code == 403
+
+    csrf_token = extract_csrf(results.text)
+    response = child_client.post("/child/games/circles.html", data={"csrf_token": csrf_token})
+    assert response.status_code == 200
+
+
+def test_raw_game_file_requires_a_single_use_wrapped_game_launch(child_client):
+    assert child_client.get("/mini-games/circles.html").status_code == 404
+
+    earn_game_credit(child_client)
+    wrapper = start_game(child_client, "circles.html")
+    launch = re.search(r'/mini-games/circles.html\?launch=([^"&]+)', wrapper.text)
+    assert launch, "Game wrapper must include a one-time launch capability"
+
+    game_url = f"/mini-games/circles.html?launch={launch.group(1)}"
+    assert child_client.get(game_url).status_code == 200
+    assert child_client.get(game_url).status_code == 404
+
+
 def test_game_page_renders_after_qualifying_test(child_client):
     earn_game_credit(child_client)  # 10 words all correct -> 20/20
-    resp = child_client.get("/child/games/circles.html")
+    resp = start_game(child_client, "circles.html")
     assert resp.status_code == 200
     assert "/mini-games/circles.html" in resp.text
     assert "var remaining = 120;" in resp.text  # duration from the real score
 
 
+def test_replayed_session_cannot_spend_a_game_credit_twice(child_client):
+    results = earn_game_credit(child_client)
+    csrf_token = extract_csrf(results.text)
+    pre_play_session = child_client.cookies.get("session")
+
+    first = child_client.post("/child/games/circles.html", data={"csrf_token": csrf_token})
+    assert first.status_code == 200
+
+    child_client.cookies.set("session", pre_play_session)
+    replay = child_client.post(
+        "/child/games/fireworks.html",
+        data={"csrf_token": csrf_token},
+        follow_redirects=False,
+    )
+    assert replay.status_code == 303
+
+    with app_db() as db:
+        plays = db.execute(
+            "SELECT game_file FROM user_game_plays WHERE user_id=? ORDER BY id",
+            (child_client.child_id,),
+        ).fetchall()
+    assert [play["game_file"] for play in plays] == ["circles.html"]
+
+
+def test_replaying_pre_results_cookie_cannot_remint_a_spent_credit(child_client):
+    pre_results_session = qualifying_test_before_results(child_client)
+    assert child_client.get("/test/results").status_code == 200
+    assert start_game(child_client, "circles.html").status_code == 200
+
+    child_client.cookies.set(
+        "session", pre_results_session, domain="testserver.local", path="/"
+    )
+    replayed_results = child_client.get("/test/results")
+    assert replayed_results.status_code == 200
+    replay = child_client.post(
+        "/child/games/fireworks.html",
+        data={"csrf_token": extract_csrf(replayed_results.text)},
+        follow_redirects=False,
+    )
+    assert replay.status_code == 303
+
+    with app_db() as db:
+        credits = db.execute(
+            "SELECT session_id, status FROM user_game_credits WHERE user_id=?",
+            (child_client.child_id,),
+        ).fetchall()
+    assert len(credits) == 1
+    assert credits[0]["status"] == "consumed"
+
+
+def test_starting_a_game_records_a_play_for_that_child(child_client):
+    earn_game_credit(child_client)
+
+    assert start_game(child_client, "circles.html").status_code == 200
+    with app_db() as db:
+        row = db.execute(
+            """SELECT game_file FROM user_game_plays
+               WHERE user_id=? ORDER BY id DESC LIMIT 1""",
+            (child_client.child_id,),
+        ).fetchone()
+
+    assert row["game_file"] == "circles.html"
+
+
 def test_game_page_redirects_without_credit(child_client):
-    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    resp = start_game(child_client, "circles.html", follow_redirects=False)
     assert resp.status_code == 303
     assert resp.headers["location"] == "/child/dashboard"
 
 
 def test_game_credit_is_single_use(child_client):
     earn_game_credit(child_client)
-    assert child_client.get("/child/games/circles.html").status_code == 200
-    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    assert start_game(child_client, "circles.html").status_code == 200
+    resp = start_game(child_client, "circles.html", follow_redirects=False)
     assert resp.status_code == 303
 
 
 def test_failing_test_banks_no_credit(child_client):
     earn_game_credit(child_client, answer_fn=lambda w: "wrong")  # score 0
-    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    resp = start_game(child_client, "circles.html", follow_redirects=False)
     assert resp.status_code == 303
 
 
@@ -124,16 +265,16 @@ def test_sub_threshold_test_forfeits_previous_credit(child_client):
         child_client, answer_fn=lambda w: "wrong",
         words=["kitten", "lantern", "meadow", "narwhal", "octopus"],
     )
-    resp = child_client.get("/child/games/circles.html", follow_redirects=False)
+    resp = start_game(child_client, "circles.html", follow_redirects=False)
     assert resp.status_code == 303
 
 
 def test_game_page_404s_for_unknown_file(child_client):
-    assert child_client.get("/child/games/evil.html").status_code == 404
+    assert start_game(child_client, "evil.html").status_code == 404
 
 
 def test_game_page_404s_for_path_traversal(child_client):
-    resp = child_client.get("/child/games/..%2F..%2Fmain.py")
+    resp = start_game(child_client, "..%2F..%2Fmain.py")
     assert resp.status_code == 404
 
 

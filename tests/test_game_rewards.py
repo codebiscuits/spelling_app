@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from database import init_db
 from services.game_rewards import (
     BADGE_STEP,
@@ -10,6 +12,7 @@ from tests.conftest import (
     app_db,
     current_word,
     extract_csrf,
+    get_csrf,
     make_list,
     make_session,
     make_user,
@@ -45,6 +48,14 @@ def unlock_game_for(child_id, filename, source="admin"):
                (user_id, game_file, earned_at, source) VALUES (?,?,?,?)""",
             (child_id, filename, "2025-01-01T00:00:00+00:00", source),
         )
+
+
+def start_game(client, filename, follow_redirects=True):
+    return client.post(
+        f"/child/games/{filename}",
+        data={"csrf_token": get_csrf(client)},
+        follow_redirects=follow_redirects,
+    )
 
 
 # ── 1. Ladder ────────────────────────────────────────────────────────────────
@@ -154,7 +165,7 @@ def test_unlocks_follow_release_order_then_exhaust(db):
 
 def test_locked_reward_game_404s_on_both_routes(child_client):
     locked_file = REWARD_GAMES[-1]["file"]
-    resp = child_client.get(f"/child/games/{locked_file}")
+    resp = start_game(child_client, locked_file)
     assert resp.status_code == 404
     resp2 = child_client.get(f"/mini-games/{locked_file}")
     assert resp2.status_code == 404
@@ -163,24 +174,24 @@ def test_locked_reward_game_404s_on_both_routes(child_client):
 def test_unlocked_reward_game_needs_a_game_credit(child_client):
     game_file = REWARD_GAMES[0]["file"]
     unlock_game_for(child_client.child_id, game_file)
-    # Unlocked but no completed test -> no play; raw file still served
-    resp = child_client.get(f"/child/games/{game_file}", follow_redirects=False)
+    # Unlocked but no completed test -> no play and no raw-file bypass.
+    resp = start_game(child_client, game_file, follow_redirects=False)
     assert resp.status_code == 303
-    assert child_client.get(f"/mini-games/{game_file}").status_code == 200
+    assert child_client.get(f"/mini-games/{game_file}").status_code == 404
     # After a qualifying session the play route works
     setup_practice_list(child_client.child_id, PRACTICE_WORDS)
     run_full_session(child_client)
-    assert child_client.get(f"/child/games/{game_file}").status_code == 200
+    assert start_game(child_client, game_file).status_code == 200
 
 
 def test_classic_game_needs_a_game_credit(child_client):
     classic_file = CLASSIC_GAMES[0]["file"]
-    resp = child_client.get(f"/child/games/{classic_file}", follow_redirects=False)
+    resp = start_game(child_client, classic_file, follow_redirects=False)
     assert resp.status_code == 303
-    assert child_client.get(f"/mini-games/{classic_file}").status_code == 200
+    assert child_client.get(f"/mini-games/{classic_file}").status_code == 404
     setup_practice_list(child_client.child_id, PRACTICE_WORDS)
     run_full_session(child_client)
-    assert child_client.get(f"/child/games/{classic_file}").status_code == 200
+    assert start_game(child_client, classic_file).status_code == 200
 
 
 def test_admin_can_fetch_any_reward_file(admin_client):
@@ -333,15 +344,24 @@ def test_mystery_hint_correct_after_second_badge(child_client):
 
 def test_celebration_card_present_on_unlocking_session(child_client):
     child_id = child_client.child_id
+    game = REWARD_GAMES[0]
     list_id, _ = setup_practice_list(child_id, PRACTICE_WORDS)
     with app_db() as db:
         give_badges(db, child_id, list_id, 2)
+        # Simulate an admin re-locking then re-unlocking a recently played game.
+        db.execute(
+            "INSERT INTO user_game_plays (user_id, game_file, played_at) VALUES (?,?,?)",
+            (child_id, game["file"], datetime.now(timezone.utc).isoformat()),
+        )
     resp = run_full_session(child_client)
     assert resp.status_code == 200
     game = REWARD_GAMES[0]
     assert "A new game is ready!" in resp.text
     assert game["name"] in resp.text
     assert game["description"] in resp.text
+    # The Play button is a CSRF-protected POST form, never a bare link.
+    assert f'action="/child/games/{game["file"]}"' in resp.text
+    assert f'href="/child/games/{game["file"]}"' not in resp.text
 
 
 def test_qualifying_multi_list_session_awards_exactly_one_badge(child_client):

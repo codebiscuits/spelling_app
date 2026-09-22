@@ -1,10 +1,15 @@
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, Form
 from fastapi.responses import RedirectResponse
 
 from database import get_db
-from auth import require_child
+from auth import require_child, verify_csrf_token
 from services.arithmetic_facts import rung_name
 from services.game_rewards import unlocked_files, next_locked, badges_until_next
+from services.game_activity import (
+    consume_game_credit,
+    create_game_launch,
+    record_game_play,
+)
 from templates_env import templates, MINI_GAMES, REWARD_GAMES
 
 router = APIRouter(prefix="/child")
@@ -108,21 +113,29 @@ def play_duration(score: int) -> int:
     return max(60, (min(score, 20) - 10) * 6 + 60)
 
 
-@router.get("/games/{filename}")
-def play_game(filename: str, request: Request, user=Depends(require_child)):
+@router.post("/games/{filename}")
+def play_game(
+    filename: str,
+    request: Request,
+    csrf_token: str = Form(...),
+    user=Depends(require_child),
+):
+    verify_csrf_token(request, csrf_token)
     if filename not in GAME_FILES:
         raise HTTPException(404)
     game = next(g for g in MINI_GAMES if g["file"] == filename)
-    if game["tier"] == "reward":
-        with get_db() as db:
-            if filename not in unlocked_files(user["user_id"], db):
-                raise HTTPException(404)
-    # One play per completed test: the results flow banks a single game
-    # credit (with the real session score); playing spends it.
-    credit = request.session.pop("game_credit", None)
-    if credit is None:
-        return RedirectResponse("/child/dashboard", status_code=303)
+    # One play per completed test: the results flow stores a single credit
+    # server-side, then this route consumes it atomically with the play record.
+    with get_db() as db:
+        if game["tier"] == "reward" and filename not in unlocked_files(user["user_id"], db):
+            raise HTTPException(404)
+        score = consume_game_credit(user["user_id"], db)
+        if score is None:
+            return RedirectResponse("/child/dashboard", status_code=303)
+        record_game_play(user["user_id"], filename, db)
+        launch = create_game_launch(user["user_id"], filename, db)
     return templates.TemplateResponse(request, "child/game.html", {
         "game": game,
-        "duration": play_duration(credit["score"]),
+        "launch": launch,
+        "duration": play_duration(score),
     })
