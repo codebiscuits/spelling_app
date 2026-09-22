@@ -329,12 +329,6 @@ def results(request: Request, user=Depends(require_child)):
             recent_files = recently_played_files(user_id, db)
             recent_games = [g for g in available_games if g["file"] in recent_files]
             older_games = [g for g in available_games if g["file"] not in recent_files]
-            if new_game:
-                recent_games = [g for g in recent_games if g["file"] != new_game["file"]]
-                older_games = [
-                    g for g in available_games
-                    if g["file"] == new_game["file"] or g["file"] not in recent_files
-                ]
             locked = next_locked(user_id, db)
             if locked:
                 mystery = {"hint": badges_until_next(user_id, db)}

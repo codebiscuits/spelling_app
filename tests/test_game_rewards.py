@@ -342,7 +342,8 @@ def test_mystery_hint_correct_after_second_badge(child_client):
     assert "1 more" in resp.text
 
 
-def test_celebration_card_present_on_unlocking_session(child_client):
+def test_recently_played_game_is_visible_when_unlocked_again(child_client):
+    """A game's current unlock state never overrides its recent-play status."""
     child_id = child_client.child_id
     game = REWARD_GAMES[0]
     list_id, _ = setup_practice_list(child_id, PRACTICE_WORDS)
@@ -355,13 +356,15 @@ def test_celebration_card_present_on_unlocking_session(child_client):
         )
     resp = run_full_session(child_client)
     assert resp.status_code == 200
-    game = REWARD_GAMES[0]
     assert "A new game is ready!" in resp.text
     assert game["name"] in resp.text
     assert game["description"] in resp.text
     # The Play button is a CSRF-protected POST form, never a bare link.
     assert f'action="/child/games/{game["file"]}"' in resp.text
     assert f'href="/child/games/{game["file"]}"' not in resp.text
+    # Played in the last 30 days, so it sits in the visible list, not under All games.
+    visible_games, all_games = resp.text.split('<details class="all-games">', 1)
+    assert f'action="/child/games/{game["file"]}"' not in all_games
 
 
 def test_qualifying_multi_list_session_awards_exactly_one_badge(child_client):
