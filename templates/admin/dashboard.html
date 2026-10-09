@@ -28,11 +28,16 @@
     </div>
     <ul>
       {% for child in children %}
-      <li><a href="/admin/children/{{ child.id }}">{{ child.name }}</a></li>
+      <li><a href="/admin/children/{{ child.id }}">{{ child.name }}</a> <span style="font-size:0.85rem">(<a href="/admin/children/{{ child.id }}/spelling">spelling</a>, <a href="/admin/children/{{ child.id }}/arithmetic">times tables</a>)</span></li>
       {% endfor %}
     </ul>
   </section>
 </div>
+
+<section class="admin-section">
+  <h2>Progress</h2>
+  <p><a href="/admin/progress" class="btn btn-secondary">Progress overview</a></p>
+</section>
 
 <section class="admin-section">
   <h2>Audio Cache</h2>

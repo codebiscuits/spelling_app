@@ -288,3 +288,13 @@ def test_admin_posts_reject_bad_csrf(admin_client):
         follow_redirects=False,
     )
     assert resp.status_code == 403
+
+
+# ── Progress monitoring links ──────────────────────────────────────────────
+
+def test_dashboard_and_child_detail_link_to_progress(admin_client):
+    cid = make_child("Linky")
+    dash = admin_client.get("/admin/").text
+    assert "/admin/progress" in dash and f"/admin/children/{cid}/spelling" in dash
+    detail = admin_client.get(f"/admin/children/{cid}").text
+    assert f"/admin/children/{cid}/arithmetic" in detail and "/admin/progress" in detail
