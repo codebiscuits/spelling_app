@@ -114,7 +114,7 @@ def test_child_completes_a_spelling_test(server):
         assert "Alice" in page.text_content("h1")
 
         # Start a test
-        page.click("text=Start a Spelling Test")
+        page.click("text=Start a spelling practice")
         page.wait_for_url("**/test/word")
 
         # Attempt 1: input hidden until Play is clicked; word not in the page
@@ -133,7 +133,7 @@ def test_child_completes_a_spelling_test(server):
 
         # One-word test → straight to results with full first-try marks
         page.wait_for_url("**/test/results")
-        assert "Test Complete!" in page.content()
+        assert "Practice Complete!" in page.content()
         assert page.text_content(".score-number").strip() == "2"
 
         browser.close()
