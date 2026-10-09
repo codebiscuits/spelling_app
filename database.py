@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS word_lists (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
-    year_group INTEGER
+    year_group INTEGER,
+    position   INTEGER NOT NULL DEFAULT 0   -- curriculum order of lists (1 = first)
 );
 
 CREATE TABLE IF NOT EXISTS words (
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS words (
     word             TEXT NOT NULL,
     list_id          INTEGER NOT NULL REFERENCES word_lists(id) ON DELETE CASCADE,
     context_sentence TEXT,
+    position         INTEGER NOT NULL DEFAULT 0,   -- curriculum order within its list (1 = first)
     UNIQUE(word, list_id)
 );
 
@@ -84,8 +86,61 @@ CREATE TABLE IF NOT EXISTS user_game_unlocks (
     user_id   INTEGER NOT NULL REFERENCES users(id),
     game_file TEXT NOT NULL,
     earned_at TEXT NOT NULL,
-    source    TEXT NOT NULL,   -- 'badge' | 'medal' | 'trophy' | 'admin' | 'launch'
+    source    TEXT NOT NULL,   -- 'badge' | 'admin' | 'launch' (older rows may say 'medal' or 'trophy')
     PRIMARY KEY (user_id, game_file)
+);
+
+-- Spelling progression (release 2). All additive: nothing above is changed.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name       TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
+-- The word a child is currently being introduced to. At most one open row
+-- (completed_at IS NULL) per child. after_attempt_id is the newest attempt
+-- id when the focus began: only ordinary first attempts after it count
+-- towards the three-in-a-row that completes the focus.
+CREATE TABLE IF NOT EXISTS spelling_focus (
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    word_id          INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+    started_at       TEXT NOT NULL,
+    completed_at     TEXT,
+    after_attempt_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, word_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spelling_focus_one_open
+    ON spelling_focus(user_id) WHERE completed_at IS NULL;
+
+-- The first time a child mastered an item. Never deleted, so re-mastering
+-- a forgotten word does not count again. subject lets arithmetic reuse it.
+CREATE TABLE IF NOT EXISTS first_mastered (
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subject     TEXT NOT NULL,
+    item_key    TEXT NOT NULL,
+    mastered_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, subject, item_key)
+);
+
+-- One medal per ten distinct items first mastered. silent=1: backfilled at
+-- migration, so no banner and no game unlock.
+CREATE TABLE IF NOT EXISTS milestone_medals (
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subject   TEXT NOT NULL,
+    threshold INTEGER NOT NULL,
+    earned_at TEXT NOT NULL,
+    silent    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, subject, threshold)
+);
+
+-- One trophy per list (group_id = word_lists.id for spelling), awarded at
+-- the child's first ordinary first attempt at a word from that list.
+CREATE TABLE IF NOT EXISTS start_trophies (
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subject   TEXT NOT NULL,
+    group_id  INTEGER NOT NULL,
+    earned_at TEXT NOT NULL,
+    silent    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, subject, group_id)
 );
 """
 
@@ -106,6 +161,77 @@ def get_db():
         con.close()
 
 
+def _add_column(con, table: str, column_def: str) -> None:
+    try:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column_def}")
+        con.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+
+def _migrate_progression(con) -> None:
+    """Release 2 migration. Additive only: new columns and new tables, and
+    data written into those. No existing row or column is changed, so
+    reverting the code needs no database restore. Safe to run repeatedly."""
+    _add_column(con, "word_lists", "position INTEGER NOT NULL DEFAULT 0")
+    _add_column(con, "words", "position INTEGER NOT NULL DEFAULT 0")
+    _backfill_positions(con)
+    con.commit()
+
+    already = con.execute(
+        "SELECT 1 FROM schema_migrations WHERE name=?", (PROGRESSION_MIGRATION,)
+    ).fetchone()
+    if not already:
+        from services.progression_backfill import backfill_awards
+        now = datetime.now(timezone.utc).isoformat()
+        backfill_awards(con, now)
+        con.execute(
+            "INSERT INTO schema_migrations (name, applied_at) VALUES (?,?)",
+            (PROGRESSION_MIGRATION, now),
+        )
+        con.commit()
+
+
+PROGRESSION_MIGRATION = "spelling_progression_v1"
+
+
+def _backfill_positions(con) -> None:
+    """Give every list and word still at position 0 a curriculum position.
+    Lists: year group, then id. Words: their order in the seed file where
+    the word is in the seed, then id. Rows that already have a position
+    (set by the seed or the admin pages) are left alone."""
+    from seed.curriculum_words import CURRICULUM
+
+    next_list = con.execute("SELECT COALESCE(MAX(position),0) FROM word_lists").fetchone()[0]
+    unpositioned = con.execute(
+        """SELECT id FROM word_lists WHERE position=0
+           ORDER BY year_group IS NULL, year_group, id"""
+    ).fetchall()
+    for row in unpositioned:
+        next_list += 1
+        con.execute("UPDATE word_lists SET position=? WHERE id=?", (next_list, row["id"]))
+
+    for lst in con.execute("SELECT id, name, year_group FROM word_lists").fetchall():
+        seed_words = CURRICULUM.get(lst["year_group"])
+        if seed_words is None or lst["name"] != f"Year {lst['year_group']}\u2013{lst['year_group'] + 1}":
+            seed_words = []
+        seed_order: dict[str, int] = {}
+        for w in seed_words:
+            seed_order.setdefault(w.lower(), len(seed_order))
+        todo = con.execute(
+            "SELECT id, word FROM words WHERE list_id=? AND position=0", (lst["id"],)
+        ).fetchall()
+        if not todo:
+            continue
+        todo.sort(key=lambda r: (r["word"] not in seed_order, seed_order.get(r["word"], 0), r["id"]))
+        n = con.execute(
+            "SELECT COALESCE(MAX(position),0) FROM words WHERE list_id=?", (lst["id"],)
+        ).fetchone()[0]
+        for r in todo:
+            n += 1
+            con.execute("UPDATE words SET position=? WHERE id=?", (n, r["id"]))
+
+
 def init_db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -117,6 +243,8 @@ def init_db():
             con.commit()
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+        _migrate_progression(con)
 
         # Migration: make test_sessions.list_id nullable for multi-list sessions
         try:

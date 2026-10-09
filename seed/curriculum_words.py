@@ -102,7 +102,11 @@ CURRICULUM = {
 
 
 def seed(db):
-    """Idempotently insert curriculum word lists and words."""
+    """Idempotently insert curriculum word lists and words.
+
+    New rows get explicit curriculum positions (list order as in CURRICULUM,
+    word order as written above). Rows that already exist keep the position
+    they have, so a re-seed never reorders a live database."""
     for year_group, words in CURRICULUM.items():
         name = f"Year {year_group}–{year_group + 1}"
         existing = db.execute(
@@ -112,15 +116,23 @@ def seed(db):
             list_id = existing["id"]
         else:
             cur = db.execute(
-                "INSERT INTO word_lists (name, year_group) VALUES (?,?)", (name, year_group)
+                """INSERT INTO word_lists (name, year_group, position)
+                   VALUES (?,?,(SELECT COALESCE(MAX(position),0)+1 FROM word_lists))""",
+                (name, year_group),
             )
             list_id = cur.lastrowid
 
+        position = 0
+        seen_words = set()
         for word in words:
             word_lower = word.lower()
+            if word_lower in seen_words:
+                continue  # "I" and "i" are one word
+            seen_words.add(word_lower)
+            position += 1
             db.execute(
-                "INSERT OR IGNORE INTO words (word, list_id) VALUES (?,?)",
-                (word_lower, list_id),
+                "INSERT OR IGNORE INTO words (word, list_id, position) VALUES (?,?,?)",
+                (word_lower, list_id, position),
             )
             sentence = CONTEXT_SENTENCES.get(word_lower)
             if sentence:

@@ -6,3 +6,4 @@ itsdangerous
 bcrypt
 python-dotenv
 gtts
+tzdata
