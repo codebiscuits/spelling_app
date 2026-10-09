@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS test_sessions (
     user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     list_id   INTEGER REFERENCES word_lists(id),
     score     INTEGER NOT NULL,
-    max_score INTEGER NOT NULL
+    max_score INTEGER NOT NULL,
+    subject   TEXT NOT NULL DEFAULT 'spelling'   -- 'spelling' | 'arithmetic'
 );
 
 CREATE TABLE IF NOT EXISTS spelling_attempts (
@@ -142,6 +143,47 @@ CREATE TABLE IF NOT EXISTS start_trophies (
     silent    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, subject, group_id)
 );
+
+-- Arithmetic practice (release 3). All additive.
+-- One row per answer. fact_key names one exact question ('m:3x4' is 3 x 4,
+-- 'd:12/3' is 12 / 3). attempt_number: 1 ordinary first, 2 ordinary second
+-- (after the clue), 3 top-up. Only attempt_number=1 is learning evidence.
+-- session_id points at test_sessions (subject='arithmetic'), so the shared
+-- badge and game rules work across both subjects.
+CREATE TABLE IF NOT EXISTS arithmetic_attempts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp      TEXT NOT NULL,
+    user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    fact_key       TEXT NOT NULL,
+    correct        INTEGER NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    session_id     INTEGER NOT NULL REFERENCES test_sessions(id) ON DELETE CASCADE,
+    response_ms    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_arithmetic_attempts_user_fact
+    ON arithmetic_attempts(user_id, fact_key, id);
+
+-- Table-ladder rungs a child has unlocked. Rungs never lock again.
+CREATE TABLE IF NOT EXISTS arithmetic_rungs (
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    rung        INTEGER NOT NULL,
+    unlocked_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, rung)
+);
+
+-- The fact family a child is being introduced to. At most one open row
+-- (completed_at IS NULL) per child. after_attempt_id works as in
+-- spelling_focus. A family row, once written, also marks it introduced.
+CREATE TABLE IF NOT EXISTS arithmetic_focus (
+    user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    family_key       TEXT NOT NULL,
+    started_at       TEXT NOT NULL,
+    completed_at     TEXT,
+    after_attempt_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, family_key)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_arithmetic_focus_one_open
+    ON arithmetic_focus(user_id) WHERE completed_at IS NULL;
 """
 
 
@@ -193,6 +235,13 @@ def _migrate_progression(con) -> None:
 
 
 PROGRESSION_MIGRATION = "spelling_progression_v1"
+
+
+def _migrate_arithmetic(con) -> None:
+    """Release 3 migration. Additive only: one new column on test_sessions
+    (every existing row becomes 'spelling' through the default) and the new
+    arithmetic tables, which the schema script creates. Safe to repeat."""
+    _add_column(con, "test_sessions", "subject TEXT NOT NULL DEFAULT 'spelling'")
 
 
 def _backfill_positions(con) -> None:
@@ -268,6 +317,10 @@ def init_db():
                 con.commit()
         except Exception:
             pass
+
+        # After the legacy rebuild above, whose copy relies on the old
+        # column list of test_sessions.
+        _migrate_arithmetic(con)
 
         # Launch gift (§1.3): every child with zero user_game_unlocks rows
         # is gifted the first reward-tier game. Idempotent; re-triggers if
