@@ -66,6 +66,8 @@
     var phraseAudio = document.getElementById('phrase-audio');
     var readyBtn    = document.getElementById('ready-btn');
     var wordDisplay = document.getElementById('word-display');
+    var replayBtn   = document.getElementById('replay-btn');
+    var replayAudio = document.getElementById('word-audio');
 
     if (phraseAudio) {
       playAudio(phraseAudio);
@@ -77,6 +79,15 @@
         if (wordDisplay) wordDisplay.style.display = 'none';
         readyBtn.style.display = 'none';
         answerSec.style.display = '';
+        if (replayBtn) replayBtn.style.display = '';
+        answerInput.focus();
+      });
+    }
+
+    if (replayBtn && replayAudio) {
+      replayBtn.addEventListener('click', function () {
+        replayAudio.currentTime = 0;
+        playAudio(replayAudio);
         answerInput.focus();
       });
     }

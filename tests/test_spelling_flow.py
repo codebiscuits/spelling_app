@@ -157,7 +157,7 @@ def test_wrong_twice_scores_nothing_and_moves_on(child_client):
 
     next_id, _, resp = current_word(child_client)
     assert next_id != word_id
-    assert "Word 2 of 2" in resp.text
+    assert "Practice 2 of 2" in resp.text
 
 
 def test_attempts_are_recorded(child_client):
@@ -220,7 +220,7 @@ def test_full_run_all_correct_shows_results(child_client):
 
     resp = run_full_test(child_client, lambda w: w)
     assert resp.status_code == 200
-    assert "Test Complete!" in resp.text
+    assert "Practice Complete!" in resp.text
     for word in words:
         assert word in resp.text  # attempts table lists every word
     assert get_score()["score"] == 6

@@ -89,7 +89,9 @@ def show_word(request: Request, user=Depends(require_child)):
 
         # Attempt 1: audio only — word must NOT appear in page source
         # Attempt 2: word shown visually so child can study it before second try
-        audio_url = get_audio_url(word_row["word"], db) if attempt == 1 else None
+        # Attempt 2 also gets the (hashed, so spelling-free) audio URL, for
+        # the "Hear the word again" button shown after the word is hidden.
+        audio_url = get_audio_url(word_row["word"], db)
         word_text = word_row["word"] if attempt == 2 else None
         phrase_audio_url = get_audio_url("not quite, try again", db) if attempt == 2 else None
         sentence_audio_url = None
@@ -105,6 +107,7 @@ def show_word(request: Request, user=Depends(require_child)):
         "attempt": attempt,
         "word_number": idx + 1,
         "total_words": len(word_queue),
+        "completed_words": min(idx, len(word_queue)),
         "well_done": well_done,
         "phrase_audio_url": phrase_audio_url,
         "sentence_audio_url": sentence_audio_url,

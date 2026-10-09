@@ -222,6 +222,16 @@ input:focus, select:focus {
   margin-bottom: 1.5rem;
   display: flex; align-items: center; gap: 1rem;
 }
+.practice-segments {
+  display: flex; gap: 0.35rem; margin-bottom: 1.5rem;
+}
+.practice-segment {
+  flex: 1; height: 0.9rem; border-radius: 999px;
+  background: var(--border);
+  border: 2px solid var(--border);
+}
+.practice-segment.is-done { background: var(--color-3); border-color: var(--color-3); }
+.practice-segment.is-current { background: var(--surface); border-color: var(--color-1); }
 .attempt-badge {
   background: var(--color-2);
   color: var(--text);

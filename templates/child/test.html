@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Spelling Test — Word {{ word_number }}{% endblock %}
+{% block title %}Spelling Practice{% if not bonus %} — Word {{ word_number }}{% endif %}{% endblock %}
 {% block content %}
 
 {% if well_done %}
@@ -10,12 +10,24 @@
   {% if bonus %}
   Bonus word <span class="attempt-badge">&#11088; +1 point</span>
   {% else %}
-  Word {{ word_number }} of {{ total_words }}
+  Practice {{ word_number }} of {{ total_words }}
   {% if attempt == 2 %}
   <span class="attempt-badge">Second chance!</span>
   {% endif %}
   {% endif %}
 </div>
+
+{% if not bonus %}
+<div class="practice-segments" role="progressbar"
+     aria-label="Practice progress"
+     aria-valuemin="0" aria-valuemax="{{ total_words }}"
+     aria-valuenow="{{ completed_words }}"
+     aria-valuetext="{{ completed_words }} of {{ total_words }} words finished">
+  {% for n in range(1, total_words + 1) %}
+  <span class="practice-segment{% if n <= completed_words %} is-done{% elif n == word_number %} is-current{% endif %}"></span>
+  {% endfor %}
+</div>
+{% endif %}
 
 <div id="test-root"
   data-attempt="{{ attempt }}"
@@ -54,6 +66,13 @@
   <button type="button" id="ready-btn" class="btn btn-secondary btn-large">
     I'm Ready — Hide Word
   </button>
+  {% if audio_url %}
+  {# Shown by JS only after the word is hidden; replays audio, never the spelling #}
+  <button type="button" id="replay-btn" class="btn btn-secondary" style="display:none">
+    &#9654; Hear the word again
+  </button>
+  <audio id="word-audio" src="{{ audio_url }}" preload="auto"></audio>
+  {% endif %}
   {% endif %}
 
   <div id="answer-section" style="display:none">
