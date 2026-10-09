@@ -1,4 +1,4 @@
-"""Badges, medals and trophies for spelling.
+"""Badges, medals and trophies for spelling and arithmetic.
 
 * Badge: final score >= 16/20, at most one per child per Europe/London
   calendar day. The first qualifying practice of the day earns it.
@@ -7,11 +7,18 @@
 * Trophy: one per list, at the child's first ordinary first attempt at a
   word from that list. Backfilled trophies are silent.
 
+A badge is one per child per London day across BOTH subjects: both read the
+same test_badges table, and arithmetic sessions live in test_sessions too.
+Arithmetic medals count distinct directions first secured; arithmetic
+trophies are one per ladder rung (group_id = rung number).
+
 Only every third badge unlocks a game (see game_rewards.py).
 """
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from services import arithmetic_progression as arith
+from services.arithmetic_facts import rung_name
 from services.spelling_progression import SUBJECT, load_history, mastered_word_ids
 
 LONDON = ZoneInfo("Europe/London")
@@ -50,38 +57,43 @@ def award_session_badge(user_id: int, session_id: int, session_score: int, db,
     return True
 
 
-def record_mastery_and_medals(user_id: int, db, now: datetime | None = None) -> list[int]:
-    """Record newly mastered words as first-mastered, then award any medal
-    thresholds reached. Returns the thresholds of the medals earned now."""
+def _record_medals(user_id: int, db, subject: str, mastered_keys: list[str],
+                   now: datetime | None) -> list[int]:
     now_s = (now or datetime.now(timezone.utc)).isoformat()
-    hist = load_history(user_id, db)
-    known = {
-        r["item_key"] for r in db.execute(
-            "SELECT item_key FROM first_mastered WHERE user_id=? AND subject=?",
-            (user_id, SUBJECT),
-        ).fetchall()
-    }
-    for wid in sorted(mastered_word_ids(hist)):
-        if str(wid) not in known:
-            db.execute(
-                """INSERT OR IGNORE INTO first_mastered (user_id, subject, item_key, mastered_at)
-                   VALUES (?,?,?,?)""",
-                (user_id, SUBJECT, str(wid), now_s),
-            )
+    for key in mastered_keys:
+        db.execute(
+            """INSERT OR IGNORE INTO first_mastered (user_id, subject, item_key, mastered_at)
+               VALUES (?,?,?,?)""",
+            (user_id, subject, key, now_s),
+        )
     total = db.execute(
         "SELECT COUNT(*) AS c FROM first_mastered WHERE user_id=? AND subject=?",
-        (user_id, SUBJECT),
+        (user_id, subject),
     ).fetchone()["c"]
     earned = []
     for threshold in range(MEDAL_STEP, total + 1, MEDAL_STEP):
         cur = db.execute(
             """INSERT OR IGNORE INTO milestone_medals
                (user_id, subject, threshold, earned_at, silent) VALUES (?,?,?,?,0)""",
-            (user_id, SUBJECT, threshold, now_s),
+            (user_id, subject, threshold, now_s),
         )
         if cur.rowcount:
             earned.append(threshold)
     return earned
+
+
+def record_mastery_and_medals(user_id: int, db, now: datetime | None = None) -> list[int]:
+    """Record newly mastered words as first-mastered, then award any medal
+    thresholds reached. Returns the thresholds of the medals earned now."""
+    mastered = sorted(mastered_word_ids(load_history(user_id, db)))
+    return _record_medals(user_id, db, SUBJECT, [str(w) for w in mastered], now)
+
+
+def record_arithmetic_mastery_and_medals(user_id: int, db, now: datetime | None = None) -> list[int]:
+    """The same for arithmetic: a medal for each ten distinct directions
+    first secured. A direction counts once, ever."""
+    secure = sorted(arith.secure_keys(arith.load_history(user_id, db)))
+    return _record_medals(user_id, db, arith.SUBJECT, secure, now)
 
 
 def award_start_trophies(user_id: int, db, now: datetime | None = None) -> list[str]:
@@ -107,4 +119,28 @@ def award_start_trophies(user_id: int, db, now: datetime | None = None) -> list[
             (user_id, SUBJECT, r["id"], now_s),
         )
         names.append(r["name"])
+    return names
+
+
+def award_arithmetic_trophies(user_id: int, db, now: datetime | None = None) -> list[str]:
+    """Award a trophy for each ladder rung the child has started (an
+    ordinary first attempt at one of its directions, right or wrong) and has
+    no trophy for yet. Returns the names of the rungs awarded now."""
+    now_s = (now or datetime.now(timezone.utc)).isoformat()
+    have = {
+        r["group_id"] for r in db.execute(
+            "SELECT group_id FROM start_trophies WHERE user_id=? AND subject=?",
+            (user_id, arith.SUBJECT),
+        ).fetchall()
+    }
+    names = []
+    for rung, _ in arith.started_rungs(user_id, db):
+        if rung in have:
+            continue
+        db.execute(
+            """INSERT OR IGNORE INTO start_trophies
+               (user_id, subject, group_id, earned_at, silent) VALUES (?,?,?,?,0)""",
+            (user_id, arith.SUBJECT, rung, now_s),
+        )
+        names.append(f"the {rung_name(rung)} times tables")
     return names

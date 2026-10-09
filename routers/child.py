@@ -3,6 +3,7 @@ from fastapi.responses import RedirectResponse
 
 from database import get_db
 from auth import require_child
+from services.arithmetic_facts import rung_name
 from services.game_rewards import unlocked_files, next_locked, badges_until_next
 from templates_env import templates, MINI_GAMES, REWARD_GAMES
 
@@ -21,7 +22,9 @@ def child_dashboard(request: Request, user=Depends(require_child)):
         ).fetchall()
         child = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         recent_sessions = db.execute(
-            """SELECT ts.*, COALESCE(wl.name, 'Mixed practice') AS list_name
+            """SELECT ts.*, COALESCE(wl.name,
+                      CASE ts.subject WHEN 'arithmetic' THEN 'Times tables' ELSE 'Mixed practice' END
+                      ) AS list_name
                FROM test_sessions ts LEFT JOIN word_lists wl ON wl.id=ts.list_id
                WHERE ts.user_id=? ORDER BY ts.timestamp DESC LIMIT 5""",
             (user_id,),
@@ -41,6 +44,19 @@ def child_dashboard(request: Request, user=Depends(require_child)):
                ORDER BY wl.position, wl.id""",
             (user_id,),
         ).fetchall()
+
+        arithmetic_medals = db.execute(
+            """SELECT threshold FROM milestone_medals
+               WHERE user_id=? AND subject='arithmetic' ORDER BY threshold""",
+            (user_id,),
+        ).fetchall()
+        arithmetic_trophies = [
+            {"name": rung_name(t["group_id"])} for t in db.execute(
+                """SELECT group_id FROM start_trophies
+                   WHERE user_id=? AND subject='arithmetic' ORDER BY group_id""",
+                (user_id,),
+            ).fetchall()
+        ]
 
         # Supportive per-list count: how many of its words the child has tried.
         # Deliberately no mastered/weak/stale split on the child's page.
@@ -74,6 +90,8 @@ def child_dashboard(request: Request, user=Depends(require_child)):
         "badge_count": badge_count,
         "medals": medals,
         "trophies": trophies,
+        "arithmetic_medals": arithmetic_medals,
+        "arithmetic_trophies": arithmetic_trophies,
         "my_games": my_games,
         "mystery": mystery,
         "discovered_count": len(my_games),

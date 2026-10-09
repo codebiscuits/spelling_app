@@ -270,6 +270,14 @@ input:focus, select:focus {
 }
 .answer-input:focus { border-color: var(--color-1); outline: none; }
 #spell-form { display: flex; flex-direction: column; align-items: center; gap: 1rem; max-width: 500px; margin: 0 auto; }
+#arith-form { display: flex; flex-direction: column; align-items: center; gap: 1rem; max-width: 500px; margin: 0 auto; }
+.question-card { text-align: center; margin: 1rem 0; }
+.question-text { font-size: 3rem; font-weight: 800; color: var(--color-1); margin: 1rem 0; }
+.clue-box { background: var(--surface); border: 2px solid var(--color-3); border-radius: var(--radius); padding: 1rem; margin-bottom: 1rem; }
+.clue-text { font-size: 1.2rem; font-weight: 600; margin: 0 0 0.5rem; }
+.clue-lines { list-style: none; padding: 0; margin: 0; font-size: 1.4rem; font-weight: 700; }
+.clue-diagram { overflow-x: auto; color: var(--color-1); }
+.clue-diagram svg { max-width: 100%; height: auto; }
 .audio-unavailable { color: #888; font-style: italic; }
 
 /* ── Results ── */

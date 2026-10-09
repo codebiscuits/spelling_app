@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Keep Practising{% endblock %}
+{% block content %}
+<div class="results-card">
+  <div class="question-text">{{ completed_fact }}</div>
+  <p>Let's keep practising!</p>
+  <div class="results-actions">
+    <a href="/arithmetic/question?continue=1" class="btn btn-primary btn-large">Next question</a>
+  </div>
+</div>
+{% endblock %}

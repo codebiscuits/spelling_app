@@ -7,13 +7,13 @@
     <span class="score-number">{{ session.score }}</span>
     <span class="score-denom">/ {{ session.max_score }}</span>
   </div>
-  <p class="list-name">Mixed practice</p>
+  <p class="list-name">{{ subject_label|default("Mixed practice") }}</p>
 
   {% if gamification.badge_awarded %}
   <div class="award-banner award-badge"><img src="/static/img/badge.svg" class="banner-icon" alt=""> Badge earned for today!</div>
   {% endif %}
   {% for threshold in gamification.medals %}
-  <div class="award-banner award-medal"><img src="/static/img/medal.svg" class="banner-icon" alt=""> Medal earned: {{ threshold }} words mastered!</div>
+  <div class="award-banner award-medal"><img src="/static/img/medal.svg" class="banner-icon" alt=""> Medal earned: {{ threshold }} {{ medal_noun|default("words") }} mastered!</div>
   {% endfor %}
   {% for list_name in gamification.trophies %}
   <div class="award-banner award-trophy"><img src="/static/img/trophy.svg" class="banner-icon" alt=""> Trophy earned: you've started {{ list_name }}!</div>
@@ -31,7 +31,7 @@
 
   <table class="attempts-table">
     <thead>
-      <tr><th>Word</th><th>Attempt</th><th>Result</th></tr>
+      <tr><th>{{ item_header|default("Word") }}</th><th>Attempt</th><th>Result</th></tr>
     </thead>
     <tbody>
       {% set ns = namespace(last_word='', attempt1_correct=false) %}
@@ -76,7 +76,7 @@
   {% endif %}
 
   <div class="results-actions">
-    <a href="/test/start" class="btn btn-primary">Practice Again</a>
+    <a href="{{ again_url|default("/test/start") }}" class="btn btn-primary">Practice Again</a>
     <a href="/child/dashboard" class="btn btn-secondary">My Dashboard</a>
   </div>
 </div>

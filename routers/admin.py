@@ -191,7 +191,9 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
         if not child:
             raise HTTPException(404)
         sessions = db.execute(
-            """SELECT ts.*, COALESCE(wl.name, 'Mixed practice') AS list_name
+            """SELECT ts.*, COALESCE(wl.name,
+                      CASE ts.subject WHEN 'arithmetic' THEN 'Times tables' ELSE 'Mixed practice' END
+                      ) AS list_name
                FROM test_sessions ts LEFT JOIN word_lists wl ON wl.id=ts.list_id
                WHERE ts.user_id=? ORDER BY ts.timestamp DESC LIMIT 20""",
             (child_id,),

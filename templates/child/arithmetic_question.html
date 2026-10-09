@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Times Tables Practice{% if not bonus %} — Question {{ question_number }}{% endif %}{% endblock %}
+{% block content %}
+
+{% if well_done %}
+<div class="well-done-banner">Well done! &#127775;</div>
+{% endif %}
+
+{% if is_new %}
+<div class="new-word-banner">New fact! &#10024;</div>
+{% endif %}
+
+<div class="test-progress">
+  {% if bonus %}
+  Bonus question <span class="attempt-badge">&#11088; +1 point</span>
+  {% else %}
+  Practice {{ question_number }} of {{ total_questions }}
+  {% if attempt == 2 %}
+  <span class="attempt-badge">Second chance!</span>
+  {% endif %}
+  {% endif %}
+</div>
+
+{% if not bonus %}
+<div class="practice-segments" role="progressbar"
+     aria-label="Practice progress"
+     aria-valuemin="0" aria-valuemax="{{ total_questions }}"
+     aria-valuenow="{{ completed_questions }}"
+     aria-valuetext="{{ completed_questions }} of {{ total_questions }} questions finished">
+  {% for n in range(1, total_questions + 1) %}
+  <span class="practice-segment{% if n <= completed_questions %} is-done{% elif n == question_number %} is-current{% endif %}"></span>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div id="arith-root" data-attempt="{{ attempt }}"></div>
+
+<div id="question-card" class="question-card">
+  {% if clue_lines or clue_text %}
+  <div class="clue-box">
+    <p class="clue-text">{{ clue_text }}</p>
+    {% if clue_lines %}
+    <ul class="clue-lines">
+      {% for line in clue_lines %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if clue_svg %}<div class="clue-diagram">{{ clue_svg|safe }}</div>{% endif %}
+  </div>
+  {% endif %}
+  <div class="question-text">{{ question }} = ?</div>
+</div>
+
+<form method="post" action="/arithmetic/question" id="arith-form">
+  <input type="hidden" name="fact_key" value="{{ fact_key }}">
+  <input type="hidden" name="response_ms" id="response-ms" value="">
+  <label for="answer" class="sr-only">Type your answer</label>
+  <input type="text" id="answer" name="answer" class="answer-input"
+         inputmode="numeric" pattern="[0-9]*" autocomplete="off" autofocus
+         placeholder="Type the answer here…">
+  <button type="submit" class="btn btn-primary btn-large">Submit</button>
+</form>
+
+<script src="/static/js/arithmetic.js?v={{ static_version('js/arithmetic.js') }}"></script>
+{% endblock %}
