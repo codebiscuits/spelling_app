@@ -2,13 +2,15 @@
 {% block title %}Progress overview{% endblock %}
 {% block content %}
 <h1>Progress overview</h1>
-<p class="subtitle">Completed ordinary practices only. Top-ups never count. "Last {{ recent_days }} days" counts practices.</p>
+<p class="subtitle">Completed ordinary practices only. Top-ups never count. "Last {{ recent_days }} days" counts practices.
+  The charts are on each child's spelling and times tables pages.</p>
 
 {% if rows %}
 <table class="admin-table">
   <thead>
     <tr>
       <th rowspan="2">Child</th>
+      <th rowspan="2">Charts</th>
       <th colspan="4">Spelling</th>
       <th colspan="3">Times tables</th>
     </tr>
@@ -21,6 +23,8 @@
     {% for r in rows %}
     <tr>
       <td><a href="/admin/children/{{ r.child.id }}">{{ r.child.name }}</a></td>
+      <td><a href="/admin/children/{{ r.child.id }}/spelling">Spelling charts</a><br>
+          <a href="/admin/children/{{ r.child.id }}/arithmetic">Times tables charts</a></td>
       <td>{% if r.spelling.last_date %}<a href="/admin/children/{{ r.child.id }}/spelling">{{ r.spelling.last_date }}</a>
           {% else %}<a href="/admin/children/{{ r.child.id }}/spelling">None yet</a>{% endif %}</td>
       <td>{{ r.spelling.secure }}</td>

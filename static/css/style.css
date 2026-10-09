@@ -369,7 +369,7 @@ input:focus, select:focus {
 }
 
 /* ── Misc ── */
-.card-row { display: flex; justify-content: center; margin: 1.5rem 0; }
+.card-row { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; margin: 1.5rem 0; }
 section { margin-top: 2rem; }
 h1 { font-size: 2rem; margin-bottom: 0.5rem; }
 h2 { font-size: 1.3rem; }
