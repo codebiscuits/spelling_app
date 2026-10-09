@@ -94,13 +94,12 @@ Awards are calculated automatically after each test:
 
 | Award | Condition |
 |-------|-----------|
-| **Badge** ⭐ | Session score ≥ 16/20 (awarded every qualifying test) |
-| **Medal** 🏅 | ≥ 50% of the list's words spelled correctly first-try (cumulative, once per list) |
-| **Trophy** 🏆 | ≥ 95% first-try correct + all remaining words second-try correct (cumulative, once per list) |
+| **Badge** ⭐ | Final score ≥ 16/20, at most one per child per Europe/London day |
+| **Medal** 🏅 | Every ten distinct words first mastered (latest three first attempts correct) |
+| **Trophy** 🏆 | The first practice attempt at a word from a list the child has not started |
 
-Earning a **trophy** also **unlocks the next year group's lists** automatically:
-- Year 1–2 trophy → unlocks Year 3–4
-- Year 3–4 trophy → unlocks Year 5–6
+Only every third badge unlocks a reward game. The next word list opens automatically
+when a child has been introduced to every word in the lists they have.
 
 ---
 

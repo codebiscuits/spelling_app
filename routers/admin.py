@@ -54,7 +54,11 @@ def create_word_list(
     verify_csrf_token(request, csrf_token)
     yg = parse_year_group(year_group)
     with get_db() as db:
-        db.execute("INSERT INTO word_lists (name, year_group) VALUES (?, ?)", (name.strip(), yg))
+        db.execute(
+            """INSERT INTO word_lists (name, year_group, position)
+               VALUES (?, ?, (SELECT COALESCE(MAX(position),0)+1 FROM word_lists))""",
+            (name.strip(), yg),
+        )
     return RedirectResponse("/admin/lists", status_code=303)
 
 
@@ -120,8 +124,9 @@ def add_word(
     verify_csrf_token(request, csrf_token)
     with get_db() as db:
         db.execute(
-            "INSERT OR IGNORE INTO words (word, list_id) VALUES (?, ?)",
-            (word.strip().lower(), list_id),
+            """INSERT OR IGNORE INTO words (word, list_id, position)
+               VALUES (?, ?, (SELECT COALESCE(MAX(position),0)+1 FROM words WHERE list_id=?))""",
+            (word.strip().lower(), list_id, list_id),
         )
     return RedirectResponse(f"/admin/lists/{list_id}/edit", status_code=303)
 
@@ -194,6 +199,20 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
         badges = db.execute(
             "SELECT * FROM user_badges WHERE user_id=?", (child_id,)
         ).fetchall()
+        badge_count = db.execute(
+            "SELECT COUNT(*) AS cnt FROM test_badges WHERE user_id=?", (child_id,)
+        ).fetchone()["cnt"]
+        medals = db.execute(
+            """SELECT threshold, earned_at, silent FROM milestone_medals
+               WHERE user_id=? AND subject='spelling' ORDER BY threshold""",
+            (child_id,),
+        ).fetchall()
+        trophies = db.execute(
+            """SELECT wl.name, st.earned_at, st.silent FROM start_trophies st
+               JOIN word_lists wl ON wl.id=st.group_id
+               WHERE st.user_id=? AND st.subject='spelling' ORDER BY wl.position, wl.id""",
+            (child_id,),
+        ).fetchall()
         unlocked = db.execute(
             """SELECT ul.list_id, ul.unlocked_at, wl.name FROM user_list_unlocks ul
                JOIN word_lists wl ON wl.id=ul.list_id WHERE ul.user_id=?""",
@@ -214,7 +233,8 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
     csrf = generate_csrf_token(request)
     return templates.TemplateResponse(request, "admin/child_detail.html", {
         "child": child, "sessions": sessions,
-        "badges": badges, "unlocked": unlocked, "all_lists": all_lists,
+        "badges": badges, "badge_count": badge_count, "medals": medals,
+        "trophies": trophies, "unlocked": unlocked, "all_lists": all_lists,
         "word_stats": word_stats, "csrf_token": csrf,
         "reward_games": REWARD_GAMES, "unlocked_reward_files": unlocked_reward_files,
     })

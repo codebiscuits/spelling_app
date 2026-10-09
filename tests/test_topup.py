@@ -122,7 +122,21 @@ def test_wrong_bonus_answer_scores_nothing(child_client):
 def test_pool_words_after_missed_exhausted_then_cap_at_20(child_client):
     words = ["apple", "banana", "carrot", "dolphin", "eagle", "forest",
              "garden", "harbor", "island", "jungle", "kitten", "lantern"]
-    setup_practice_list(child_client.child_id, words)
+    _, word_ids = setup_practice_list(child_client.child_id, words)
+    # Every word has been seen once, so nothing is locked and the practice
+    # draws 10 of the 12; the other 2 are the only possible fresh top-ups.
+    with app_db() as db:
+        old = db.execute(
+            "INSERT INTO test_sessions (timestamp, user_id, list_id, score, max_score) VALUES ('2025-01-01',?,NULL,0,20)",
+            (child_client.child_id,),
+        ).lastrowid
+        for wid in word_ids.values():
+            db.execute(
+                """INSERT INTO spelling_attempts
+                   (timestamp, user_id, word_id, correct, attempt_number, session_id)
+                   VALUES ('2025-01-01',?,?,1,1,?)""",
+                (child_client.child_id, wid, old),
+            )
 
     state = {"target": None}
 

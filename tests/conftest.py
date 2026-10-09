@@ -174,15 +174,18 @@ def setup_practice_list(child_id, words, year_group=None, sentences=None, name="
     """
     sentences = sentences or {}
     with app_db() as db:
+        # Like the admin pages: a new list goes at the end of the curriculum
         cur = db.execute(
-            "INSERT INTO word_lists (name, year_group) VALUES (?,?)", (name, year_group)
+            """INSERT INTO word_lists (name, year_group, position)
+               VALUES (?,?,(SELECT COALESCE(MAX(position),0)+1 FROM word_lists))""",
+            (name, year_group),
         )
         list_id = cur.lastrowid
         word_ids = {}
-        for w in words:
+        for pos, w in enumerate(words, start=1):
             cur = db.execute(
-                "INSERT INTO words (word, list_id, context_sentence) VALUES (?,?,?)",
-                (w, list_id, sentences.get(w)),
+                "INSERT INTO words (word, list_id, context_sentence, position) VALUES (?,?,?,?)",
+                (w, list_id, sentences.get(w), pos),
             )
             word_ids[w] = cur.lastrowid
         db.execute(

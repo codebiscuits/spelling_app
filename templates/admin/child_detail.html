@@ -9,18 +9,35 @@
 <p>DOB: {{ child.dob }} &nbsp;|&nbsp; Mode: {{ child.mode }}</p>
 
 <section>
-  <h2>Badges &amp; Trophies</h2>
-  {% if badges %}
+  <h2>Badges, medals &amp; trophies</h2>
+  <p>Badges: {{ badge_count }}</p>
+  <h3>Medals</h3>
+  {% if medals %}
   <ul class="badge-list">
-    {% for b in badges %}
-    <li>
-      {{ '&#127942;' if b.badge_type == 'badge' else '&#127881;' }}
-      {{ b.badge_type|title }} — List #{{ b.list_id }} — {{ b.earned_at[:10] }}
-    </li>
+    {% for m in medals %}
+    <li>&#127941; {{ m.threshold }} words mastered &mdash; {{ m.earned_at[:10] }}{% if m.silent %} (backfilled){% endif %}</li>
     {% endfor %}
   </ul>
   {% else %}
   <p>None yet.</p>
+  {% endif %}
+  <h3>Trophies</h3>
+  {% if trophies %}
+  <ul class="badge-list">
+    {% for t in trophies %}
+    <li>&#127942; Started {{ t.name }} &mdash; {{ t.earned_at[:10] }}{% if t.silent %} (backfilled){% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>None yet.</p>
+  {% endif %}
+  {% if badges %}
+  <h3>Earlier awards (old rules)</h3>
+  <ul class="badge-list">
+    {% for b in badges %}
+    <li>{{ b.badge_type|title }} &mdash; List #{{ b.list_id }} &mdash; {{ b.earned_at[:10] }}</li>
+    {% endfor %}
+  </ul>
   {% endif %}
 </section>
 

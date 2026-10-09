@@ -107,21 +107,24 @@ Children log in with their name and password. From their dashboard they can:
 | Wrong on both attempts | 0 |
 | **Maximum per test** | **20** |
 
+### Which words are practised
+
+Each practice is ten words: one **focus word** (the next new word in curriculum
+order, kept in every practice until it is spelled right first try three times in
+a row), five of the weakest words, and four mastered words that have gone longest
+without practice. A new child's first practice is ten new words. Lists and words
+follow an explicit curriculum order; the next list opens when every word in the
+child's lists has been introduced. See `services/spelling_progression.py`.
+
 ### Badges, medals, and trophies
 
 | Award | Condition | Frequency |
 |---|---|---|
-| ⭐ Badge | Session score ≥ 16/20 | Every qualifying session |
-| 🏅 Medal | ≥ 50% of the list's words spelled correctly first-try (cumulative, across all sessions) | Once per list |
-| 🏆 Trophy | ≥ 95% of words first-try correct + all remaining words second-try correct (cumulative) | Once per list |
+| ⭐ Badge | Final score ≥ 16/20 | At most one per child per Europe/London day |
+| 🏅 Medal | Ten more distinct words first mastered (10, 20, 30 ...) | A word counts once, ever |
+| 🏆 Trophy | First practice attempt at a word from a new list | Once per list |
 
-### List unlock
-
-The next year group's lists unlock automatically when a child earns a **trophy** for the current list:
-- ≥ 95% of words spelled correctly on the **first attempt** (at least once, across any session)
-- All remaining words spelled correctly on the **second attempt** at least once
-
-This ensures children are genuinely ready before moving on.
+Only every third badge unlocks a reward game. Medals and trophies do not.
 
 ## Project structure
 

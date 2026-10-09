@@ -10,20 +10,18 @@
   <p class="list-name">Mixed practice</p>
 
   {% if gamification.badge_awarded %}
-  <div class="award-banner award-badge"><img src="/static/img/badge.svg" class="banner-icon" alt=""> Badge earned! Great score!</div>
+  <div class="award-banner award-badge"><img src="/static/img/badge.svg" class="banner-icon" alt=""> Badge earned for today!</div>
   {% endif %}
-  {% if gamification.medal_awarded %}
-  <div class="award-banner award-medal"><img src="/static/img/medal.svg" class="banner-icon" alt=""> Medal earned! You've mastered half this list!</div>
-  {% endif %}
-  {% if gamification.trophy_awarded %}
-  <div class="award-banner award-trophy"><img src="/static/img/trophy.svg" class="banner-icon" alt=""> Trophy earned! You've mastered this list!</div>
-  {% endif %}
-  {% if gamification.lists_unlocked %}
-  <div class="award-banner award-unlock">🌟 New word list{{ 's' if gamification.lists_unlocked|length > 1 else '' }} unlocked!</div>
-  {% endif %}
+  {% for threshold in gamification.medals %}
+  <div class="award-banner award-medal"><img src="/static/img/medal.svg" class="banner-icon" alt=""> Medal earned: {{ threshold }} words mastered!</div>
+  {% endfor %}
+  {% for list_name in gamification.trophies %}
+  <div class="award-banner award-trophy"><img src="/static/img/trophy.svg" class="banner-icon" alt=""> Trophy earned: you've started {{ list_name }}!</div>
+  {% endfor %}
   {% if new_game %}
-  <div class="award-banner award-unlock">🎁 New game unlocked: {{ new_game.name }}!</div>
+  <div class="award-banner award-unlock">🎁 A new game is ready!</div>
   <div class="new-game-card">
+    <p class="game-name">{{ new_game.name }}</p>
     <p class="game-desc">{{ new_game.description }}</p>
     {% if games %}
     <a href="/child/games/{{ new_game.file }}" class="btn btn-primary">Play {{ new_game.name }}</a>

@@ -18,12 +18,11 @@ from tests.conftest import (
 )
 
 
-def award(badge=False, medal=False, trophy=False):
+def award(badge=False, medals=(), trophies=()):
     return {
         "badge_awarded": badge,
-        "medal_awarded": medal,
-        "trophy_awarded": trophy,
-        "lists_unlocked": [],
+        "medals": list(medals),
+        "trophies": list(trophies),
     }
 
 
@@ -75,18 +74,45 @@ def test_sixth_badge_unlocks_second_game(db):
     assert result["file"] == REWARD_GAMES[1]["file"]
 
 
-def test_medal_unlocks_immediately(db):
+def test_medal_no_longer_unlocks_a_game(db):
     uid = make_user(db)
-    result = check_and_unlock(uid, award(medal=True), db)
-    assert result is not None
-    assert result["file"] == REWARD_GAMES[0]["file"]
+    assert check_and_unlock(uid, award(medals=[10]), db) is None
+    assert unlocked_files(uid, db) == set()
 
 
-def test_trophy_unlocks_immediately(db):
+def test_trophy_no_longer_unlocks_a_game(db):
     uid = make_user(db)
-    result = check_and_unlock(uid, award(trophy=True), db)
-    assert result is not None
+    assert check_and_unlock(uid, award(trophies=["Year 1\u20132"]), db) is None
+    assert unlocked_files(uid, db) == set()
+
+
+def test_medal_and_trophy_with_third_badge_still_unlock_only_via_the_badge(db):
+    uid = make_user(db)
+    lid = make_list(db)
+    give_badges(db, uid, lid, BADGE_STEP)
+    result = check_and_unlock(uid, award(badge=True, medals=[10], trophies=["x"]), db)
     assert result["file"] == REWARD_GAMES[0]["file"]
+    assert len(unlocked_files(uid, db)) == 1
+    source = db.execute("SELECT source FROM user_game_unlocks WHERE user_id=?", (uid,)).fetchone()
+    assert source["source"] == "badge"
+
+
+def test_fourth_and_fifth_badges_unlock_nothing(db):
+    uid = make_user(db)
+    lid = make_list(db)
+    give_badges(db, uid, lid, BADGE_STEP)
+    check_and_unlock(uid, award(badge=True), db)
+    for n in (4, 5):
+        give_badges(db, uid, lid, 1)
+        assert check_and_unlock(uid, award(badge=True), db) is None, n
+    assert len(unlocked_files(uid, db)) == 1
+
+
+def test_no_unlock_when_the_practice_earned_no_badge_even_at_a_multiple_of_three(db):
+    uid = make_user(db)
+    lid = make_list(db)
+    give_badges(db, uid, lid, BADGE_STEP)
+    assert check_and_unlock(uid, award(badge=False), db) is None
 
 
 def test_badge_one_alone_unlocks_nothing(db):
@@ -105,29 +131,22 @@ def test_badge_two_alone_unlocks_nothing(db):
     assert unlocked_files(uid, db) == set()
 
 
-# ── 2. One-per-session cap ──────────────────────────────────────────────────
-
-def test_trophy_and_medal_same_session_yields_one_unlock(db):
-    uid = make_user(db)
-    result = check_and_unlock(uid, award(medal=True, trophy=True), db)
-    assert result is not None
-    assert result["file"] == REWARD_GAMES[0]["file"]
-    assert len(unlocked_files(uid, db)) == 1
-
-
 # ── 3. Order & exhaustion ────────────────────────────────────────────────────
 
 def test_unlocks_follow_release_order_then_exhaust(db):
     uid = make_user(db)
     sequence = []
+    lid = make_list(db)
     for _ in range(len(REWARD_GAMES)):
-        result = check_and_unlock(uid, award(trophy=True), db)
+        give_badges(db, uid, lid, BADGE_STEP)
+        result = check_and_unlock(uid, award(badge=True), db)
         assert result is not None
         sequence.append(result["file"])
     assert sequence == [g["file"] for g in REWARD_GAMES]
     assert next_locked(uid, db) is None
     # Exhausted: further sessions no-op
-    assert check_and_unlock(uid, award(trophy=True), db) is None
+    give_badges(db, uid, lid, BADGE_STEP)
+    assert check_and_unlock(uid, award(badge=True), db) is None
     assert unlocked_files(uid, db) == {g["file"] for g in REWARD_GAMES}
 
 
@@ -320,7 +339,7 @@ def test_celebration_card_present_on_unlocking_session(child_client):
     resp = run_full_session(child_client)
     assert resp.status_code == 200
     game = REWARD_GAMES[0]
-    assert "New game unlocked" in resp.text
+    assert "A new game is ready!" in resp.text
     assert game["name"] in resp.text
     assert game["description"] in resp.text
 

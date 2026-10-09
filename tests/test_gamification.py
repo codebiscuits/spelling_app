@@ -1,5 +1,15 @@
-from services.gamification import award_session_badge, check_and_award
+from datetime import datetime, timezone
+
+from services.gamification import (
+    award_session_badge,
+    award_start_trophies,
+    record_mastery_and_medals,
+)
 from tests.conftest import make_user, make_list, make_words, make_session, record_attempt
+
+
+def utc(*args):
+    return datetime(*args, tzinfo=timezone.utc)
 
 
 def badge_count(db, uid):
@@ -8,289 +18,207 @@ def badge_count(db, uid):
     ).fetchone()["c"]
 
 
-# ── Badge (session score >= 16) ────────────────────────────────────────────
+def new_session(db, uid, score):
+    lid = make_list(db)
+    return make_session(db, uid, lid, score=score)
+
+
+# ── Badge: score >= 16, at most one per Europe/London day ──────────────────
 
 def test_badge_awarded_at_threshold(db):
     uid = make_user(db)
-    lid = make_list(db)
-    sid = make_session(db, uid, lid, score=16)
-    assert award_session_badge(uid, sid, session_score=16, db=db) is True
+    sid = new_session(db, uid, 16)
+    assert award_session_badge(uid, sid, 16, db, now=utc(2026, 3, 2, 10)) is True
     assert badge_count(db, uid) == 1
-
-
-def test_badge_awarded_above_threshold(db):
-    uid = make_user(db)
-    lid = make_list(db)
-    sid = make_session(db, uid, lid, score=20)
-    assert award_session_badge(uid, sid, session_score=20, db=db) is True
 
 
 def test_badge_not_awarded_below_threshold(db):
     uid = make_user(db)
-    lid = make_list(db)
-    sid = make_session(db, uid, lid, score=15)
-    assert award_session_badge(uid, sid, session_score=15, db=db) is False
+    sid = new_session(db, uid, 15)
+    assert award_session_badge(uid, sid, 15, db, now=utc(2026, 3, 2, 10)) is False
     assert badge_count(db, uid) == 0
 
 
-def test_badge_can_be_awarded_multiple_times(db):
+def test_second_qualifying_practice_same_day_earns_no_second_badge(db):
     uid = make_user(db)
-    lid = make_list(db)
-    make_words(db, lid, ["cat"])
-    for _ in range(3):
-        sid = make_session(db, uid, lid, score=16)
-        assert award_session_badge(uid, sid, session_score=16, db=db) is True
-    assert badge_count(db, uid) == 3
+    first = new_session(db, uid, 18)
+    second = new_session(db, uid, 20)
+    assert award_session_badge(uid, first, 18, db, now=utc(2026, 3, 2, 8)) is True
+    assert award_session_badge(uid, second, 20, db, now=utc(2026, 3, 2, 17)) is False
+    assert badge_count(db, uid) == 1
 
 
-# ── Medal (>= 50% of list words first-try correct) ────────────────────────
-
-def test_medal_awarded_at_50_percent(db):
+def test_badge_is_earned_by_first_qualifying_practice_of_the_day(db):
     uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog"])
-    sid = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid, db=db)
-    assert result["medal_awarded"] is True
+    low = new_session(db, uid, 12)
+    good = new_session(db, uid, 17)
+    assert award_session_badge(uid, low, 12, db, now=utc(2026, 3, 2, 8)) is False
+    assert award_session_badge(uid, good, 17, db, now=utc(2026, 3, 2, 9)) is True
 
 
-def test_medal_not_awarded_below_50_percent(db):
+def test_a_new_day_allows_a_new_badge(db):
     uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog", "fish"])
-    sid = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid, db=db)
-    assert result["medal_awarded"] is False
+    a = new_session(db, uid, 18)
+    b = new_session(db, uid, 18)
+    assert award_session_badge(uid, a, 18, db, now=utc(2026, 3, 2, 10)) is True
+    assert award_session_badge(uid, b, 18, db, now=utc(2026, 3, 3, 10)) is True
+    assert badge_count(db, uid) == 2
 
 
-def test_medal_not_awarded_twice(db):
+def test_badges_are_counted_per_child(db):
+    alice, bob = make_user(db, "Alice"), make_user(db, "Bob")
+    a = new_session(db, alice, 18)
+    b = new_session(db, bob, 18)
+    assert award_session_badge(alice, a, 18, db, now=utc(2026, 3, 2, 10)) is True
+    assert award_session_badge(bob, b, 18, db, now=utc(2026, 3, 2, 10)) is True
+
+
+def test_london_day_in_summer_differs_from_utc_day(db):
+    """23:30 UTC on 1 June is 00:30 BST on 2 June: a new London day, even
+    though the UTC date is the same as an earlier badge's."""
     uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog"])
-
-    sid1 = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[0], sid1, attempt_number=1, correct=1)
-    r1 = check_and_award(uid, lid, db=db)
-    assert r1["medal_awarded"] is True
-
-    make_session(db, uid, lid)
-    r2 = check_and_award(uid, lid, db=db)
-    assert r2["medal_awarded"] is False
+    a = new_session(db, uid, 18)
+    b = new_session(db, uid, 18)
+    assert award_session_badge(uid, a, 18, db, now=utc(2026, 6, 1, 12)) is True
+    assert award_session_badge(uid, b, 18, db, now=utc(2026, 6, 1, 23, 30)) is True
+    assert badge_count(db, uid) == 2
 
 
-def test_medal_threshold_rounds_up_on_odd_counts(db):
-    """3-word list: ceil(0.5 * 3) = 2, so 1 first-try word is not enough
-    but 2 are."""
+def test_two_utc_days_can_be_one_london_day_in_summer(db):
+    """22:30 UTC on 1 June is 23:30 BST; 00:10 UTC on 2 June is 01:10 BST.
+    These are two London days. But 23:10 UTC and 23:50 UTC on 1 June are
+    00:10 and 00:50 BST on 2 June: one London day, so one badge."""
     uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog", "fish"])
-    sid = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    assert check_and_award(uid, lid, db=db)["medal_awarded"] is False
-    record_attempt(db, uid, wids[1], sid, attempt_number=1, correct=1)
-    assert check_and_award(uid, lid, db=db)["medal_awarded"] is True
+    a = new_session(db, uid, 18)
+    b = new_session(db, uid, 18)
+    assert award_session_badge(uid, a, 18, db, now=utc(2026, 6, 1, 23, 10)) is True
+    assert award_session_badge(uid, b, 18, db, now=utc(2026, 6, 1, 23, 50)) is False
 
 
-def test_medal_ignores_second_try_correct(db):
+def test_winter_london_day_matches_utc_day(db):
     uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog"])
-    sid = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[0], sid, attempt_number=2, correct=1)
-    result = check_and_award(uid, lid, db=db)
-    assert result["medal_awarded"] is False
+    a = new_session(db, uid, 18)
+    b = new_session(db, uid, 18)
+    assert award_session_badge(uid, a, 18, db, now=utc(2026, 1, 10, 23, 30)) is True
+    assert award_session_badge(uid, b, 18, db, now=utc(2026, 1, 11, 0, 30)) is True
 
 
-def test_medal_counts_across_sessions(db):
-    """First-try correct attempts from different sessions all count toward medal."""
+def test_old_badge_rows_count_as_that_days_badge(db):
     uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog", "fish", "bird"])
-
-    sid1 = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[0], sid1, attempt_number=1, correct=1)
-
-    sid2 = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[1], sid2, attempt_number=1, correct=1)
-
-    result = check_and_award(uid, lid, db=db)
-    assert result["medal_awarded"] is True
-
-
-# ── Trophy (>= 95% first-try + all remaining second-try) ──────────────────
-
-def test_trophy_awarded_all_first_try(db):
-    uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog", "fish", "bird", "frog",
-                                "tree", "book", "cake", "rain", "snow"])
-    sid = make_session(db, uid, lid)
-    for wid in wids:
-        record_attempt(db, uid, wid, sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid, db=db)
-    assert result["trophy_awarded"] is True
-
-
-def test_trophy_awarded_95_percent_first_try_rest_second_try(db):
-    """19/20 first-try, last word correct on second try → trophy."""
-    uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, [f"word{i}" for i in range(20)])
-    sid = make_session(db, uid, lid)
-    for wid in wids[:-1]:
-        record_attempt(db, uid, wid, sid, attempt_number=1, correct=1)
-    record_attempt(db, uid, wids[-1], sid, attempt_number=2, correct=1)
-    result = check_and_award(uid, lid, db=db)
-    assert result["trophy_awarded"] is True
-
-
-def test_trophy_not_awarded_if_remaining_word_not_second_try_correct(db):
-    uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, [f"word{i}" for i in range(20)])
-    sid = make_session(db, uid, lid)
-    for wid in wids[:-1]:
-        record_attempt(db, uid, wid, sid, attempt_number=1, correct=1)
-    # Last word never attempted — no second-try correct
-    result = check_and_award(uid, lid, db=db)
-    assert result["trophy_awarded"] is False
-
-
-def test_trophy_not_awarded_below_95_percent_first_try(db):
-    uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, [f"word{i}" for i in range(20)])
-    sid = make_session(db, uid, lid)
-    # Only 18/20 first-try correct (90%)
-    for wid in wids[:18]:
-        record_attempt(db, uid, wid, sid, attempt_number=1, correct=1)
-    for wid in wids[18:]:
-        record_attempt(db, uid, wid, sid, attempt_number=2, correct=1)
-    result = check_and_award(uid, lid, db=db)
-    assert result["trophy_awarded"] is False
-
-
-def test_trophy_not_awarded_twice(db):
-    uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, ["cat", "dog"])
-    sid1 = make_session(db, uid, lid)
-    for wid in wids:
-        record_attempt(db, uid, wid, sid1, attempt_number=1, correct=1)
-    r1 = check_and_award(uid, lid, db=db)
-    assert r1["trophy_awarded"] is True
-
-    make_session(db, uid, lid)
-    r2 = check_and_award(uid, lid, db=db)
-    assert r2["trophy_awarded"] is False
-
-
-def test_trophy_second_try_from_earlier_session_counts(db):
-    """The qualifying second-try-correct can come from any past session."""
-    uid = make_user(db)
-    lid = make_list(db)
-    wids = make_words(db, lid, [f"word{i}" for i in range(20)])
-
-    sid1 = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[-1], sid1, attempt_number=1, correct=0)
-    record_attempt(db, uid, wids[-1], sid1, attempt_number=2, correct=1)
-
-    sid2 = make_session(db, uid, lid)
-    for wid in wids[:-1]:
-        record_attempt(db, uid, wid, sid2, attempt_number=1, correct=1)
-
-    result = check_and_award(uid, lid, db=db)
-    assert result["trophy_awarded"] is True
-
-
-# ── List unlock on trophy ──────────────────────────────────────────────────
-
-def test_trophy_unlocks_next_year_group(db):
-    uid = make_user(db)
-    lid1 = make_list(db, year_group=1)
-    lid3 = make_list(db, year_group=3)
-    wids = make_words(db, lid1, ["cat", "dog"])
-    sid = make_session(db, uid, lid1)
-    for wid in wids:
-        record_attempt(db, uid, wid, sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid1, db=db)
-    assert result["trophy_awarded"] is True
-    assert lid3 in result["lists_unlocked"]
-
-
-def test_trophy_year_group_3_unlocks_year_group_5(db):
-    uid = make_user(db)
-    lid3 = make_list(db, year_group=3)
-    lid5 = make_list(db, year_group=5)
-    wids = make_words(db, lid3, ["cat"])
-    sid = make_session(db, uid, lid3)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid3, db=db)
-    assert result["trophy_awarded"] is True
-    assert lid5 in result["lists_unlocked"]
-
-
-def test_trophy_unlocks_all_lists_in_next_year_group(db):
-    uid = make_user(db)
-    lid1 = make_list(db, "Year 1 list", year_group=1)
-    lid3a = make_list(db, "Year 3 list A", year_group=3)
-    lid3b = make_list(db, "Year 3 list B", year_group=3)
-    wids = make_words(db, lid1, ["cat"])
-    sid = make_session(db, uid, lid1)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid1, db=db)
-    assert sorted(result["lists_unlocked"]) == sorted([lid3a, lid3b])
-
-
-def test_trophy_year_group_5_unlocks_nothing(db):
-    """There is no year group above 5–6."""
-    uid = make_user(db)
-    lid5 = make_list(db, year_group=5)
-    wids = make_words(db, lid5, ["cat"])
-    sid = make_session(db, uid, lid5)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid5, db=db)
-    assert result["trophy_awarded"] is True
-    assert result["lists_unlocked"] == []
-
-
-def test_already_unlocked_list_not_reported_as_newly_unlocked(db):
-    """If the admin pre-unlocked the next list, the trophy should not
-    announce it as a new unlock."""
-    uid = make_user(db)
-    lid1 = make_list(db, year_group=1)
-    lid3 = make_list(db, year_group=3)
+    old = new_session(db, uid, 18)
     db.execute(
-        "INSERT INTO user_list_unlocks (user_id, list_id, unlocked_at) VALUES (?,?,'2025-01-01')",
-        (uid, lid3),
+        "INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
+        (uid, old, "2026-03-02T07:00:00+00:00"),
     )
-    db.commit()
-    wids = make_words(db, lid1, ["cat"])
-    sid = make_session(db, uid, lid1)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid1, db=db)
-    assert result["trophy_awarded"] is True
-    assert result["lists_unlocked"] == []
+    new = new_session(db, uid, 19)
+    assert award_session_badge(uid, new, 19, db, now=utc(2026, 3, 2, 15)) is False
 
 
-def test_trophy_no_unlock_for_list_without_year_group(db):
-    uid = make_user(db)
-    lid = make_list(db, year_group=None)
-    wids = make_words(db, lid, ["cat"])
-    sid = make_session(db, uid, lid)
-    record_attempt(db, uid, wids[0], sid, attempt_number=1, correct=1)
-    result = check_and_award(uid, lid, db=db)
-    assert result["trophy_awarded"] is True
-    assert result["lists_unlocked"] == []
+# ── Medals: one per ten distinct words first mastered ──────────────────────
+
+def master(db, uid, wid, sid, times=3, correct=1):
+    for _ in range(times):
+        record_attempt(db, uid, wid, sid, 1, correct)
 
 
-def test_no_medal_or_trophy_for_empty_list(db):
-    """Badge is still awarded by score alone, but medal/trophy require words."""
+def test_no_medal_before_ten_mastered_words(db):
     uid = make_user(db)
     lid = make_list(db)
-    make_session(db, uid, lid)
-    result = check_and_award(uid, lid, db=db)
-    assert result["medal_awarded"] is False
-    assert result["trophy_awarded"] is False
+    ids = make_words(db, lid, [f"w{i}" for i in range(12)])
+    sid = make_session(db, uid, lid)
+    for wid in ids[:9]:
+        master(db, uid, wid, sid)
+    assert record_mastery_and_medals(uid, db) == []
+
+
+def test_medal_at_ten_and_twenty(db):
+    uid = make_user(db)
+    lid = make_list(db)
+    ids = make_words(db, lid, [f"w{i}" for i in range(25)])
+    sid = make_session(db, uid, lid)
+    for wid in ids[:10]:
+        master(db, uid, wid, sid)
+    assert record_mastery_and_medals(uid, db) == [10]
+    assert record_mastery_and_medals(uid, db) == []  # not awarded twice
+    for wid in ids[10:20]:
+        master(db, uid, wid, sid)
+    assert record_mastery_and_medals(uid, db) == [20]
+
+
+def test_mastery_needs_three_in_a_row_latest(db):
+    uid = make_user(db)
+    lid = make_list(db)
+    ids = make_words(db, lid, [f"w{i}" for i in range(10)])
+    sid = make_session(db, uid, lid)
+    for wid in ids:
+        master(db, uid, wid, sid, times=2)  # only two correct
+    assert record_mastery_and_medals(uid, db) == []
+
+
+def test_remastering_a_forgotten_word_does_not_count_again(db):
+    uid = make_user(db)
+    lid = make_list(db)
+    ids = make_words(db, lid, [f"w{i}" for i in range(11)])
+    sid = make_session(db, uid, lid)
+    for wid in ids[:9]:
+        master(db, uid, wid, sid)
+    master(db, uid, ids[9], sid)
+    assert record_mastery_and_medals(uid, db) == [10]
+    # Word 0 slips, then is mastered again
+    record_attempt(db, uid, ids[0], sid, 1, 0)
+    assert record_mastery_and_medals(uid, db) == []
+    master(db, uid, ids[0], sid)
+    assert record_mastery_and_medals(uid, db) == []
+    count = db.execute(
+        "SELECT COUNT(*) AS c FROM first_mastered WHERE user_id=?", (uid,)
+    ).fetchone()["c"]
+    assert count == 10
+    # An eleventh distinct word is the only thing that moves the count
+    master(db, uid, ids[10], sid)
+    assert record_mastery_and_medals(uid, db) == []
+
+
+def test_top_up_attempts_never_master_a_word(db):
+    uid = make_user(db)
+    lid = make_list(db)
+    ids = make_words(db, lid, [f"w{i}" for i in range(10)])
+    sid = make_session(db, uid, lid)
+    for wid in ids:
+        for _ in range(3):
+            record_attempt(db, uid, wid, sid, attempt_number=3, correct=1)
+    assert record_mastery_and_medals(uid, db) == []
+
+
+# ── Trophies: one per list at the first ordinary first attempt ─────────────
+
+def test_trophy_at_first_attempt_even_if_wrong(db):
+    uid = make_user(db)
+    lid = make_list(db, "Year A")
+    (wid,) = make_words(db, lid, ["cat"])
+    sid = make_session(db, uid, lid)
+    record_attempt(db, uid, wid, sid, 1, correct=0)
+    assert award_start_trophies(uid, db) == ["Year A"]
+    assert award_start_trophies(uid, db) == []
+
+
+def test_no_trophy_for_a_list_never_attempted_or_top_up_only(db):
+    uid = make_user(db)
+    l1 = make_list(db, "One")
+    l2 = make_list(db, "Two")
+    make_words(db, l1, ["cat"])
+    (w2,) = make_words(db, l2, ["dog"])
+    sid = make_session(db, uid, l1)
+    record_attempt(db, uid, w2, sid, attempt_number=3, correct=1)
+    assert award_start_trophies(uid, db) == []
+
+
+def test_one_trophy_per_list_in_the_order_started(db):
+    uid = make_user(db)
+    l1 = make_list(db, "One")
+    l2 = make_list(db, "Two")
+    (w1,) = make_words(db, l1, ["cat"])
+    (w2,) = make_words(db, l2, ["dog"])
+    sid = make_session(db, uid, l1)
+    record_attempt(db, uid, w2, sid, 1, 1)
+    record_attempt(db, uid, w1, sid, 1, 1)
+    assert award_start_trophies(uid, db) == ["Two", "One"]

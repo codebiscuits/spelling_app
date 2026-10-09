@@ -17,26 +17,14 @@
       <div class="badge-card-top">
         <div class="badge-name">{{ lst.name }}</div>
         <div class="badge-icons">
-          {% if lst.id in medal_list_ids %}
-            <img src="/static/img/medal.svg" class="list-award-icon" title="Medal earned!">
-          {% endif %}
           {% if lst.id in trophy_list_ids %}
             <img src="/static/img/trophy.svg" class="list-award-icon" title="Trophy earned!">
           {% endif %}
         </div>
       </div>
       {% if p.total > 0 %}
-      <div class="progress-bar-wrap">
-        <div class="progress-bar">
-          <div class="progress-first" style="width:{{ p.first_pct }}%"></div>
-          <div class="progress-second" style="width:{{ p.second_pct }}%"></div>
-        </div>
-        <div class="word-stats">
-          <span class="stat-label">Total</span><span class="stat-value">{{ p.total }}</span>
-          <span class="stat-label">Mastered</span><span class="stat-value">{{ p.first_try }}</span>
-          <span class="stat-label">Practising</span><span class="stat-value">{{ p.practising }}</span>
-          <span class="stat-label">New</span><span class="stat-value">{{ p.new }}</span>
-        </div>
+      <div class="word-stats">
+        <span class="stat-label">Words practised</span><span class="stat-value">{{ p.practised }} of {{ p.total }}</span>
       </div>
       {% endif %}
     </div>
@@ -103,14 +91,14 @@
     {% for m in medals %}
     <div class="award-item">
       <img src="/static/img/medal.svg" class="award-icon" alt="Medal">
-      <div class="award-label">{{ m.list_name }}</div>
+      <div class="award-label">{{ m.threshold }} words mastered</div>
     </div>
     {% endfor %}
 
     {% for t in trophies %}
     <div class="award-item">
       <img src="/static/img/trophy.svg" class="award-icon" alt="Trophy">
-      <div class="award-label">{{ t.list_name }}</div>
+      <div class="award-label">Started {{ t.list_name }}</div>
     </div>
     {% endfor %}
 

@@ -24,9 +24,16 @@ def get_score(session_id=None):
 
 # ── Starting a test ────────────────────────────────────────────────────────
 
-def test_start_redirects_to_dashboard_when_no_lists_unlocked(child_client):
+def test_child_with_no_lists_is_given_the_earliest_list(child_client):
     resp = child_client.get("/test/start", follow_redirects=False)
-    assert resp.headers["location"] == "/child/dashboard"
+    assert resp.headers["location"] == "/test/word"
+    with app_db() as db:
+        rows = db.execute(
+            """SELECT wl.name FROM user_list_unlocks ul JOIN word_lists wl ON wl.id=ul.list_id
+               WHERE ul.user_id=?""",
+            (child_client.child_id,),
+        ).fetchall()
+    assert [r["name"] for r in rows] == ["Year 1\u20132"]
 
 
 def test_start_redirects_to_dashboard_when_unlocked_list_is_empty(child_client):
@@ -250,41 +257,102 @@ def test_results_offers_games_at_half_score(child_client):
     assert "/child/games/" in resp.text
 
 
-def test_perfect_run_awards_medal_trophy_and_unlocks_next_year(child_client):
-    """Mastering a year-1 list first try earns medal + trophy and unlocks
-    the year-3 curriculum list."""
-    setup_practice_list(child_client.child_id, ["xylophone"], year_group=1)
+def test_first_practice_earns_start_trophy_and_badge_but_no_medal_or_list_unlock(child_client):
+    list_id, _ = setup_practice_list(
+        child_client.child_id, [f"word{c}" for c in "abcdefghij"], year_group=1, name="Start"
+    )
 
     resp = run_full_test(child_client, lambda w: w)
-    assert "Medal earned!" in resp.text
-    assert "Trophy earned!" in resp.text
-    assert "unlocked!" in resp.text
+    assert "Trophy earned: you&#39;ve started Start!" in resp.text or \
+        "Trophy earned: you've started Start!" in resp.text
+    assert "Badge earned for today!" in resp.text
+    assert "Medal earned" not in resp.text
+    assert "words mastered" not in resp.text
 
     with app_db() as db:
-        badge_types = {
-            r["badge_type"] for r in db.execute(
-                "SELECT badge_type FROM user_badges WHERE user_id=?",
-                (child_client.child_id,),
-            ).fetchall()
-        }
-        unlocked_year_groups = {
-            r["year_group"] for r in db.execute(
-                """SELECT wl.year_group FROM user_list_unlocks ul
-                   JOIN word_lists wl ON wl.id=ul.list_id WHERE ul.user_id=?""",
-                (child_client.child_id,),
-            ).fetchall()
-        }
-    assert badge_types == {"medal", "trophy"}
-    assert 3 in unlocked_year_groups  # seeded Year 3–4 curriculum list
+        trophies = db.execute(
+            "SELECT group_id, silent FROM start_trophies WHERE user_id=?", (child_client.child_id,)
+        ).fetchall()
+        old_awards = db.execute("SELECT COUNT(*) AS c FROM user_badges").fetchone()["c"]
+    assert [(t["group_id"], t["silent"]) for t in trophies] == [(list_id, 0)]
+    assert old_awards == 0  # the old award table is no longer written
+
+
+def test_new_word_label_only_at_introduction(child_client):
+    setup_practice_list(child_client.child_id, ["xylophone"])
+    child_client.get("/test/start")
+    first = child_client.get("/test/word")
+    assert "New word!" in first.text
+    assert "xylophone" not in first.text
+    # Finish this practice, then start another: the word is no longer new
+    word_id, word, _ = current_word(child_client)
+    submit_answer(child_client, word_id, word)
+    child_client.get("/test/results")
+    child_client.get("/test/start")
+    again = child_client.get("/test/word")
+    assert "New word!" not in again.text
 
 
 def test_failed_run_awards_nothing(child_client):
     setup_practice_list(child_client.child_id, ["xylophone"], year_group=1)
 
     resp = run_full_test(child_client, lambda w: "wrong")
-    assert "Medal earned!" not in resp.text
-    assert "Trophy earned!" not in resp.text
+    assert "Medal earned" not in resp.text
+    assert "Badge earned" not in resp.text
 
     with app_db() as db:
         count = db.execute("SELECT COUNT(*) AS c FROM user_badges").fetchone()["c"]
     assert count == 0
+
+
+def test_only_one_badge_per_day_but_every_practice_still_earns_game_time(child_client):
+    setup_practice_list(child_client.child_id, [f"word{c}" for c in "abcdefghij"])
+    first = run_full_test(child_client, lambda w: w)
+    assert "Badge earned for today!" in first.text
+    second = run_full_test(child_client, lambda w: w)
+    assert "Badge earned for today!" not in second.text
+    assert "Pick a game to play!" in second.text  # game time is unchanged
+    with app_db() as db:
+        count = db.execute(
+            "SELECT COUNT(*) AS c FROM test_badges WHERE user_id=?", (child_client.child_id,)
+        ).fetchone()["c"]
+    assert count == 1
+
+
+def test_tenth_mastered_word_earns_a_medal_banner_and_no_game(child_client):
+    words = [f"word{c}" for c in "abcdefghij"]
+    _, ids = setup_practice_list(child_client.child_id, words)
+    with app_db() as db:
+        sid = db.execute(
+            "INSERT INTO test_sessions (timestamp, user_id, list_id, score, max_score) VALUES ('2025-01-01',?,NULL,0,20)",
+            (child_client.child_id,),
+        ).lastrowid
+        for w in words:
+            for _ in range(2 if w == "worda" else 3):   # worda needs one more correct
+                db.execute(
+                    """INSERT INTO spelling_attempts
+                       (timestamp, user_id, word_id, correct, attempt_number, session_id)
+                       VALUES ('2025-01-01',?,?,1,1,?)""",
+                    (child_client.child_id, ids[w], sid),
+                )
+    resp = run_full_test(child_client, lambda w: w)
+    assert "Medal earned: 10 words mastered!" in resp.text
+    assert "A new game is ready!" not in resp.text
+    assert "Trophy earned" in resp.text  # a list started with no earlier award
+    with app_db() as db:
+        games = db.execute(
+            "SELECT source FROM user_game_unlocks WHERE user_id=?", (child_client.child_id,)
+        ).fetchall()
+    assert all(g["source"] != "medal" for g in games)
+
+
+def test_silent_awards_show_no_banner(child_client):
+    words = [f"word{c}" for c in "abcdefghij"]
+    lid, ids = setup_practice_list(child_client.child_id, words)
+    with app_db() as db:
+        db.execute(
+            "INSERT INTO start_trophies (user_id, subject, group_id, earned_at, silent) VALUES (?,?,?,?,1)",
+            (child_client.child_id, "spelling", lid, "2025-01-01"),
+        )
+    resp = run_full_test(child_client, lambda w: w)
+    assert "Trophy earned" not in resp.text

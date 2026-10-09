@@ -1,108 +1,110 @@
-import math
+"""Badges, medals and trophies for spelling.
+
+* Badge: final score >= 16/20, at most one per child per Europe/London
+  calendar day. The first qualifying practice of the day earns it.
+* Medal: one for each ten distinct words first mastered (a word counts
+  once, ever). Backfilled medals are silent.
+* Trophy: one per list, at the child's first ordinary first attempt at a
+  word from that list. Backfilled trophies are silent.
+
+Only every third badge unlocks a game (see game_rewards.py).
+"""
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from services.spelling_progression import SUBJECT, load_history, mastered_word_ids
+
+LONDON = ZoneInfo("Europe/London")
+BADGE_SCORE = 16
+MEDAL_STEP = 10
 
 
-def award_session_badge(user_id: int, session_id: int, session_score: int, db) -> bool:
-    """Badge — scored >= 16/20 on this session (unlimited, but exactly one
-    per session regardless of how many lists the session touched)."""
-    if session_score < 16:
+def london_date(when: datetime | str):
+    if isinstance(when, str):
+        when = datetime.fromisoformat(when)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(LONDON).date()
+
+
+def award_session_badge(user_id: int, session_id: int, session_score: int, db,
+                        now: datetime | None = None) -> bool:
+    """Award today's badge if the score qualifies and none was earned yet
+    on this London calendar day. Returns True when a badge was awarded."""
+    if session_score < BADGE_SCORE:
         return False
-    now = datetime.now(timezone.utc).isoformat()
+    now = now or datetime.now(timezone.utc)
+    today = london_date(now)
+    # Badges are few per child; compare London dates in Python (SQL has no
+    # time zone database).
+    recent = db.execute(
+        "SELECT earned_at, session_id FROM test_badges WHERE user_id=?", (user_id,)
+    ).fetchall()
+    for row in recent:
+        if row["session_id"] == session_id or london_date(row["earned_at"]) == today:
+            return False
     db.execute(
         "INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
-        (user_id, session_id, now),
+        (user_id, session_id, now.astimezone(timezone.utc).isoformat()),
     )
     return True
 
 
-def check_and_award(user_id: int, list_id: int, db) -> dict:
-    """
-    Evaluate and award per-list medals and trophies.
-
-    Medal  — >= 50% of list words spelled correctly first-try at least once (once per list)
-    Trophy — next list unlocked: >= 95% first-try correct + all remaining second-try correct (once per list)
-    """
-    now = datetime.now(timezone.utc).isoformat()
-    result = {
-        "medal_awarded": False,
-        "trophy_awarded": False,
-        "lists_unlocked": [],
-    }
-
-    existing_user_badges = {
-        r["badge_type"]
-        for r in db.execute(
-            "SELECT badge_type FROM user_badges WHERE user_id=? AND list_id=?",
-            (user_id, list_id),
+def record_mastery_and_medals(user_id: int, db, now: datetime | None = None) -> list[int]:
+    """Record newly mastered words as first-mastered, then award any medal
+    thresholds reached. Returns the thresholds of the medals earned now."""
+    now_s = (now or datetime.now(timezone.utc)).isoformat()
+    hist = load_history(user_id, db)
+    known = {
+        r["item_key"] for r in db.execute(
+            "SELECT item_key FROM first_mastered WHERE user_id=? AND subject=?",
+            (user_id, SUBJECT),
         ).fetchall()
     }
-
-    total_words = db.execute(
-        "SELECT COUNT(*) AS cnt FROM words WHERE list_id=?", (list_id,)
-    ).fetchone()["cnt"]
-
-    if total_words == 0:
-        return result
-
-    first_try_ids = {
-        r["word_id"]
-        for r in db.execute(
-            """SELECT DISTINCT sa.word_id
-               FROM spelling_attempts sa JOIN words w ON w.id=sa.word_id
-               WHERE sa.user_id=? AND w.list_id=? AND sa.attempt_number=1 AND sa.correct=1""",
-            (user_id, list_id),
-        ).fetchall()
-    }
-
-    # --- Medal: >= 50% of words first-try correct at least once ---
-    if "medal" not in existing_user_badges:
-        if len(first_try_ids) >= math.ceil(0.5 * total_words):
+    for wid in sorted(mastered_word_ids(hist)):
+        if str(wid) not in known:
             db.execute(
-                "INSERT OR IGNORE INTO user_badges (user_id, list_id, badge_type, earned_at) VALUES (?,?,?,?)",
-                (user_id, list_id, "medal", now),
+                """INSERT OR IGNORE INTO first_mastered (user_id, subject, item_key, mastered_at)
+                   VALUES (?,?,?,?)""",
+                (user_id, SUBJECT, str(wid), now_s),
             )
-            result["medal_awarded"] = True
+    total = db.execute(
+        "SELECT COUNT(*) AS c FROM first_mastered WHERE user_id=? AND subject=?",
+        (user_id, SUBJECT),
+    ).fetchone()["c"]
+    earned = []
+    for threshold in range(MEDAL_STEP, total + 1, MEDAL_STEP):
+        cur = db.execute(
+            """INSERT OR IGNORE INTO milestone_medals
+               (user_id, subject, threshold, earned_at, silent) VALUES (?,?,?,?,0)""",
+            (user_id, SUBJECT, threshold, now_s),
+        )
+        if cur.rowcount:
+            earned.append(threshold)
+    return earned
 
-    # --- Trophy + list unlock: >= 95% first-try, all remaining second-try ---
-    if "trophy" not in existing_user_badges:
-        threshold = math.ceil(0.95 * total_words)
-        if len(first_try_ids) >= threshold:
-            remaining_ids = {
-                r["id"] for r in db.execute(
-                    "SELECT id FROM words WHERE list_id=?", (list_id,)
-                ).fetchall()
-            } - first_try_ids
 
-            all_remaining_second_try = all(
-                db.execute(
-                    """SELECT 1 FROM spelling_attempts
-                       WHERE user_id=? AND word_id=? AND attempt_number=2 AND correct=1 LIMIT 1""",
-                    (user_id, wid),
-                ).fetchone()
-                for wid in remaining_ids
-            )
-
-            if all_remaining_second_try:
-                db.execute(
-                    "INSERT OR IGNORE INTO user_badges (user_id, list_id, badge_type, earned_at) VALUES (?,?,?,?)",
-                    (user_id, list_id, "trophy", now),
-                )
-                result["trophy_awarded"] = True
-
-                list_row = db.execute(
-                    "SELECT year_group FROM word_lists WHERE id=?", (list_id,)
-                ).fetchone()
-                if list_row and list_row["year_group"]:
-                    current_yg = list_row["year_group"]
-                    next_yg = current_yg + 2 if current_yg in (1, 3) else current_yg + 1
-                    for nl in db.execute(
-                        "SELECT id FROM word_lists WHERE year_group=?", (next_yg,)
-                    ).fetchall():
-                        cur = db.execute(
-                            "INSERT OR IGNORE INTO user_list_unlocks (user_id, list_id, unlocked_at) VALUES (?,?,?)",
-                            (user_id, nl["id"], now),
-                        )
-                        if cur.rowcount:
-                            result["lists_unlocked"].append(nl["id"])
-
-    return result
+def award_start_trophies(user_id: int, db, now: datetime | None = None) -> list[str]:
+    """Award a trophy for each list the child has started and has no trophy
+    for yet. Returns the names of the lists awarded now."""
+    now_s = (now or datetime.now(timezone.utc)).isoformat()
+    rows = db.execute(
+        """SELECT wl.id, wl.name, MIN(sa.id) AS first_attempt
+           FROM spelling_attempts sa
+           JOIN words w ON w.id=sa.word_id
+           JOIN word_lists wl ON wl.id=w.list_id
+           WHERE sa.user_id=? AND sa.attempt_number=1
+             AND wl.id NOT IN (SELECT group_id FROM start_trophies
+                               WHERE user_id=? AND subject=?)
+           GROUP BY wl.id ORDER BY first_attempt""",
+        (user_id, user_id, SUBJECT),
+    ).fetchall()
+    names = []
+    for r in rows:
+        db.execute(
+            """INSERT OR IGNORE INTO start_trophies
+               (user_id, subject, group_id, earned_at, silent) VALUES (?,?,?,?,0)""",
+            (user_id, SUBJECT, r["id"], now_s),
+        )
+        names.append(r["name"])
+    return names

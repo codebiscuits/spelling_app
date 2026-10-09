@@ -32,39 +32,24 @@ def badges_until_next(user_id: int, db) -> int:
 
 
 def check_and_unlock(user_id: int, award: dict, db) -> dict | None:
-    """Apply the §1.3 earning ladder given the session's aggregated award
-    dict (badge from gamification.award_session_badge(), medal/trophy
-    aggregated across the per-list gamification.check_and_award() calls).
-
-    Trigger order: trophy this session -> medal this session -> badge this
-    session AND lifetime badge count is a multiple of BADGE_STEP. At most
-    one unlock is applied (a trophy+medal session still yields one).
-
-    Returns the newly-unlocked MINI_GAMES entry, or None.
+    """Unlock the next reward game when this practice earned a badge and the
+    child's lifetime badge count is now a multiple of BADGE_STEP. Medals and
+    trophies never unlock games. Returns the newly unlocked entry, or None.
     """
-    if award.get("trophy_awarded"):
-        source = "trophy"
-    elif award.get("medal_awarded"):
-        source = "medal"
-    elif award.get("badge_awarded"):
-        badge_count = db.execute(
-            "SELECT COUNT(*) AS cnt FROM test_badges WHERE user_id=?", (user_id,)
-        ).fetchone()["cnt"]
-        source = "badge" if badge_count and badge_count % BADGE_STEP == 0 else None
-    else:
-        source = None
-
-    if source is None:
+    if not award.get("badge_awarded"):
         return None
-
+    badge_count = db.execute(
+        "SELECT COUNT(*) AS cnt FROM test_badges WHERE user_id=?", (user_id,)
+    ).fetchone()["cnt"]
+    if not badge_count or badge_count % BADGE_STEP != 0:
+        return None
     game = next_locked(user_id, db)
     if game is None:
         return None
-
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
         """INSERT OR IGNORE INTO user_game_unlocks
            (user_id, game_file, earned_at, source) VALUES (?,?,?,?)""",
-        (user_id, game["file"], now, source),
+        (user_id, game["file"], now, "badge"),
     )
     return game

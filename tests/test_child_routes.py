@@ -28,8 +28,7 @@ def test_dashboard_shows_unlocked_lists(child_client):
     assert "My Words" in resp.text
 
 
-def test_dashboard_progress_counts(child_client):
-    """Progress splits words into first-try / second-try / practising / new."""
+def test_dashboard_shows_words_practised_without_weak_or_stale_labels(child_client):
     lid, word_ids = setup_practice_list(
         child_client.child_id, ["aa", "bb", "cc", "dd"], name="My Words"
     )
@@ -39,32 +38,43 @@ def test_dashboard_progress_counts(child_client):
             "INSERT INTO test_sessions (timestamp, user_id, list_id, score, max_score) VALUES ('2025-01-01',?,NULL,0,20)",
             (child_client.child_id,),
         ).lastrowid
-
-        def attempt(wid, number, correct):
+        for wid, correct in ((wids[0], 1), (wids[1], 0)):
             db.execute(
                 """INSERT INTO spelling_attempts
                    (timestamp, user_id, word_id, correct, attempt_number, session_id)
-                   VALUES ('2025-01-01',?,?,?,?,?)""",
-                (child_client.child_id, wid, correct, number, sid),
+                   VALUES ('2025-01-01',?,?,?,1,?)""",
+                (child_client.child_id, wid, correct, sid),
             )
-
-        attempt(wids[0], 1, 1)              # first-try correct
-        attempt(wids[1], 1, 0)
-        attempt(wids[1], 2, 1)              # second-try correct
-        attempt(wids[2], 1, 0)
-        attempt(wids[2], 2, 0)              # attempted, never correct
-        # wids[3] never attempted
+        # A top-up attempt does not count as practised
+        db.execute(
+            """INSERT INTO spelling_attempts
+               (timestamp, user_id, word_id, correct, attempt_number, session_id)
+               VALUES ('2025-01-01',?,?,1,3,?)""",
+            (child_client.child_id, wids[2], sid),
+        )
 
     resp = child_client.get("/child/dashboard")
     assert resp.status_code == 200
+    assert "Words practised" in resp.text
+    assert "2 of 4" in resp.text
+    for banned in ("Mastered", "Practising", "weak", "stale", "secure", "rank", "behind"):
+        assert banned.lower() not in resp.text.lower(), banned
 
-    # 1/4 first-try = 25% mastered bar, 1/4 second-try = 25% practising bar
-    assert 'class="progress-first" style="width:25%"' in resp.text
-    assert 'class="progress-second" style="width:25%"' in resp.text
-    # Total 4, Mastered 1, Practising 2 (attempted but not first-try), New 1
-    stats = resp.text.split('class="word-stats"')[1].split("</div>")[0]
-    values = [v.split("<")[0] for v in stats.split('<span class="stat-value">')[1:]]
-    assert values == ["4", "1", "2", "1"]
+
+def test_dashboard_shows_new_medals_and_trophies(child_client):
+    lid, _ = setup_practice_list(child_client.child_id, ["aa"], name="My Words")
+    with app_db() as db:
+        db.execute(
+            "INSERT INTO milestone_medals (user_id, subject, threshold, earned_at, silent) VALUES (?,?,?,?,1)",
+            (child_client.child_id, "spelling", 10, "2025-01-01"),
+        )
+        db.execute(
+            "INSERT INTO start_trophies (user_id, subject, group_id, earned_at, silent) VALUES (?,?,?,?,1)",
+            (child_client.child_id, "spelling", lid, "2025-01-01"),
+        )
+    resp = child_client.get("/child/dashboard")
+    assert "10 words mastered" in resp.text
+    assert "Started My Words" in resp.text
 
 
 def test_dashboard_lists_recent_sessions_as_mixed_practice(child_client):

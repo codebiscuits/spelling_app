@@ -1,11 +1,14 @@
 from fastapi import APIRouter, Request, Depends, Form, HTTPException
 from fastapi.responses import RedirectResponse
+import random
 from datetime import datetime, timezone
 
 from database import get_db
 from auth import require_child
-from services.word_selection import select_words
-from services.gamification import award_session_badge, check_and_award
+from services import spelling_progression as progression
+from services.gamification import (
+    award_session_badge, award_start_trophies, record_mastery_and_medals,
+)
 from services.game_rewards import check_and_unlock, unlocked_files, next_locked, badges_until_next
 from services.tts import get_audio_url, get_sentence_audio_url
 from templates_env import templates, CLASSIC_GAMES, REWARD_GAMES
@@ -21,16 +24,12 @@ BONUS_TARGET = 20
 def start_test(request: Request, user=Depends(require_child)):
     user_id = user["user_id"]
     with get_db() as db:
-        unlock_rows = db.execute(
-            "SELECT list_id FROM user_list_unlocks WHERE user_id=?", (user_id,)
-        ).fetchall()
-        list_ids = [r["list_id"] for r in unlock_rows]
-        if not list_ids:
+        plan = progression.plan_practice(user_id, db, WORDS_PER_TEST)
+        if not plan.word_ids:
             return RedirectResponse("/child/dashboard", status_code=303)
-
-        word_ids = select_words(user_id, list_ids, WORDS_PER_TEST, db)
-        if not word_ids:
-            return RedirectResponse("/child/dashboard", status_code=303)
+        word_ids = list(plan.word_ids)
+        # Presentation order only; which words appear is decided above
+        random.shuffle(word_ids)
 
         word_rows = [
             db.execute("SELECT word, context_sentence FROM words WHERE id=?", (wid,)).fetchone()
@@ -93,6 +92,9 @@ def show_word(request: Request, user=Depends(require_child)):
         # the "Hear the word again" button shown after the word is hidden.
         audio_url = get_audio_url(word_row["word"], db)
         word_text = word_row["word"] if attempt == 2 else None
+        is_new = (not bonus) and progression.is_introduction(
+            user["user_id"], word_id, test["session_id"], db
+        )
         phrase_audio_url = get_audio_url("not quite, try again", db) if attempt == 2 else None
         sentence_audio_url = None
         if attempt == 1 and word_row["context_sentence"]:
@@ -112,6 +114,7 @@ def show_word(request: Request, user=Depends(require_child)):
         "phrase_audio_url": phrase_audio_url,
         "sentence_audio_url": sentence_audio_url,
         "bonus": bonus,
+        "is_new": is_new,
     })
 
 
@@ -209,8 +212,9 @@ def _submit_bonus_word(request: Request, test: dict, word_id: int, answer: str, 
 
 def _next_bonus_word(user_id: int, test: dict, db) -> int | None:
     """Next word to offer as a top-up: words missed on attempt 1 this
-    session first (in the order they were asked), then fresh words from the
-    weighted pool; None when both are exhausted."""
+    session first (in the order they were asked), then the weak-then-stale
+    order, excluding every word already used in this practice or a prior
+    top-up; None when both are exhausted."""
     asked = set(test.get("topup_asked", []))
     missed_rows = db.execute(
         """SELECT word_id FROM spelling_attempts
@@ -221,14 +225,9 @@ def _next_bonus_word(user_id: int, test: dict, db) -> int | None:
         if row["word_id"] not in asked:
             return row["word_id"]
 
-    list_ids = [
-        r["list_id"] for r in db.execute(
-            "SELECT list_id FROM user_list_unlocks WHERE user_id=?", (user_id,)
-        ).fetchall()
-    ]
-    fresh = select_words(user_id, list_ids, 1, db,
-                         exclude=asked | set(test["word_queue"]))
-    return fresh[0] if fresh else None
+    return progression.next_topup_word(
+        user_id, db, exclude=asked | set(test["word_queue"])
+    )
 
 
 @router.get("/topup")
@@ -300,26 +299,16 @@ def results(request: Request, user=Depends(require_child)):
             (session_id,),
         ).fetchall()
 
-        # Determine which lists had words in this session, then run gamification for each
-        distinct_list_ids = db.execute(
-            """SELECT DISTINCT w.list_id
-               FROM spelling_attempts sa JOIN words w ON w.id=sa.word_id
-               WHERE sa.session_id=?""",
-            (session_id,),
-        ).fetchall()
-
-        gamification = {"badge_awarded": False, "medal_awarded": False, "trophy_awarded": False, "lists_unlocked": []}
+        # Close the focus word if this practice completed it, then award.
+        progression.refresh_focus(user_id, db)
+        gamification = {"badge_awarded": False, "medals": [], "trophies": []}
         gamification["badge_awarded"] = award_session_badge(
             user_id, session_id, session["score"], db
         )
-        for row in distinct_list_ids:
-            result = check_and_award(user_id, row["list_id"], db)
-            gamification["medal_awarded"] = gamification["medal_awarded"] or result["medal_awarded"]
-            gamification["trophy_awarded"] = gamification["trophy_awarded"] or result["trophy_awarded"]
-            gamification["lists_unlocked"].extend(result["lists_unlocked"])
+        gamification["medals"] = record_mastery_and_medals(user_id, db)
+        gamification["trophies"] = award_start_trophies(user_id, db)
 
-        # Apply the reward-game earning ladder once per session, after all
-        # per-list gamification has been evaluated (at most one unlock).
+        # Only every third badge unlocks a game (medals and trophies do not)
         new_game = check_and_unlock(user_id, gamification, db)
 
         # Mini game reward: unlock when score >= 10/20 (50%)
