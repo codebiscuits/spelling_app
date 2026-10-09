@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}{{ child.name }} &ndash; {{ title }} progress{% endblock %}
+{% block content %}
+{% set is_spelling = subject == 'spelling' %}
+<h1>{{ child.name }}: {{ title }} progress</h1>
+<p>
+  <a href="/admin/children/{{ child.id }}">Child detail</a> &nbsp;|&nbsp;
+  <a href="/admin/progress">Overview</a> &nbsp;|&nbsp;
+  {% if is_spelling %}<a href="/admin/children/{{ child.id }}/arithmetic">Times tables view</a>
+  {% else %}<a href="/admin/children/{{ child.id }}/spelling">Spelling view</a>{% endif %}
+</p>
+
+<p class="subtitle">One point per completed ordinary practice (at least 10 first attempts). Top-ups and second attempts never count. Click a point to see its evidence.</p>
+
+{% if not is_spelling and position %}
+<section class="admin-section">
+  <h2>Where {{ child.name }} is now</h2>
+  {% if position.rung %}
+  <p>Rung {{ position.rung }}. Tables unlocked: {{ position.tables|join(', ') }}.</p>
+  {% else %}
+  <p>No tables unlocked yet (no practice started).</p>
+  {% endif %}
+  <p>Current focus family:
+    {% if position.focus_family %}{{ position.focus_family }}
+      {% if position.focus_directions %}(still in focus: {{ position.focus_directions|join(', ') }}){% endif %}
+    {% else %}none{% endif %}.</p>
+</section>
+{% endif %}
+
+<section class="admin-section">
+  <h2>Current counts</h2>
+  <p>{{ 'Mastered words' if is_spelling else 'Secure directions' }}: <strong>{{ secure }}</strong>
+    {% if is_spelling %}&nbsp;|&nbsp; Words needing review: <strong>{{ review }}</strong>{% endif %}
+    &nbsp;|&nbsp; Charted practices: <strong>{{ points }}</strong></p>
+</section>
+
+{% if points %}
+<section class="admin-section">
+  <h2>First-try accuracy (%)</h2>
+  <div class="chart-box"><canvas id="chart-accuracy" aria-label="First-try accuracy per practice" role="img"></canvas></div>
+  <h2>{{ 'Mastered words and words needing review' if is_spelling else 'Secure directions' }}</h2>
+  <div class="chart-box"><canvas id="chart-counts" aria-label="Counts after each practice" role="img"></canvas></div>
+  {% if not is_spelling %}
+  <h2>Median response time of correct first attempts (seconds)</h2>
+  <div class="chart-box"><canvas id="chart-time" aria-label="Median response time per practice" role="img"></canvas></div>
+  {% endif %}
+</section>
+<script type="application/json" id="chart-data">{{ chart|tojson }}</script>
+{% else %}
+<p>No completed practices yet, so there is nothing to chart.</p>
+{% endif %}
+
+<section class="admin-section">
+  <h2>Practice history</h2>
+  {% if history %}
+  <table class="admin-table">
+    <thead><tr><th>Date</th><th>Score</th><th>First-try accuracy</th>
+      <th>{{ 'Mastered' if is_spelling else 'Secure' }} after</th>
+      {% if is_spelling %}<th>Review after</th>{% else %}<th>Median time (s)</th>{% endif %}
+      <th></th></tr></thead>
+    <tbody>
+      {% for p in history %}
+      <tr>
+        <td><a href="/admin/children/{{ child.id }}/{{ subject }}/practices/{{ p.session_id }}">{{ p.date }}</a></td>
+        <td>{{ p.score }} / {{ p.max_score }}</td>
+        <td>{% if p.accuracy is not none %}{{ p.accuracy }}% ({{ p.n_correct }}/{{ p.n_first }}){% else %}-{% endif %}</td>
+        <td>{{ p.secure if p.secure is not none else '-' }}</td>
+        {% if is_spelling %}<td>{{ p.review if p.review is not none else '-' }}</td>
+        {% else %}<td>{{ p.median_s if p.median_s is not none else '-' }}</td>{% endif %}
+        <td>{% if not p.completed %}unfinished, not charted{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No practices yet.</p>
+  {% endif %}
+</section>
+
+<section class="admin-section">
+  <h2>{{ 'Words' if is_spelling else 'Directions' }} seen</h2>
+  {% if items %}
+  <p class="subtitle">Click a heading to sort.</p>
+  <table class="admin-table sortable">
+    <thead><tr>
+      <th data-type="text">{{ 'Word' if is_spelling else 'Question' }}</th>
+      <th data-type="text">{{ 'List' if is_spelling else 'Family' }}</th>
+      <th data-type="text">Status</th>
+      <th data-type="num">Ordinary first attempts</th>
+      <th data-type="num">Latest 5 correct</th>
+      <th data-type="text">Last practised</th>
+    </tr></thead>
+    <tbody>
+      {% for it in items %}
+      <tr>
+        <td><a href="{{ item_url }}{{ it.id|string|urlencode }}">{{ it.label }}</a>{% if it.focus %} (focus){% endif %}</td>
+        <td>{{ it.group }}</td>
+        <td>{{ it.status }}</td>
+        <td>{{ it.attempts }}</td>
+        <td>{{ it.recent }}</td>
+        <td>{{ it.last_date }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>Nothing seen yet.</p>
+  {% endif %}
+</section>
+<script src="/static/js/admin_progress.js?v={{ static_version('js/admin_progress.js') }}"></script>
+{% endblock %}

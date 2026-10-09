@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ child.name }} &ndash; {{ title }} practice evidence{% endblock %}
+{% block content %}
+{% set is_spelling = subject == 'spelling' %}
+<h1>{{ child.name }}: {{ title }} practice, {{ ev.date }}</h1>
+<p><a href="/admin/children/{{ child.id }}/{{ subject }}">&#8592; {{ title }} progress</a></p>
+<p>Started {{ ev.date }} {{ ev.time }} (UTC). Score {{ ev.session.score }} / {{ ev.session.max_score }}.
+  First-try accuracy:
+  {% if ev.accuracy is not none %}{{ ev.accuracy }}% ({{ ev.n_correct }}/{{ ev.n_first }}){% else %}no ordinary answers recorded{% endif %}.</p>
+
+<section class="admin-section">
+  <h2>Items asked, in order</h2>
+  {% if ev.asked %}
+  <table class="attempts-table">
+    <thead><tr><th>#</th><th>{{ 'Word' if is_spelling else 'Question' }}</th><th>First attempt</th>
+      {% if not is_spelling %}<th>Time (s)</th>{% endif %}<th>Second attempt</th>
+      {% if not is_spelling %}<th>Time (s)</th>{% endif %}</tr></thead>
+    <tbody>
+      {% for i in ev.asked %}
+      <tr class="{{ 'correct' if i.first and i.first.correct else 'incorrect' }}">
+        <td>{{ loop.index }}</td>
+        <td><a href="{{ item_url }}{{ i.item|string|urlencode }}">{{ i.label }}</a></td>
+        <td>{{ 'Right' if i.first and i.first.correct else 'Wrong' }}</td>
+        {% if not is_spelling %}<td>{{ i.first.seconds if i.first and i.first.seconds is not none else '-' }}</td>{% endif %}
+        <td>{% if i.second %}{{ 'Right' if i.second.correct else 'Wrong' }}{% else %}-{% endif %}</td>
+        {% if not is_spelling %}<td>{{ i.second.seconds if i.second and i.second.seconds is not none else '-' }}</td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No answers were recorded for this practice.</p>
+  {% endif %}
+</section>
+
+<section class="admin-section">
+  <h2>Top-ups (do not count)</h2>
+  {% if ev.topups %}
+  <p class="subtitle">These bonus answers are not learning evidence. They never change the charts or the mastered count.</p>
+  <table class="admin-table">
+    <thead><tr><th>{{ 'Word' if is_spelling else 'Question' }}</th><th>Result</th>
+      {% if not is_spelling %}<th>Time (s)</th>{% endif %}</tr></thead>
+    <tbody>
+      {% for t in ev.topups %}
+      <tr>
+        <td><a href="{{ item_url }}{{ t.item|string|urlencode }}">{{ t.label }}</a></td>
+        <td>{{ 'Right' if t.correct else 'Wrong' }}</td>
+        {% if not is_spelling %}<td>{{ t.seconds if t.seconds is not none else '-' }}</td>{% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No top-ups in this practice.</p>
+  {% endif %}
+</section>
+{% endblock %}

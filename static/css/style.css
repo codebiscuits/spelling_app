@@ -381,3 +381,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
   .navbar { flex-direction: column; gap: 0.5rem; }
   .word-display { font-size: 2.5rem; }
 }
+
+/* ── Admin progress monitoring ── */
+.chart-box { position: relative; max-width: 800px; margin: 0.5rem 0 1.5rem; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1rem; }
+table.sortable th[data-dir="asc"]::after { content: " \25B2"; }
+table.sortable th[data-dir="desc"]::after { content: " \25BC"; }

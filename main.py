@@ -13,6 +13,7 @@ from seed.curriculum_words import seed
 from services.game_rewards import unlocked_files
 from templates_env import templates, MINI_GAMES, game_path
 from routers import admin as admin_router
+from routers import admin_progress as admin_progress_router
 from routers import arithmetic as arithmetic_router
 from routers import child as child_router
 from routers import spelling as spelling_router
@@ -47,6 +48,7 @@ app.mount("/static/audio", StaticFiles(directory=audio_dir), name="audio")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 app.include_router(admin_router.router)
+app.include_router(admin_progress_router.router)
 app.include_router(child_router.router)
 app.include_router(spelling_router.router)
 app.include_router(arithmetic_router.router)

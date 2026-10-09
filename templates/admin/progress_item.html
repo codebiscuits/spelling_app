@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}{{ child.name }} &ndash; {{ label }}{% endblock %}
+{% block content %}
+{% set is_spelling = subject == 'spelling' %}
+<h1>{{ label }}</h1>
+<p><a href="/admin/children/{{ child.id }}/{{ subject }}">&#8592; {{ child.name }}: {{ title }} progress</a></p>
+
+<section class="admin-section">
+  <p>Status: <strong>{{ status }}</strong>{% if focus %} &nbsp;|&nbsp; <strong>Current focus</strong>{% endif %}</p>
+  {% if extra %}<p>{{ extra }}</p>{% endif %}
+  <p>Last ordinary practice: {{ last_date if last_date else 'never' }}.
+    Ordinary first attempts so far: {{ total }}.</p>
+</section>
+
+<section class="admin-section">
+  <h2>Latest five ordinary first attempts</h2>
+  {% if latest %}
+  <table class="attempts-table">
+    <thead><tr><th>Date</th><th>Result</th>{% if not is_spelling %}<th>Time (s)</th>{% endif %}<th>Practice</th></tr></thead>
+    <tbody>
+      {% for a in latest %}
+      <tr class="{{ 'correct' if a.correct else 'incorrect' }}">
+        <td>{{ a.timestamp[:10] }}</td>
+        <td>{{ 'Right' if a.correct else 'Wrong' }}</td>
+        {% if not is_spelling %}<td>{{ a.seconds if a.seconds is not none else '-' }}</td>{% endif %}
+        <td><a href="/admin/children/{{ child.id }}/{{ subject }}/practices/{{ a.session_id }}">View</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No ordinary first attempts yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
