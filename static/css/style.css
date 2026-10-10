@@ -308,7 +308,50 @@ input:focus, select:focus {
 .banner-icon { width: 32px; height: 32px; flex-shrink: 0; }
 .award-badge  { background: #fff8dc; color: #7a6000; }
 .award-medal  { background: #fdebd0; color: #7a3c00; }
-.award-trophy { background: #d5f5e3; color: #1a5c45; }
+.award-trophy { background: #fff3c4; color: #6b4a00; }
+.award-started { background: #e8f1fb; color: #1d4a73; }
+.award-trophy .trophy-svg { flex-shrink: 0; }
+
+/* ── Trophy cabinet (dashboard) ──
+   Wood and glass colours are fixed on purpose, so the cabinet looks the same
+   in every weekday palette. */
+.trophy-cabinet { margin-top: 2.5rem; }
+.cabinet-frame {
+  background: linear-gradient(180deg, #f3f8fb 0%, #e3eef5 100%);
+  border: 10px solid #7b4a22;
+  border-image: linear-gradient(180deg, #a2692f, #6b3f1b) 1;
+  border-radius: 6px;
+  box-shadow: inset 0 0 18px rgba(120, 160, 190, 0.35), 0 4px 10px rgba(0, 0, 0, 0.18);
+  padding: 0.25rem 0.75rem 0;
+}
+.cabinet-shelf { padding-top: 0.5rem; }
+.shelf-title {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5b4630;
+}
+.shelf-items {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.25rem 0.5rem;
+}
+.shelf-slot { display: flex; align-items: flex-end; }
+.shelf-slot .trophy-svg { display: block; max-width: 100%; height: auto; }
+.shelf-board {
+  height: 14px;
+  margin: 0 -0.75rem;
+  background: linear-gradient(180deg, #b9824a 0%, #8a5a2b 55%, #6b4220 100%);
+  box-shadow: 0 3px 5px rgba(0, 0, 0, 0.25);
+}
+@media (max-width: 480px) {
+  .shelf-slot .trophy-svg { width: 72px; }
+}
 .award-unlock { background: #cce5ff; color: #004085; }
 
 /* ── Awards section (dashboard) ── */

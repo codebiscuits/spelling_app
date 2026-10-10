@@ -103,7 +103,8 @@ def test_dashboard_shows_new_medals_and_trophies(child_client):
         )
     resp = child_client.get("/child/dashboard")
     assert "10 words mastered" in resp.text
-    assert "Started My Words" in resp.text
+    assert "Started My Words" not in resp.text      # a start record is not a trophy
+    assert "My Words: not won yet" in resp.text
 
 
 def test_dashboard_lists_recent_sessions_as_mixed_practice(child_client):

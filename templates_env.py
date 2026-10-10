@@ -1,3 +1,4 @@
+import itertools
 import os
 from datetime import datetime
 from fastapi.templating import Jinja2Templates
@@ -94,6 +95,17 @@ def static_version(path: str) -> str:
         return "0"
 
 
+_trophy_ids = itertools.count(1)
+
+
+def trophy_uid() -> int:
+    """A fresh number for each trophy SVG, so gradient ids never clash when
+    several trophies share one page."""
+    return next(_trophy_ids)
+
+
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["current_palette"] = current_palette
 templates.env.globals["static_version"] = static_version
+templates.env.globals["trophy_uid"] = trophy_uid
+templates.env.globals["reward_game_count"] = len(REWARD_GAMES)

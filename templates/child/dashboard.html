@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_trophy.html" import trophy %}
 {% block title %}My Dashboard{% endblock %}
 {% block content %}
 <h1>Hello, {{ child.name }}! &#127775;</h1>
@@ -17,11 +18,6 @@
     <div class="badge-card">
       <div class="badge-card-top">
         <div class="badge-name">{{ lst.name }}</div>
-        <div class="badge-icons">
-          {% if lst.id in trophy_list_ids %}
-            <img src="/static/img/trophy.svg" class="list-award-icon" title="Trophy earned!">
-          {% endif %}
-        </div>
       </div>
       {% if p.total > 0 %}
       <div class="word-stats">
@@ -34,10 +30,36 @@
 </section>
 {% endif %}
 
+
+<section class="trophy-cabinet" aria-labelledby="cabinet-heading">
+  <h2 id="cabinet-heading">Trophy cabinet</h2>
+  <p class="list-name">Master every question or word in a group to win its trophy!</p>
+  <div class="cabinet-frame">
+    <div class="cabinet-shelf">
+      <h3 class="shelf-title">Times tables</h3>
+      <ul class="shelf-items">
+        {% for t in cabinet_tables %}
+        <li class="shelf-slot" title="{{ t.title }}">{{ trophy(t.label, "table", t.won, 84, t.title) }}</li>
+        {% endfor %}
+      </ul>
+      <div class="shelf-board"></div>
+    </div>
+    <div class="cabinet-shelf">
+      <h3 class="shelf-title">Spelling lists</h3>
+      <ul class="shelf-items">
+        {% for t in cabinet_lists %}
+        <li class="shelf-slot" title="{{ t.title }}">{{ trophy(t.label, "list", t.won, 96, t.title) }}</li>
+        {% endfor %}
+      </ul>
+      <div class="shelf-board"></div>
+    </div>
+  </div>
+</section>
+
 {% if my_games or mystery %}
 <section>
   <h2>My Games</h2>
-  <p class="list-name">{{ discovered_count }} of 14 discovered — finish a practice to play!</p>
+  <p class="list-name">{{ discovered_count }} of {{ reward_game_count }} discovered — finish a practice to play!</p>
   <div class="games-grid">
     {% for game in my_games %}
     <div class="game-card">
@@ -76,7 +98,7 @@
 </section>
 {% endif %}
 
-{% if badge_count > 0 or medals or trophies or arithmetic_medals or arithmetic_trophies %}
+{% if badge_count > 0 or medals or arithmetic_medals %}
 <section class="awards-section">
   <h2>Your Awards</h2>
   <div class="awards-grid">
@@ -96,13 +118,6 @@
     </div>
     {% endfor %}
 
-    {% for t in trophies %}
-    <div class="award-item">
-      <img src="/static/img/trophy.svg" class="award-icon" alt="Trophy">
-      <div class="award-label">Started {{ t.list_name }}</div>
-    </div>
-    {% endfor %}
-
     {% for m in arithmetic_medals %}
     <div class="award-item">
       <img src="/static/img/medal.svg" class="award-icon" alt="Medal">
@@ -110,12 +125,6 @@
     </div>
     {% endfor %}
 
-    {% for t in arithmetic_trophies %}
-    <div class="award-item">
-      <img src="/static/img/trophy.svg" class="award-icon" alt="Trophy">
-      <div class="award-label">Started the {{ t.name }} times tables</div>
-    </div>
-    {% endfor %}
 
   </div>
 </section>

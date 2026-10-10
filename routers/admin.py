@@ -215,6 +215,7 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
                WHERE st.user_id=? AND st.subject='spelling' ORDER BY wl.position, wl.id""",
             (child_id,),
         ).fetchall()
+        mastery_trophies = _mastery_trophy_rows(db, child_id)
         unlocked = db.execute(
             """SELECT ul.list_id, ul.unlocked_at, wl.name FROM user_list_unlocks ul
                JOIN word_lists wl ON wl.id=ul.list_id WHERE ul.user_id=?""",
@@ -236,10 +237,36 @@ def child_detail(child_id: int, request: Request, admin=Depends(require_admin)):
     return templates.TemplateResponse(request, "admin/child_detail.html", {
         "child": child, "sessions": sessions,
         "badges": badges, "badge_count": badge_count, "medals": medals,
-        "trophies": trophies, "unlocked": unlocked, "all_lists": all_lists,
+        "trophies": trophies, "mastery_trophies": mastery_trophies, "unlocked": unlocked, "all_lists": all_lists,
         "word_stats": word_stats, "csrf_token": csrf,
         "reward_games": REWARD_GAMES, "unlocked_reward_files": unlocked_reward_files,
     })
+
+
+def _mastery_trophy_rows(db, child_id: int) -> list[dict]:
+    """The child's mastery trophies for the admin page: times tables in
+    number order, then spelling lists in curriculum order."""
+    rows = db.execute(
+        "SELECT subject, group_key, earned_at FROM mastery_trophies WHERE user_id=?",
+        (child_id,),
+    ).fetchall()
+    tables = sorted(
+        (r for r in rows if r["subject"] == "arithmetic"), key=lambda r: int(r["group_key"])
+    )
+    names = {
+        str(r["id"]): (r["name"], i) for i, r in enumerate(
+            db.execute("SELECT id, name FROM word_lists ORDER BY position, id").fetchall())
+    }
+    lists = sorted(
+        (r for r in rows if r["subject"] == "spelling" and r["group_key"] in names),
+        key=lambda r: names[r["group_key"]][1],
+    )
+    return [
+        {"name": f"{r['group_key']} times table", "earned_at": r["earned_at"]} for r in tables
+    ] + [
+        {"name": f"Spelling list {names[r['group_key']][0]}", "earned_at": r["earned_at"]}
+        for r in lists
+    ]
 
 
 @router.get("/children/{child_id}/edit")

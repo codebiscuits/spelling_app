@@ -10,7 +10,7 @@ A web-based practice app for primary school children, with two subjects: spellin
 - **Ten-segment progress bar**: shows how far through a practice the child is
 - **Per-word progression**: one new word is introduced at a time, in curriculum order, and mixed with the child's weakest and least recently practised words
 - **Times tables practice**: tables 2 to 12 as multiplication and division, opened in a fixed order, with clues (including a picture for division) after a wrong answer
-- **Badges, medals, and trophies**: a badge for a high score, a medal for every 10 items mastered, a trophy for starting a new list or table
+- **Badges, medals, and trophies**: a badge for a high score, a medal for every 10 items mastered, a trophy for mastering every word in a list or every question of a times table, kept in a trophy cabinet on the dashboard
 - **Mini game rewards**: a practice scoring 10/20 or higher earns one play of a mini game. Every third badge unlocks a new game
 - **Recent games first**: the games a child played in the last 30 days are listed first
 - **Admin interface**: manage children and word lists, and see progress charts for each child in each subject
@@ -149,9 +149,9 @@ introduced, the weakest questions, and the questions practised longest ago. See
 |---|---|---|
 | ⭐ Badge | Final score ≥ 16/20, in either subject | At most one per child per Europe/London day |
 | 🏅 Medal | Ten more distinct items first mastered (10, 20, 30 ...) | An item counts once, ever |
-| 🏆 Trophy | First practice attempt at a word from a new list, or at a question on a new table | Once per list or table |
+| 🏆 Trophy | Every word in a list, or every question of a times table (2 to 12), mastered at least once | Once per list or table, permanent. Unwon trophies show as grey outlines in the cabinet |
 
-Only every third badge unlocks a reward game. Medals and trophies do not.
+Starting a new list or table shows a plain "You've started ..." message with no trophy. Only every third badge unlocks a reward game. Medals and trophies do not.
 
 ### Mini games
 

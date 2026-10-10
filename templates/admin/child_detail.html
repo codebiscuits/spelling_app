@@ -22,11 +22,21 @@
   {% else %}
   <p>None yet.</p>
   {% endif %}
-  <h3>Trophies</h3>
+  <h3>Trophies (mastered)</h3>
+  {% if mastery_trophies %}
+  <ul class="badge-list">
+    {% for t in mastery_trophies %}
+    <li>&#127942; {{ t.name }} &mdash; {{ t.earned_at[:10] }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>None yet.</p>
+  {% endif %}
+  <h3>Lists and rungs started</h3>
   {% if trophies %}
   <ul class="badge-list">
     {% for t in trophies %}
-    <li>&#127942; Started {{ t.name }} &mdash; {{ t.earned_at[:10] }}{% if t.silent %} (backfilled){% endif %}</li>
+    <li>Started {{ t.name }} &mdash; {{ t.earned_at[:10] }}{% if t.silent %} (backfilled){% endif %}</li>
     {% endfor %}
   </ul>
   {% else %}

@@ -18,7 +18,7 @@ from services.arithmetic_facts import (
 from services.game_activity import offer_games
 from services.game_rewards import check_and_unlock
 from services.gamification import (
-    award_arithmetic_trophies, award_session_badge, record_arithmetic_mastery_and_medals,
+    award_arithmetic_trophies, award_arithmetic_mastery_trophies, award_session_badge, record_arithmetic_mastery_and_medals,
 )
 from templates_env import templates
 
@@ -319,12 +319,15 @@ def results(request: Request, user=Depends(require_child)):
         ]
 
         progression.refresh_focus(user_id, db)
-        gamification = {"badge_awarded": False, "medals": [], "trophies": []}
+        gamification = {"badge_awarded": False, "medals": [], "started": [], "trophies": []}
         gamification["badge_awarded"] = award_session_badge(
             user_id, session_id, session["score"], db
         )
         gamification["medals"] = record_arithmetic_mastery_and_medals(user_id, db)
-        gamification["trophies"] = award_arithmetic_trophies(user_id, db)
+        gamification["started"] = award_arithmetic_trophies(user_id, db)
+        # Mastery trophies come after mastery is recorded, so they see the
+        # newest first_mastered rows. Every trophy is checked each time.
+        gamification["trophies"] = award_arithmetic_mastery_trophies(user_id, db)
         new_game = check_and_unlock(user_id, gamification, db)
 
         games = offer_games(user_id, session_id, session["score"], db)
@@ -339,6 +342,7 @@ def results(request: Request, user=Depends(require_child)):
         "csrf_token": generate_csrf_token(request),
         "gamification": gamification,
         "new_game": new_game,
+        "trophy_kind": "table",
         **games,
         "subject_label": "Times tables practice",
         "item_header": "Question",

@@ -4,13 +4,18 @@
   calendar day. The first qualifying practice of the day earns it.
 * Medal: one for each ten distinct words first mastered (a word counts
   once, ever). Backfilled medals are silent.
-* Trophy: one per list, at the child's first ordinary first attempt at a
-  word from that list. Backfilled trophies are silent.
+* Start record: one per list, at the child's first ordinary first attempt at
+  a word from that list (``start_trophies``). Shown only as a plain results
+  message, never as a trophy. Backfilled records are silent.
+* Trophy (mastery): one per word list, and one per times table 2 to 12
+  (``mastery_trophies``), won when every item in the group has a
+  ``first_mastered`` row. Permanent: a later slip or a word added to the
+  list later never removes it.
 
 A badge is one per child per London day across BOTH subjects: both read the
 same test_badges table, and arithmetic sessions live in test_sessions too.
 Arithmetic medals count distinct directions first secured; arithmetic
-trophies are one per ladder rung (group_id = rung number).
+start records are one per ladder rung (group_id = rung number).
 
 Only every third badge unlocks a game (see game_rewards.py).
 """
@@ -18,7 +23,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from services import arithmetic_progression as arith
-from services.arithmetic_facts import rung_name
+from services.arithmetic_facts import FACTORS, FACTS, LADDER, rung_name
 from services.spelling_progression import SUBJECT, load_history, mastered_word_ids
 
 LONDON = ZoneInfo("Europe/London")
@@ -97,8 +102,9 @@ def record_arithmetic_mastery_and_medals(user_id: int, db, now: datetime | None 
 
 
 def award_start_trophies(user_id: int, db, now: datetime | None = None) -> list[str]:
-    """Award a trophy for each list the child has started and has no trophy
-    for yet. Returns the names of the lists awarded now."""
+    """Record each list the child has started and has no start record for
+    yet (``start_trophies``). Returns the names of the lists recorded now.
+    The results page shows these as a plain message, not as a trophy."""
     now_s = (now or datetime.now(timezone.utc)).isoformat()
     rows = db.execute(
         """SELECT wl.id, wl.name, MIN(sa.id) AS first_attempt
@@ -123,9 +129,9 @@ def award_start_trophies(user_id: int, db, now: datetime | None = None) -> list[
 
 
 def award_arithmetic_trophies(user_id: int, db, now: datetime | None = None) -> list[str]:
-    """Award a trophy for each ladder rung the child has started (an
-    ordinary first attempt at one of its directions, right or wrong) and has
-    no trophy for yet. Returns the names of the rungs awarded now."""
+    """Record each ladder rung the child has started (an ordinary first
+    attempt at one of its directions, right or wrong) and has no start
+    record for yet. Returns the names of the rungs recorded now."""
     now_s = (now or datetime.now(timezone.utc)).isoformat()
     have = {
         r["group_id"] for r in db.execute(
@@ -142,5 +148,81 @@ def award_arithmetic_trophies(user_id: int, db, now: datetime | None = None) -> 
                (user_id, subject, group_id, earned_at, silent) VALUES (?,?,?,?,0)""",
             (user_id, arith.SUBJECT, rung, now_s),
         )
-        names.append(f"the {rung_name(rung)} times tables")
+        noun = "times tables" if len(LADDER[rung - 1]) > 1 else "times table"
+        names.append(f"the {rung_name(rung)} {noun}")
     return names
+
+
+# ── Mastery trophies ───────────────────────────────────────────────────────
+
+def _mastered_keys(user_id: int, db, subject: str) -> set[str]:
+    return {
+        r["item_key"] for r in db.execute(
+            "SELECT item_key FROM first_mastered WHERE user_id=? AND subject=?",
+            (user_id, subject),
+        ).fetchall()
+    }
+
+
+def table_fact_keys(table: int) -> list[str]:
+    """Every direction that belongs to a times table: all x t and all / t
+    facts (for division, t is the divisor or the quotient)."""
+    return [k for k, f in FACTS.items() if table in f.factors]
+
+
+def _insert_trophy(user_id: int, db, subject: str, group_key: str, now_s: str) -> bool:
+    cur = db.execute(
+        """INSERT OR IGNORE INTO mastery_trophies
+           (user_id, subject, group_key, earned_at, silent) VALUES (?,?,?,?,0)""",
+        (user_id, subject, group_key, now_s),
+    )
+    return bool(cur.rowcount)
+
+
+def award_spelling_mastery_trophies(user_id: int, db, now: datetime | None = None) -> list[dict]:
+    """Win a trophy for every word list whose words all have a
+    ``first_mastered`` row. A list with no words never wins one. Checks all
+    lists each time, so a child who already qualifies gets it at the next
+    results page. Returns ``{"group_key", "label"}`` for each trophy won now."""
+    now_s = (now or datetime.now(timezone.utc)).isoformat()
+    mastered = _mastered_keys(user_id, db, SUBJECT)
+    have = {
+        r["group_key"] for r in db.execute(
+            "SELECT group_key FROM mastery_trophies WHERE user_id=? AND subject=?",
+            (user_id, SUBJECT),
+        ).fetchall()
+    }
+    words_by_list: dict[int, list[str]] = {}
+    for r in db.execute("SELECT id, list_id FROM words").fetchall():
+        words_by_list.setdefault(r["list_id"], []).append(str(r["id"]))
+    won = []
+    for lst in db.execute("SELECT id, name FROM word_lists ORDER BY position, id").fetchall():
+        key = str(lst["id"])
+        words = words_by_list.get(lst["id"], [])
+        if key in have or not words or not mastered.issuperset(words):
+            continue
+        if _insert_trophy(user_id, db, SUBJECT, key, now_s):
+            won.append({"group_key": key, "label": lst["name"]})
+    return won
+
+
+def award_arithmetic_mastery_trophies(user_id: int, db, now: datetime | None = None) -> list[dict]:
+    """Win a trophy for every times table 2 to 12 whose every direction
+    (all x t and / t facts) has a ``first_mastered`` row. Returns
+    ``{"group_key", "label"}`` for each trophy won now; label is the number."""
+    now_s = (now or datetime.now(timezone.utc)).isoformat()
+    mastered = _mastered_keys(user_id, db, arith.SUBJECT)
+    have = {
+        r["group_key"] for r in db.execute(
+            "SELECT group_key FROM mastery_trophies WHERE user_id=? AND subject=?",
+            (user_id, arith.SUBJECT),
+        ).fetchall()
+    }
+    won = []
+    for t in FACTORS:
+        key = str(t)
+        if key in have or not mastered.issuperset(table_fact_keys(t)):
+            continue
+        if _insert_trophy(user_id, db, arith.SUBJECT, key, now_s):
+            won.append({"group_key": key, "label": str(t)})
+    return won

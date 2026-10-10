@@ -425,7 +425,8 @@ def test_results_show_badge_trophy_and_credit_but_no_answers(child_client):
     assert "Practice Complete" in resp.text
     assert "Times tables practice" in resp.text
     assert "Badge earned for today!" in resp.text
-    assert "Trophy earned: you've started the 2 and 10 times tables!" in resp.text
+    assert "You've started the 2 and 10 times tables!" in resp.text
+    assert "Trophy" not in resp.text      # starting is not a trophy any more
     assert "/arithmetic/start" in resp.text
     visible = re.sub(r"<[^>]+>", " ", re.sub(r"<script.*?</script>", "", resp.text, flags=re.S))
     assert "\u00d7" in visible or "\u00f7" in visible
@@ -551,9 +552,9 @@ def test_medal_at_ten_facts_first_secured_only_once(child_client):
 def test_trophy_is_awarded_once_even_for_a_wrong_first_attempt(child_client):
     play(child_client, wrong_first_right_second)
     resp = finish(child_client)
-    assert "Trophy earned: you've started the 2 and 10 times tables!" in resp.text
+    assert "You've started the 2 and 10 times tables!" in resp.text
     play(child_client, right)
-    assert "Trophy earned" not in finish(child_client).text
+    assert "You've started" not in finish(child_client).text
     with app_db() as db:
         rows = db.execute("SELECT group_id FROM start_trophies WHERE subject='arithmetic'").fetchall()
     assert [r["group_id"] for r in rows] == [1]
@@ -585,7 +586,7 @@ def test_dashboard_offers_both_practices_and_shows_arithmetic_awards(child_clien
     assert "Start a spelling practice" in page and "Start a times tables practice" in page
     assert 'href="/arithmetic/start"' in page
     assert "10 facts mastered" in page
-    assert "Started the 2 and 10 times tables" in page
+    assert "Started the 2 and 10 times tables" not in page   # start records are not shown
     assert "Times tables" in page            # in recent practices
 
 

@@ -263,8 +263,8 @@ def test_first_practice_earns_start_trophy_and_badge_but_no_medal_or_list_unlock
     )
 
     resp = run_full_test(child_client, lambda w: w)
-    assert "Trophy earned: you&#39;ve started Start!" in resp.text or \
-        "Trophy earned: you've started Start!" in resp.text
+    assert "You&#39;ve started Start!" in resp.text or "You've started Start!" in resp.text
+    assert "Trophy won" not in resp.text
     assert "Badge earned for today!" in resp.text
     assert "Medal earned" not in resp.text
     assert "words mastered" not in resp.text
@@ -338,7 +338,7 @@ def test_tenth_mastered_word_earns_a_medal_banner_and_no_game(child_client):
     resp = run_full_test(child_client, lambda w: w)
     assert "Medal earned: 10 words mastered!" in resp.text
     assert "A new game is ready!" not in resp.text
-    assert "Trophy earned" in resp.text  # a list started with no earlier award
+    assert "You've started" in resp.text  # a list started with no earlier record
     with app_db() as db:
         games = db.execute(
             "SELECT source FROM user_game_unlocks WHERE user_id=?", (child_client.child_id,)
@@ -355,4 +355,4 @@ def test_silent_awards_show_no_banner(child_client):
             (child_client.child_id, "spelling", lid, "2025-01-01"),
         )
     resp = run_full_test(child_client, lambda w: w)
-    assert "Trophy earned" not in resp.text
+    assert "You've started" not in resp.text

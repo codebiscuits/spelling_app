@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_trophy.html" import trophy %}
 {% block title %}Results{% endblock %}
 {% block content %}
 <div class="results-card">
@@ -15,8 +16,11 @@
   {% for threshold in gamification.medals %}
   <div class="award-banner award-medal"><img src="/static/img/medal.svg" class="banner-icon" alt=""> Medal earned: {{ threshold }} {{ medal_noun|default("words") }} mastered!</div>
   {% endfor %}
-  {% for list_name in gamification.trophies %}
-  <div class="award-banner award-trophy"><img src="/static/img/trophy.svg" class="banner-icon" alt=""> Trophy earned: you've started {{ list_name }}!</div>
+  {% for text in gamification.started %}
+  <div class="award-banner award-started">You've started {{ text }}!</div>
+  {% endfor %}
+  {% for t in gamification.trophies %}
+  <div class="award-banner award-trophy">{{ trophy(t.label, trophy_kind, true, 44, "Trophy won") }} Trophy won: you've mastered {{ t.label if trophy_kind == "list" else "the " ~ t.label ~ " times table" }}!</div>
   {% endfor %}
   {% if new_game %}
   <div class="award-banner award-unlock">🎁 A new game is ready!</div>

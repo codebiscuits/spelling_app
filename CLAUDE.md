@@ -55,7 +55,7 @@ spelling_app/
 │   ├── progression_backfill.py   # One-time release 2 backfill of silent medals and trophies
 │   ├── arithmetic_facts.py       # Times-tables facts, families, ladder, clues (incl. SVG division diagram)
 │   ├── arithmetic_progression.py # Per-direction selection with family focus; rung unlocking
-│   ├── gamification.py      # Badge, medal, and trophy rules for both subjects
+│   ├── gamification.py      # Badge, medal, start-record and mastery-trophy rules for both subjects
 │   ├── game_rewards.py      # Reward-game unlocks: only every 3rd badge unlocks the next game
 │   ├── game_activity.py     # Game credits, plays, launch nonces, recent-games picker (offer_games)
 │   └── progress_monitoring.py    # Read-only queries behind the admin progress pages
@@ -110,9 +110,12 @@ Badges, medals and trophies are in `services/gamification.py`. Both subjects use
 |---|---|---|
 | Badge | Final practice score ≥ 16/20 | At most once per child per Europe/London day, across both subjects |
 | Medal | Every 10 distinct items first mastered (words, or times-tables directions) | Once per threshold. An item counts once, ever (`first_mastered`, `milestone_medals`) |
-| Trophy | The first ordinary first attempt at a word from a list (spelling), or at a direction on a rung (arithmetic) | Once per list or rung (`start_trophies`) |
+| Trophy (mastery) | Every item in the group has a `first_mastered` row. Spelling: every word in a list, one trophy per list (`group_key` = list id). Times tables: one per table 2 to 12 (`group_key` = table number), needing every direction whose factors include the table, so the 3 trophy needs 3×7 and 21÷3 | Once per list or table, permanent (`mastery_trophies`). A word added to a list later never removes a trophy |
+| Start record | The first ordinary first attempt at a word from a list, or at a direction on a rung | Once per list or rung (`start_trophies`). Shown only as a plain "You've started ..." results message with no trophy icon, never as a trophy |
 
 - **Reward games.** Only every third badge unlocks the next reward game (`services/game_rewards.py`, `BADGE_STEP = 3`). Medals and trophies never unlock games. Old `user_game_unlocks` rows may say `medal` or `trophy` as their source.
+- **Trophy checks.** `award_spelling_mastery_trophies` and `award_arithmetic_mastery_trophies` run on the matching results page after mastery is recorded and check every trophy each time, so a child who already qualifies gets it (with a banner) at the next results page. `gamification["trophies"]` holds mastery trophies (`{"group_key", "label"}`), `gamification["started"]` holds the start messages. `check_and_unlock` reads only `badge_awarded`.
+- **Trophy cabinet.** The child dashboard shows every trophy on two shelves (times tables 2 to 12, then spelling lists by `word_lists.position`). Unwon ones are grey outlines. Artwork is the Jinja macro `templates/_trophy.html` (`trophy(label, kind, won, size, title)`): inline SVG, fixed metal colours (gold cups for tables, silver cups with a ruby star for lists), a unique gradient id per instance from `trophy_uid()` in `templates_env.py`. `static/img/trophy.svg` is no longer used. The admin child page lists mastery trophies.
 - **Release 2 backfill.** `services/progression_backfill.py` awarded earlier medals and trophies silently (`silent=1`), so there were no banners and no game unlocks.
 - Awards are computed on `/test/results` and `/arithmetic/results`, after `refresh_focus()` closes any finished focus.
 

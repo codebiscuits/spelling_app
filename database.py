@@ -144,6 +144,19 @@ CREATE TABLE IF NOT EXISTS start_trophies (
     PRIMARY KEY (user_id, subject, group_id)
 );
 
+-- Mastery trophies: the child-facing trophy. One per word list (group_key =
+-- word_lists.id as text) and one per times table 2 to 12 (group_key = the
+-- table number as text), won when every item in the group has a
+-- first_mastered row. Permanent. silent=1 is reserved for quiet awards.
+CREATE TABLE IF NOT EXISTS mastery_trophies (
+    user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    subject   TEXT NOT NULL,
+    group_key TEXT NOT NULL,
+    earned_at TEXT NOT NULL,
+    silent    INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, subject, group_key)
+);
+
 -- Arithmetic practice (release 3). All additive.
 -- One row per answer. fact_key names one exact question ('m:3x4' is 3 x 4,
 -- 'd:12/3' is 12 / 3). attempt_number: 1 ordinary first, 2 ordinary second

@@ -7,7 +7,7 @@ from database import get_db
 from auth import require_child, generate_csrf_token
 from services import spelling_progression as progression
 from services.gamification import (
-    award_session_badge, award_start_trophies, record_mastery_and_medals,
+    award_session_badge, award_start_trophies, award_spelling_mastery_trophies, record_mastery_and_medals,
 )
 from services.game_rewards import check_and_unlock
 from services.game_activity import offer_games
@@ -302,12 +302,15 @@ def results(request: Request, user=Depends(require_child)):
 
         # Close the focus word if this practice completed it, then award.
         progression.refresh_focus(user_id, db)
-        gamification = {"badge_awarded": False, "medals": [], "trophies": []}
+        gamification = {"badge_awarded": False, "medals": [], "started": [], "trophies": []}
         gamification["badge_awarded"] = award_session_badge(
             user_id, session_id, session["score"], db
         )
         gamification["medals"] = record_mastery_and_medals(user_id, db)
-        gamification["trophies"] = award_start_trophies(user_id, db)
+        gamification["started"] = award_start_trophies(user_id, db)
+        # Mastery trophies come after mastery is recorded, so they see the
+        # newest first_mastered rows. Every trophy is checked each time.
+        gamification["trophies"] = award_spelling_mastery_trophies(user_id, db)
 
         # Only every third badge unlocks a game (medals and trophies do not)
         new_game = check_and_unlock(user_id, gamification, db)
@@ -327,5 +330,6 @@ def results(request: Request, user=Depends(require_child)):
         "csrf_token": generate_csrf_token(request),
         "gamification": gamification,
         "new_game": new_game,
+        "trophy_kind": "list",
         **games,
     })

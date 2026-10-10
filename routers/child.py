@@ -3,7 +3,8 @@ from fastapi.responses import RedirectResponse
 
 from database import get_db
 from auth import require_child, verify_csrf_token
-from services.arithmetic_facts import rung_name
+from services.arithmetic_facts import FACTORS
+from services.gamification import london_date
 from services.game_rewards import unlocked_files, next_locked, badges_until_next
 from services.game_activity import (
     consume_game_credit,
@@ -13,6 +14,21 @@ from services.game_activity import (
 from templates_env import templates, MINI_GAMES, REWARD_GAMES
 
 router = APIRouter(prefix="/child")
+
+
+def _cabinet_slot(label: str, earned_at: str | None, name: str) -> dict:
+    """One trophy in the cabinet. title is the accessible name, for example
+    '7 times table: won on 12 Oct' or 'Year 3-4: not won yet'."""
+    if earned_at:
+        try:
+            day = london_date(earned_at)
+            date_text = f"{day.day} {day:%b}"
+        except ValueError:
+            date_text = earned_at[:10]
+        title = f"{name}: won on {date_text}"
+    else:
+        title = f"{name}: not won yet"
+    return {"label": label, "won": bool(earned_at), "title": title}
 
 
 @router.get("/dashboard")
@@ -42,25 +58,26 @@ def child_dashboard(request: Request, user=Depends(require_child)):
                WHERE user_id=? AND subject='spelling' ORDER BY threshold""",
             (user_id,),
         ).fetchall()
-        trophies = db.execute(
-            """SELECT st.group_id AS list_id, wl.name AS list_name FROM start_trophies st
-               JOIN word_lists wl ON wl.id=st.group_id
-               WHERE st.user_id=? AND st.subject='spelling'
-               ORDER BY wl.position, wl.id""",
-            (user_id,),
-        ).fetchall()
-
         arithmetic_medals = db.execute(
             """SELECT threshold FROM milestone_medals
                WHERE user_id=? AND subject='arithmetic' ORDER BY threshold""",
             (user_id,),
         ).fetchall()
-        arithmetic_trophies = [
-            {"name": rung_name(t["group_id"])} for t in db.execute(
-                """SELECT group_id FROM start_trophies
-                   WHERE user_id=? AND subject='arithmetic' ORDER BY group_id""",
+        # The trophy cabinet: every slot, won or not. Lists in curriculum order.
+        won = {
+            (r["subject"], r["group_key"]): r["earned_at"] for r in db.execute(
+                "SELECT subject, group_key, earned_at FROM mastery_trophies WHERE user_id=?",
                 (user_id,),
             ).fetchall()
+        }
+        all_lists = db.execute("SELECT id, name FROM word_lists ORDER BY position, id").fetchall()
+        cabinet_tables = [
+            _cabinet_slot(str(t), won.get(("arithmetic", str(t))), f"{t} times table")
+            for t in FACTORS
+        ]
+        cabinet_lists = [
+            _cabinet_slot(lst["name"], won.get(("spelling", str(lst["id"]))), lst["name"])
+            for lst in all_lists
         ]
 
         # Supportive per-list count: how many of its words the child has tried.
@@ -78,8 +95,6 @@ def child_dashboard(request: Request, user=Depends(require_child)):
             ).fetchone()["cnt"]
             progress[lst["id"]] = {"total": total, "practised": practised}
 
-    trophy_list_ids = {t["list_id"] for t in trophies}
-
     with get_db() as db:
         unlocked_reward_files = unlocked_files(user_id, db)
         my_games = [g for g in REWARD_GAMES if g["file"] in unlocked_reward_files]
@@ -89,14 +104,13 @@ def child_dashboard(request: Request, user=Depends(require_child)):
     return templates.TemplateResponse(request, "child/dashboard.html", {
         "child": child,
         "unlocked": unlocked,
-        "trophy_list_ids": trophy_list_ids,
         "recent_sessions": recent_sessions,
         "progress": progress,
         "badge_count": badge_count,
         "medals": medals,
-        "trophies": trophies,
         "arithmetic_medals": arithmetic_medals,
-        "arithmetic_trophies": arithmetic_trophies,
+        "cabinet_tables": cabinet_tables,
+        "cabinet_lists": cabinet_lists,
         "my_games": my_games,
         "mystery": mystery,
         "discovered_count": len(my_games),
