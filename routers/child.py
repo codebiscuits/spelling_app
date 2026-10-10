@@ -4,7 +4,7 @@ from fastapi.responses import RedirectResponse
 from database import get_db
 from auth import require_child, verify_csrf_token
 from services.arithmetic_facts import FACTORS
-from services.gamification import london_date
+from services.gamification import award_skipped_list_trophies, london_date
 from services.game_rewards import unlocked_files, next_locked, badges_until_next
 from services.game_activity import (
     consume_game_credit,
@@ -64,6 +64,8 @@ def child_dashboard(request: Request, user=Depends(require_child)):
             (user_id,),
         ).fetchall()
         # The trophy cabinet: every slot, won or not. Lists in curriculum order.
+        # Lists before the child's first list count as won (practised at school).
+        award_skipped_list_trophies(user_id, db)
         won = {
             (r["subject"], r["group_key"]): r["earned_at"] for r in db.execute(
                 "SELECT subject, group_key, earned_at FROM mastery_trophies WHERE user_id=?",

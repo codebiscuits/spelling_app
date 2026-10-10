@@ -142,7 +142,12 @@ def test_spelling_results_show_trophy_banner_once(child_client):
     resp2 = run_full_test(child_client, lambda w: w)
     assert "Trophy won" not in resp2.text
     with app_db() as db:
-        assert trophy_rows(db, child_client.child_id, "spelling") == [str(lid)]
+        # Earlier seeded lists are won quietly (silent=1); only this one was announced.
+        loud = db.execute(
+            "SELECT group_key FROM mastery_trophies WHERE user_id=? AND subject='spelling' AND silent=0",
+            (child_client.child_id,),
+        ).fetchall()
+        assert [r["group_key"] for r in loud] == [str(lid)]
 
 
 def test_arithmetic_results_show_trophy_banner_and_award_is_non_silent(child_client):
@@ -217,7 +222,9 @@ def test_start_records_are_not_shown_as_trophies_on_the_dashboard(child_client):
     page = child_client.get("/child/dashboard").text
     assert "Mine: not won yet" in page
     assert "Started" not in page
-    assert "trophy-won" not in page
+    # Earlier seeded lists are won quietly; no times table and not "Mine".
+    assert "times table: won" not in page
+    assert "Mine: won" not in page
 
 
 def test_trophy_macro_looks_and_wording(child_client):
@@ -247,3 +254,40 @@ def test_admin_child_detail_lists_mastery_trophies(admin_client, child_client):
     login(admin_client, "admin", TEST_PASSWORD)
     page = admin_client.get(f"/admin/children/{child_client.child_id}").text
     assert "9 times table" in page and "Spelling list" in page
+
+
+def test_lists_before_the_first_unlocked_list_are_won_quietly(child_client):
+    """Ross, 10 Oct 2026: a child who started on a later list practised the
+    earlier words at school, so those trophies are given, without a banner."""
+    from services.gamification import award_skipped_list_trophies
+    child_id = child_client.child_id
+    with app_db() as db:
+        lists = db.execute(
+            "SELECT id FROM word_lists wl WHERE EXISTS (SELECT 1 FROM words w WHERE w.list_id=wl.id)"
+            " ORDER BY position, id"
+        ).fetchall()
+        assert len(lists) >= 3
+        db.execute("DELETE FROM user_list_unlocks WHERE user_id=?", (child_id,))
+        db.execute(
+            "INSERT INTO user_list_unlocks (user_id, list_id, unlocked_at) VALUES (?,?,'2026-01-01')",
+            (child_id, lists[1]["id"]),
+        )
+        award_skipped_list_trophies(child_id, db)
+        award_skipped_list_trophies(child_id, db)   # idempotent
+        rows = db.execute(
+            "SELECT group_key, silent FROM mastery_trophies WHERE user_id=? AND subject='spelling'",
+            (child_id,),
+        ).fetchall()
+    assert [(r["group_key"], r["silent"]) for r in rows] == [(str(lists[0]["id"]), 1)]
+    resp = child_client.get("/child/dashboard")
+    assert "Trophy won" not in resp.text
+
+
+def test_a_child_with_no_lists_gets_no_skipped_trophies(child_client):
+    from services.gamification import award_skipped_list_trophies
+    child_id = child_client.child_id
+    with app_db() as db:
+        db.execute("DELETE FROM user_list_unlocks WHERE user_id=?", (child_id,))
+        award_skipped_list_trophies(child_id, db)
+        n = db.execute("SELECT COUNT(*) FROM mastery_trophies WHERE user_id=?", (child_id,)).fetchone()[0]
+    assert n == 0

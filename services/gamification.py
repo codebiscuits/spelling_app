@@ -179,12 +179,32 @@ def _insert_trophy(user_id: int, db, subject: str, group_key: str, now_s: str) -
     return bool(cur.rowcount)
 
 
+def award_skipped_list_trophies(user_id: int, db, now: datetime | None = None) -> None:
+    """Quietly give the trophy for every list that comes before the child's
+    earliest unlocked list. Ross, 10 Oct 2026: a child who started on a later
+    list practised the earlier words at school, so those trophies are theirs.
+    silent=1: shown as won in the cabinet, but never announced, because the
+    child did not master the list here."""
+    now_s = (now or datetime.now(timezone.utc)).isoformat()
+    db.execute(
+        """INSERT OR IGNORE INTO mastery_trophies
+           (user_id, subject, group_key, earned_at, silent)
+           SELECT ?, ?, CAST(wl.id AS TEXT), ?, 1 FROM word_lists wl
+           WHERE EXISTS (SELECT 1 FROM words w WHERE w.list_id=wl.id)
+             AND wl.position < (SELECT MIN(u.position) FROM user_list_unlocks ul
+                                JOIN word_lists u ON u.id=ul.list_id
+                                WHERE ul.user_id=?)""",
+        (user_id, SUBJECT, now_s, user_id),
+    )
+
+
 def award_spelling_mastery_trophies(user_id: int, db, now: datetime | None = None) -> list[dict]:
     """Win a trophy for every word list whose words all have a
     ``first_mastered`` row. A list with no words never wins one. Checks all
     lists each time, so a child who already qualifies gets it at the next
     results page. Returns ``{"group_key", "label"}`` for each trophy won now."""
     now_s = (now or datetime.now(timezone.utc)).isoformat()
+    award_skipped_list_trophies(user_id, db, now)
     mastered = _mastered_keys(user_id, db, SUBJECT)
     have = {
         r["group_key"] for r in db.execute(
