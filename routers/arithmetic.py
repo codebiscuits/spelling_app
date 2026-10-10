@@ -9,17 +9,18 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
-from auth import require_child
+from auth import generate_csrf_token, require_child
 from database import get_db
 from services import arithmetic_progression as progression
 from services.arithmetic_facts import (
     division_clue_svg, division_clue_text, get_fact, multiplication_clue_lines,
 )
-from services.game_rewards import badges_until_next, check_and_unlock, next_locked, unlocked_files
+from services.game_activity import offer_games
+from services.game_rewards import check_and_unlock
 from services.gamification import (
     award_arithmetic_trophies, award_session_badge, record_arithmetic_mastery_and_medals,
 )
-from templates_env import CLASSIC_GAMES, REWARD_GAMES, templates
+from templates_env import templates
 
 router = APIRouter(prefix="/arithmetic")
 
@@ -326,28 +327,19 @@ def results(request: Request, user=Depends(require_child)):
         gamification["trophies"] = award_arithmetic_trophies(user_id, db)
         new_game = check_and_unlock(user_id, gamification, db)
 
-        qualifies = session["score"] >= 10
-        games = []
-        mystery = None
-        if qualifies:
-            reward_unlocked = [g for g in REWARD_GAMES if g["file"] in unlocked_files(user_id, db)]
-            games = CLASSIC_GAMES + reward_unlocked
-            if next_locked(user_id, db):
-                mystery = {"hint": badges_until_next(user_id, db)}
+        games = offer_games(user_id, session_id, session["score"], db)
 
     request.session.pop(SESSION_KEY, None)
-    if qualifies:
-        request.session["game_credit"] = {"score": session["score"]}
-    else:
-        request.session.pop("game_credit", None)
+    # Credit state lives server-side; clear any credit an older cookie carried.
+    request.session.pop("game_credit", None)
 
     return templates.TemplateResponse(request, "child/results.html", {
         "session": session,
         "attempts": attempts,
+        "csrf_token": generate_csrf_token(request),
         "gamification": gamification,
-        "games": games,
         "new_game": new_game,
-        "mystery": mystery,
+        **games,
         "subject_label": "Times tables practice",
         "item_header": "Question",
         "medal_noun": "facts",

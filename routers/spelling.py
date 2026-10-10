@@ -9,14 +9,10 @@ from services import spelling_progression as progression
 from services.gamification import (
     award_session_badge, award_start_trophies, record_mastery_and_medals,
 )
-from services.game_rewards import check_and_unlock, unlocked_files, next_locked, badges_until_next
-from services.game_activity import (
-    forfeit_game_credits,
-    grant_game_credit,
-    recently_played_files,
-)
+from services.game_rewards import check_and_unlock
+from services.game_activity import offer_games
 from services.tts import get_audio_url, get_sentence_audio_url
-from templates_env import templates, CLASSIC_GAMES, REWARD_GAMES
+from templates_env import templates
 
 router = APIRouter(prefix="/test")
 
@@ -316,24 +312,7 @@ def results(request: Request, user=Depends(require_child)):
         # Only every third badge unlocks a game (medals and trophies do not)
         new_game = check_and_unlock(user_id, gamification, db)
 
-        # Mini game reward: unlock when score >= 10/20 (50%)
-        # When adjusting this threshold, update README.md and SETUP.md as well
-        qualifies = session["score"] >= 10
-        recent_games = []
-        older_games = []
-        mystery = None
-        if qualifies:
-            grant_game_credit(user_id, session_id, session["score"], db)
-            reward_unlocked = [g for g in REWARD_GAMES if g["file"] in unlocked_files(user_id, db)]
-            available_games = CLASSIC_GAMES + reward_unlocked
-            recent_files = recently_played_files(user_id, db)
-            recent_games = [g for g in available_games if g["file"] in recent_files]
-            older_games = [g for g in available_games if g["file"] not in recent_files]
-            locked = next_locked(user_id, db)
-            if locked:
-                mystery = {"hint": badges_until_next(user_id, db)}
-        else:
-            forfeit_game_credits(user_id, db)
+        games = offer_games(user_id, session_id, session["score"], db)
 
     # Clear test session state
     request.session.pop("test", None)
@@ -347,8 +326,6 @@ def results(request: Request, user=Depends(require_child)):
         "attempts": attempts,
         "csrf_token": generate_csrf_token(request),
         "gamification": gamification,
-        "recent_games": recent_games,
-        "older_games": older_games,
         "new_game": new_game,
-        "mystery": mystery,
+        **games,
     })

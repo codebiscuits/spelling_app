@@ -83,3 +83,29 @@ def forfeit_game_credits(user_id: int, db) -> None:
         "UPDATE user_game_credits SET status='forfeited' WHERE user_id=? AND status='available'",
         (user_id,),
     )
+
+
+QUALIFYING_SCORE = 10  # When adjusting this threshold, update README.md and SETUP.md as well
+
+
+def offer_games(user_id: int, session_id: int, score: int, db) -> dict:
+    """Settle the game credit for a finished practice of either subject and
+    choose the games to offer. A qualifying score banks one credit; a lower
+    score forfeits any unspent one. Games played in the last 30 days come
+    first; the rest sit under All games."""
+    from templates_env import CLASSIC_GAMES, REWARD_GAMES
+    from services.game_rewards import badges_until_next, next_locked, unlocked_files
+
+    offer = {"recent_games": [], "older_games": [], "mystery": None}
+    if score < QUALIFYING_SCORE:
+        forfeit_game_credits(user_id, db)
+        return offer
+    grant_game_credit(user_id, session_id, score, db)
+    unlocked = unlocked_files(user_id, db)
+    available = CLASSIC_GAMES + [g for g in REWARD_GAMES if g["file"] in unlocked]
+    recent = recently_played_files(user_id, db)
+    offer["recent_games"] = [g for g in available if g["file"] in recent]
+    offer["older_games"] = [g for g in available if g["file"] not in recent]
+    if next_locked(user_id, db):
+        offer["mystery"] = {"hint": badges_until_next(user_id, db)}
+    return offer

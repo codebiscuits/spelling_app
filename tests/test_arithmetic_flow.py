@@ -6,7 +6,7 @@ from services.arithmetic_facts import (
     FACT_ORDER, division_alt_text, division_clue_svg, division_clue_text, get_fact,
     multiplication_clue_lines,
 )
-from tests.conftest import app_db, run_full_test, setup_practice_list
+from tests.conftest import app_db, extract_csrf, run_full_test, setup_practice_list
 
 START = "/arithmetic/start"
 SPELLING_WORDS = [f"word{c}x" for c in "abcdefghijkl"]
@@ -452,6 +452,33 @@ def test_below_ten_earns_no_game_credit(child_client):
     resp = finish(child_client)
     assert session_row()["score"] == 0
     assert "Pick a game to play" not in resp.text
+
+
+def test_qualifying_practice_banks_one_server_side_game_play(child_client):
+    play(child_client, right)
+    resp = finish(child_client)
+    with app_db() as db:
+        credits = db.execute("SELECT score, status FROM user_game_credits").fetchall()
+    assert [tuple(c) for c in credits] == [(20, "available")]
+    assert 'action="/child/games/circles.html"' in resp.text
+
+    token = extract_csrf(resp.text)
+    game = child_client.post("/child/games/circles.html", data={"csrf_token": token})
+    assert game.status_code == 200
+    assert "var remaining = 120;" in game.text          # duration from the real score
+    again = child_client.post("/child/games/circles.html", data={"csrf_token": token})
+    assert again.status_code == 200 and "/mini-games/" not in again.text   # spent
+
+
+def test_low_arithmetic_score_forfeits_an_unspent_game_play(child_client):
+    play(child_client, right)
+    finish(child_client)
+    child_client.get(START)
+    play(child_client, lambda f, a: f.answer + 1 + a)
+    finish(child_client)
+    with app_db() as db:
+        statuses = [r["status"] for r in db.execute("SELECT status FROM user_game_credits")]
+    assert statuses == ["forfeited"]
 
 
 def count_badges():
