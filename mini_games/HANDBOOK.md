@@ -71,6 +71,14 @@ checklist for new games and the bar existing ones are held to:
    bottom-centre (`bottom: 24px; left: 50%; transform: translateX(-50%)`),
    as in `cloth.html` and `sand.html`. A keyboard shortcut may supplement
    the button, never replace it.
+6. **Never depend on browser storage.** The app runs every game in an
+   `<iframe sandbox="allow-scripts">` with no `allow-same-origin`, so any
+   touch of `localStorage`, `sessionStorage`, `indexedDB` or
+   `document.cookie` throws a `SecurityError`. An uncaught throw at start-up
+   kills the whole game: `gear_garden_v1.html` once showed only its CSS
+   background and panel, with no gears, for exactly this reason. If a game
+   wants to remember a setting, wrap every access in `try`/`catch` and fall
+   back to the default.
 
 ---
 
