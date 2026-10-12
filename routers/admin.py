@@ -6,6 +6,7 @@ from database import get_db
 from auth import require_admin, hash_password, generate_csrf_token, verify_csrf_token
 from templates_env import templates, MINI_GAMES, REWARD_GAMES
 from services.game_rewards import unlocked_files
+from services.games_left import LEAD_DAYS, child_forecast
 
 router = APIRouter(prefix="/admin")
 
@@ -24,10 +25,11 @@ def admin_dashboard(request: Request, admin=Depends(require_admin)):
     with get_db() as db:
         lists = db.execute("SELECT * FROM word_lists ORDER BY year_group, name").fetchall()
         children = db.execute("SELECT * FROM users WHERE is_admin=0 ORDER BY name").fetchall()
+        forecasts = {c["id"]: child_forecast(c, db) for c in children}
     csrf = generate_csrf_token(request)
     return templates.TemplateResponse(request, "admin/dashboard.html", {
         "lists": lists, "children": children, "csrf_token": csrf,
-        "mini_games_list": MINI_GAMES,
+        "mini_games_list": MINI_GAMES, "forecasts": forecasts, "lead_days": LEAD_DAYS,
     })
 
 

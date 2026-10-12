@@ -28,7 +28,17 @@
     </div>
     <ul>
       {% for child in children %}
-      <li><a href="/admin/children/{{ child.id }}">{{ child.name }}</a> <span style="font-size:0.85rem">(<a href="/admin/children/{{ child.id }}/spelling">spelling</a>, <a href="/admin/children/{{ child.id }}/arithmetic">times tables</a>)</span></li>
+      <li><a href="/admin/children/{{ child.id }}">{{ child.name }}</a> <span style="font-size:0.85rem">(<a href="/admin/children/{{ child.id }}/spelling">spelling</a>, <a href="/admin/children/{{ child.id }}/arithmetic">times tables</a>)</span>
+        {% set f = forecasts[child.id] %}
+        <div class="games-left{% if f.alert %} games-left-alert{% endif %}" style="font-size:0.85rem">
+          Reward games left: <strong>{{ f.games_left }} of {{ f.games_total }}</strong>
+          &middot; {{ f.pace_per_week }} badges a week
+          {% if f.games_left == 0 %}&middot; <strong>has run out</strong>
+          {% elif f.run_out %}&middot; runs out about {{ f.run_out.strftime('%-d %b') }}
+          {% else %}&middot; no badges in 4 weeks{% endif %}
+          {% if f.alert %}&#9888;&#65039; within {{ lead_days }} days{% endif %}
+        </div>
+      </li>
       {% endfor %}
     </ul>
   </section>
