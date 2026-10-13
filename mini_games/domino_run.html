@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Domino Run</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #3b2617; }
+  body { font-family: ui-rounded, 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif; }
+  canvas { display: block; position: fixed; inset: 0; cursor: crosshair; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    width: 252px; padding: 14px 16px 12px;
+    background: rgba(28, 16, 9, 0.72); border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #e3d3c3; font-size: 12.5px; line-height: 1.6;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    transition: opacity 0.25s;
+  }
+  #ui.hidden { opacity: 0; }
+  #ui h3 { color: #fff; font-size: 16px; letter-spacing: 0.4px; margin-bottom: 4px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 10px; }
+  #ui .k { color: #f6c85f; font-weight: 700; white-space: nowrap; }
+  #ui .d { color: #e3d3c3; text-align: right; }
+  #ui .v { color: #9fe0b5; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  #ui .rule { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 8px 0 7px; }
+  #ui .keys { color: #b39f8c; font-size: 11px; margin-top: 6px; }
+  #ui .hint { color: #f6c85f; font-style: italic; font-size: 11.5px; margin-top: 6px; min-height: 18px; }
+  .pill {
+    position: fixed; z-index: 10; border-radius: 999px; cursor: pointer;
+    font: 700 13px ui-rounded, 'Trebuchet MS', sans-serif; letter-spacing: 0.3px;
+    color: #f6ece2; background: rgba(28, 16, 9, 0.80); border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .pill:hover { background: rgba(70, 44, 26, 0.92); border-color: rgba(255, 255, 255, 0.35); }
+  .pill:focus-visible { outline: 3px solid #f6c85f; outline-offset: 2px; }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 26px; }
+  #standBtn { bottom: 24px; left: calc(50% - 92px); transform: translateX(-100%); padding: 10px 20px; }
+  #soundBtn { bottom: 24px; right: 20px; padding: 9px 16px; font-size: 12px; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Domino Run: draw lines of dominoes and knock them down"></canvas>
+<div id="ui">
+  <h3>Domino Run</h3>
+  <div class="row"><span class="k">Move</span><span class="d">breeze wobbles them</span></div>
+  <div class="row"><span class="k">Left drag</span><span class="d">draw a domino path</span></div>
+  <div class="row"><span class="k">Right click</span><span class="d">flick a domino</span></div>
+  <div class="row"><span class="k">Wheel</span><span class="d">gap between dominoes</span></div>
+  <div class="rule"></div>
+  <div class="row"><span>Gap</span><span class="v" id="gapVal">-</span></div>
+  <div class="row"><span>Standing</span><span class="v" id="standVal">0</span></div>
+  <div class="row"><span>Falling now</span><span class="v" id="fallVal">0</span></div>
+  <div class="row"><span>Last run</span><span class="v" id="runVal">-</span></div>
+  <div class="row"><span>Sound</span><span class="v" id="sndVal">off</span></div>
+  <div class="keys">Keys: S spiral &middot; O ring &middot; U stand up</div>
+  <div class="keys" style="margin-top:0">R start again &middot; H hide this &middot; M sound</div>
+  <div class="keys">Start a drag on a domino to make a branch.</div>
+  <div class="hint" id="hint">Right-click the glowing domino!</div>
+</div>
+<button class="pill" id="standBtn" type="button">&#x2B06; Stand them up</button>
+<button class="pill" id="resetBtn" type="button">&#x21BA; Start again</button>
+<button class="pill" id="soundBtn" type="button">Sound off</button>
+<script>
+(() => {
+'use strict';
+
+// ===========================================================================
+// Constants. Lengths are CSS pixels on the table, angles in radians.
+// ===========================================================================
+const HD = 46;                  // domino height
+const WD = 22;                  // domino width
+const TH = 8;                   // domino thickness
+const THC = Math.atan(TH / HD); // tipping angle: past this the domino falls by itself
+const REST_ON = Math.acos(TH / HD); // angle at which a domino lies on a fallen one
+const HALF_PI = Math.PI / 2;
+const GRAV = 42;                // rad/s^2 scale of the toppling torque
+const K = 0.82;                 // how far up the screen one pixel of height draws
+const STEP = 1 / 120;           // fixed physics step (HANDBOOK §2.1)
+const MAX_DOMINOES = 500;       // the designed maximum (HANDBOOK §7)
+const GAP_MIN = 14, GAP_MAX = 56, GAP_START = 26;
+const BREEZE_R = 110;
+const PICK_R = 26;
+const MAX_TURN = 0.6;              // most a drawn line turns per domino (34 degrees)
+const PALETTE = [               // a limited palette (HANDBOOK §4.1c)
+  [239, 111, 108], [244, 162, 89], [242, 204, 91],
+  [108, 195, 160], [90, 169, 230], [155, 140, 224],
+];
+// The lamp is above, to the front left, so the faces turned toward us are lit.
+const LIGHT = (() => { const l = [-0.45, 0.32, 0.84], m = Math.hypot(l[0], l[1], l[2]); return l.map(v => v / m); })();
+const SHADOW_DX = 0.50, SHADOW_DY = -0.30; // shadow offset per pixel of height, away from the lamp
+const PIPS = [[], [4], [0, 8], [0, 4, 8], [0, 2, 6, 8], [0, 2, 4, 6, 8], [0, 2, 3, 5, 6, 8]];
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const reducedMotion = (() => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } })();
+
+// ===========================================================================
+// Canvas (HANDBOOK §2.2) and a background layer drawn once (HANDBOOK §6.5)
+// ===========================================================================
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+let bg = null;
+let floor = null, floorCtx = null, floorDirty = true;  // settled fallen dominoes, drawn once (HANDBOOK §6.5)
+
+function fit() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  buildBackground();
+  sizeGrid();
+  floor = document.createElement('canvas');
+  floor.width = canvas.width; floor.height = canvas.height;
+  floorCtx = floor.getContext('2d');
+  floorDirty = true;
+}
+
+// Value noise (HANDBOOK §4.5) for the wood grain.
+const hash = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  return hash(xi, yi) * (1 - u) * (1 - v) + hash(xi + 1, yi) * u * (1 - v)
+       + hash(xi, yi + 1) * (1 - u) * v + hash(xi + 1, yi + 1) * u * v;
+}
+
+function buildBackground() {
+  const s = 2; // half resolution, smoothed up: soft wood looks right soft
+  const bw = Math.max(1, Math.ceil(W / s)), bh = Math.max(1, Math.ceil(H / s));
+  const off = document.createElement('canvas'); off.width = bw; off.height = bh;
+  const o = off.getContext('2d');
+  const img = o.createImageData(bw, bh), d = img.data;
+  const PLANK = 92 / s;
+  const light = [196, 146, 98], dark = [146, 98, 60];
+  for (let y = 0; y < bh; y++) {
+    const plank = Math.floor(y / PLANK), py = y - plank * PLANK;
+    const seed = plank * 17.3;
+    const shift = hash(plank, 3.1) * 400;
+    for (let x = 0; x < bw; x++) {
+      const gx = (x + shift) * 0.012, gy = (y * 0.22) + seed;
+      const warp = vnoise(gx * 0.7, gy * 0.15) * 3.0;
+      let g = vnoise(gx + warp, gy) * 0.6 + vnoise(gx * 2.3 + warp, gy * 2.0) * 0.3 + vnoise(gx * 7, gy * 5) * 0.1;
+      g = 0.5 + 0.5 * Math.sin(g * 9.0 + warp * 2.0);
+      let t = 0.35 + 0.45 * g + (hash(plank, 9.7) - 0.5) * 0.25;
+      if (py < 1.2 || py > PLANK - 1.2) t = -0.25; // the seam between planks
+      const i = (y * bw + x) * 4;
+      d[i] = clamp(light[0] * t + dark[0] * (1 - t), 40, 255);
+      d[i + 1] = clamp(light[1] * t + dark[1] * (1 - t), 25, 255);
+      d[i + 2] = clamp(light[2] * t + dark[2] * (1 - t), 15, 255);
+      d[i + 3] = 255;
+    }
+  }
+  o.putImageData(img, 0, 0);
+  bg = document.createElement('canvas');
+  bg.width = Math.round(W * dpr); bg.height = Math.round(H * dpr);
+  const b = bg.getContext('2d');
+  b.imageSmoothingEnabled = true;
+  b.drawImage(off, 0, 0, bg.width, bg.height);
+  b.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // A warm lamp in the middle and a vignette at the edges (HANDBOOK §4.4).
+  const lamp = b.createRadialGradient(W * 0.5, H * 0.45, 0, W * 0.5, H * 0.45, Math.max(W, H) * 0.75);
+  lamp.addColorStop(0, 'rgba(255, 228, 180, 0.16)');
+  lamp.addColorStop(0.55, 'rgba(0, 0, 0, 0)');
+  lamp.addColorStop(1, 'rgba(20, 8, 2, 0.55)');
+  b.fillStyle = lamp; b.fillRect(0, 0, W, H);
+}
+
+// Glow sprite, pre-rendered once (HANDBOOK §4.2).
+const glowSprite = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255, 244, 210, 1)');
+  gr.addColorStop(0.35, 'rgba(255, 196, 110, 0.45)');
+  gr.addColorStop(1, 'rgba(255, 160, 60, 0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  return c;
+})();
+
+// Shaded face colours, cached so the hot loop builds no strings (HANDBOOK §6.2).
+const LEVELS = 24;
+const faceStyles = PALETTE.map(c => {
+  const out = [];
+  for (let l = 0; l < LEVELS; l++) {
+    const b = 0.58 + 0.55 * (l / (LEVELS - 1));
+    out.push('rgb(' + Math.round(clamp(c[0] * b, 0, 255)) + ',' + Math.round(clamp(c[1] * b, 0, 255)) + ',' + Math.round(clamp(c[2] * b, 0, 255)) + ')');
+  }
+  return out;
+});
+
+// ===========================================================================
+// State
+// ===========================================================================
+let doms = [];
+let nextId = 1;
+let now = 0;
+let gap = GAP_START;
+let lastDir = 0;
+let colourCursor = 0;
+let particles = [];
+let rings = [];
+let banners = [];
+let cascade = null;
+let lastRun = 0;
+let trauma = 0;
+let introDom = null;            // the glowing first domino of the starter run
+let soundOn = false, audio = null;
+const pointer = { x: -999, y: -999, inside: false, vx: 0, vy: 0, lastT: 0 };
+let stroke = null;              // the path being drawn with the left button
+let ghostDir = 0;
+
+function makeDomino(x, y, phi, col) {
+  const d = {
+    id: nextId++, x, y, phi: 0, fx: 1, fy: 0, ux: 0, uy: 1,
+    th: 0, om: 0, col,
+    pa: (Math.random() * 7) | 0, pb: (Math.random() * 7) | 0,
+    drop: 0, dropV: 0, appearAt: now,
+    fallAt: null, landed: false, glow: 0, restoreAt: null, scale: 1, sleep: false, still: 0, inFloor: false,
+    px: new Float32Array(8), py: new Float32Array(8), sx: new Float32Array(4), sy: new Float32Array(4),
+  };
+  setFacing(d, phi);
+  return d;
+}
+
+function wake(d) {
+  d.sleep = false; d.still = 0;
+  if (d.inFloor) { d.inFloor = false; floorDirty = true; }
+}
+
+function setFacing(d, phi) {
+  d.phi = phi; d.fx = Math.cos(phi); d.fy = Math.sin(phi); d.ux = -d.fy; d.uy = d.fx;
+}
+
+function tooClose(x, y, ignore) {
+  for (const o of doms) {
+    if (o === ignore) continue;
+    const dx = o.x - x, dy = o.y - y;
+    if (dx * dx + dy * dy < 11 * 11) return true;
+  }
+  return false;
+}
+
+// Adds a domino, dropping in from above. Returns it, or null when blocked.
+function addDomino(x, y, phi, col, delay) {
+  if (x < 6 || y < 6 || x > W - 6 || y > H + HD * K - 6) return null;
+  if (tooClose(x, y, null)) return null;
+  if (doms.length >= MAX_DOMINOES) {
+    const old = doms.shift();
+    if (old.inFloor) floorDirty = true;
+    if (old === introDom) introDom = null;
+    puff(old.x, old.y - HD * K * 0.5, 4, 'rgba(255,240,220,');
+  }
+  const d = makeDomino(x, y, phi, col);
+  d.appearAt = now + (delay || 0);
+  d.drop = 30; d.dropV = 0;
+  doms.push(d);
+  return d;
+}
+
+// ===========================================================================
+// Spatial grid with linked lists in typed arrays (HANDBOOK §3.3, §6.3)
+// ===========================================================================
+const CELL = 64;
+let gw = 1, gh = 1, cellHead = new Int32Array(1), cellNext = new Int32Array(MAX_DOMINOES + 8);
+function sizeGrid() {
+  gw = Math.ceil(W / CELL) + 4; gh = Math.ceil((H + 200) / CELL) + 4;
+  cellHead = new Int32Array(gw * gh);
+}
+const cellX = x => clamp(Math.floor(x / CELL) + 2, 0, gw - 1);
+const cellY = y => clamp(Math.floor(y / CELL) + 2, 0, gh - 1);
+function buildGrid() {
+  cellHead.fill(-1);
+  for (let i = 0; i < doms.length; i++) {
+    const c = cellY(doms[i].y) * gw + cellX(doms[i].x);
+    cellNext[i] = cellHead[c]; cellHead[c] = i;
+  }
+}
+
+// ===========================================================================
+// Physics. Each domino is a rigid block that rocks about one bottom edge.
+// Inside the tipping angle gravity stands it back up; past it, gravity
+// topples it. A falling domino's top edge pushes whatever it reaches. That
+// contact is solved as a constraint plus an impulse, so a domino leans on the
+// next one and keeps pushing it, the way real ones do.
+// ===========================================================================
+function integrate(d, dt) {
+  if (now < d.appearAt) return;
+  if (d.drop > 0 || d.dropV !== 0) {
+    d.dropV -= 1400 * dt; d.drop += d.dropV * dt;
+    if (d.drop <= 0) { d.drop = 0; d.dropV = d.dropV < -90 ? -d.dropV * 0.28 : 0; }
+  }
+  if (d.restoreAt !== null) {
+    if (now >= d.restoreAt) {
+      d.th *= Math.exp(-13 * dt); d.om = 0;
+      if (Math.abs(d.th) < 0.004) {
+        d.th = 0; d.restoreAt = null; d.fallAt = null; d.landed = false;
+        d.dropV = 120; // a little hop as it lands on its feet
+      }
+    }
+    return;
+  }
+  if (d.sleep) return;
+  const a = Math.abs(d.th);
+  if (a < 1e-4 && Math.abs(d.om) < 1e-3) { d.th = 0; d.om = 0; return; }
+  // A fallen domino that has stopped moving goes to sleep (HANDBOOK §6).
+  if (d.landed && Math.abs(d.om) < 0.01) { d.still += dt; if (d.still > 0.4) { d.sleep = true; d.om = 0; return; } } else d.still = 0;
+  const sg = d.th > 0 ? 1 : d.th < 0 ? -1 : (d.om >= 0 ? 1 : -1);
+  d.om += GRAV * Math.sin(a - THC) * sg * dt;
+  d.om *= 1 - 0.35 * dt;
+  let nt = d.th + d.om * dt;
+  if (d.th !== 0 && nt * d.th < 0) d.om *= 0.5;          // rocking loses energy at each tap
+  if (Math.abs(nt) >= HALF_PI) {
+    nt = Math.sign(nt) * HALF_PI;
+    if (!d.landed) { d.landed = true; onLand(d, Math.abs(d.om)); }
+    d.om = Math.abs(d.om) > 1.5 ? -d.om * 0.18 : 0;
+  }
+  d.th = nt;
+  if (d.fallAt === null && Math.abs(nt) > THC) { d.fallAt = now; onFall(d); }
+}
+
+function contacts(i) {
+  const d = doms[i];
+  if (now < d.appearAt || d.restoreAt !== null || d.sleep) return;
+  const at = Math.abs(d.th);
+  if (at < 0.004) return;
+  const sg = d.th > 0 ? 1 : -1;
+  const dX = sg * d.fx, dY = sg * d.fy;
+  const R = HD + TH + WD;
+  const cx0 = cellX(d.x - R), cx1 = cellX(d.x + R), cy0 = cellY(d.y - R), cy1 = cellY(d.y + R);
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let j = cellHead[cy * gw + cx]; j !== -1; j = cellNext[j]) {
+        if (j === i) continue;
+        const e = doms[j];
+        if (now < e.appearAt) continue;
+        const rx = e.x - d.x, ry = e.y - d.y;
+        const s = rx * dX + ry * dY;
+        if (s <= 0 || s > HD + TH + 4) continue;
+        const l = Math.abs(-rx * dY + ry * dX);
+        const c = e.fx * dX + e.fy * dY;                       // how square-on the hit is
+        const ac = Math.abs(c), as = Math.sqrt(Math.max(0, 1 - c * c));
+        if (l > WD / 2 + (WD / 2) * ac + (TH / 2) * as) continue;
+        const reach = HD * Math.sin(Math.abs(d.th));
+        const zc = Math.max(12, HD * Math.cos(d.th));
+        if (Math.abs(e.th) > 1.2 && e.restoreAt === null) {
+          // e is lying down: d can only come to rest on top of it.
+          const g = (e.th > 0 ? 1 : -1) * c;
+          const near = Math.min(s, s + g * HD) - TH;
+          if (reach >= near && Math.abs(d.th) > REST_ON) {
+            d.th = sg * REST_ON;
+            if (d.om * sg > 0) { if (!d.landed && d.om * sg > 1.2) { d.landed = true; onLand(d, Math.abs(d.om) * 0.6); } d.om = 0; }
+          }
+          continue;
+        }
+        // e's lean away from d. Use the true lean: capping it under-reads how
+        // far e has gone and throws d back up. Past 1.2 rad e counts as lying (above).
+        const tj = clamp(e.th * c, -1.25, 1.25);
+        const gapNow = s - TH + zc * Math.tan(tj);
+        const overlap = reach - gapNow;
+        if (overlap <= 0) continue;
+        const cpl = Math.max(ac, 0.15), sc = c >= 0 ? 1 : -1;
+        const inv = 1 / (1 + cpl * cpl);
+        // Push apart (position), then exchange speed (impulse), 10% bounce.
+        // Each correction is limited, so one bad step can never fling a domino.
+        d.th = clamp(d.th - sg * Math.min(0.08, (overlap * inv) / zc), -HALF_PI, HALF_PI);
+        if (e.sleep) wake(e);
+        if (e.restoreAt === null) e.th = clamp(e.th + sc * Math.min(0.08, (overlap * cpl * inv) / zc), -HALF_PI, HALF_PI);
+        const vi = zc * d.om * sg, vj = zc * e.om * c;
+        const rel = vi - vj;
+        if (rel > 0) {
+          const P = 1.1 * rel * inv;
+          d.om -= sg * P / zc;
+          if (e.restoreAt === null) e.om += sc * P * cpl / zc;
+        }
+      }
+    }
+  }
+}
+
+// The cursor's breeze: rocks nearby dominoes but never topples them.
+function breeze(dt) {
+  const sp = Math.hypot(pointer.vx, pointer.vy);
+  if (!pointer.inside || sp < 40) return;
+  for (const d of doms) {
+    if (now < d.appearAt || d.restoreAt !== null || d.fallAt !== null) continue;
+    const a = Math.abs(d.th);
+    if (a > THC * 0.9) continue;
+    const mx = d.x, my = d.y - HD * K * 0.5;
+    const dx = mx - pointer.x, dy = my - pointer.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > BREEZE_R) continue;
+    const fall = (1 - dist / BREEZE_R) * (1 - dist / BREEZE_R);
+    const cap = 0.45 * Math.sqrt(GRAV) * Math.max(0, THC - a);
+    // Something stronger than the breeze (a flick, or a falling neighbour) is
+    // moving this one. Leave it alone, or the breeze would undo the push.
+    if (Math.abs(d.om) > cap) continue;
+    const push = (pointer.vx * d.fx + pointer.vy * d.fy) * fall * 0.004;
+    d.om += push * dt * 60;
+    // Cap the swing both ways, so it rocks back instead of toppling. Near
+    // upright the righting push is about GRAV (THC - a), so a swing of speed w
+    // stays short of the tipping angle while w < sqrt(GRAV) (THC - a).
+    if (Math.abs(d.om) > cap) d.om = Math.sign(d.om) * cap;
+  }
+}
+
+function anyMoving() {
+  for (const d of doms) {
+    if (d.restoreAt !== null) return true;
+    if (d.fallAt !== null && Math.abs(d.om) > 0.05) return true;
+  }
+  return false;
+}
+
+function update(dt) {
+  now += dt;
+  pointer.vx *= Math.exp(-7 * dt); pointer.vy *= Math.exp(-7 * dt);
+  buildGrid();
+  breeze(dt);
+  for (const d of doms) integrate(d, dt);
+  for (let it = 0; it < 3; it++) for (let i = 0; i < doms.length; i++) contacts(i);
+  for (const d of doms) { if (d.glow > 0) d.glow = Math.max(0, d.glow - dt * 1.6); }
+  if (cascade) {
+    if (anyMoving()) cascade.quiet = 0; else cascade.quiet += dt;
+    if (cascade.quiet > 0.6) endCascade();
+  }
+  trauma = Math.max(0, trauma - dt * 1.3);
+}
+
+// ===========================================================================
+// Events and juice (HANDBOOK §5)
+// ===========================================================================
+function topOf(d) {
+  // Where the top edge of the domino is on the table, and on screen.
+  const s = Math.sin(d.th), c = Math.cos(d.th), sg = d.th >= 0 ? 1 : -1;
+  const a = sg * TH / 2 + (0 - sg * TH / 2) * c + HD * s;
+  const z = -(0 - sg * TH / 2) * s + HD * c;
+  const x = d.x + a * d.fx, y = d.y + a * d.fy;
+  return { x, y: y - z * K, gx: x, gy: y };
+}
+
+function onFall(d) {
+  if (!cascade) cascade = { list: [], quiet: 0 };
+  cascade.list.push(d);
+  sfx.clack(cascade.list.length - 1);
+  if (d === introDom) introDom = null;
+}
+
+function onLand(d, speed) {
+  d.glow = 1;
+  const t = topOf(d);
+  puff(t.gx, t.gy, 3 + Math.min(4, speed | 0), 'rgba(255,236,210,');
+  sfx.thud(speed);
+}
+
+function endCascade() {
+  const n = cascade.list.length;
+  lastRun = n;
+  if (n >= 6) celebrate(cascade.list);
+  cascade = null;
+}
+
+function celebrate(list) {
+  const n = list.length;
+  const spacing = Math.min(0.035, 1.8 / n);
+  list.forEach((d, k) => { d.sparkleAt = now + k * spacing; });
+  pendingSparkles = pendingSparkles.concat(list);
+  const last = list[n - 1], t = topOf(last);
+  const words = n >= 80 ? 'Incredible!' : n >= 40 ? 'Amazing!' : n >= 20 ? 'Brilliant!' : 'Whoosh!';
+  banners.push({ text: words + ' ' + n + ' dominoes', x: clamp(t.x, 180, W - 180), y: clamp(t.y - 40, 90, H - 120), t: 0, life: 2.6 + n * spacing });
+  sfx.fanfare(n);
+  if (!reducedMotion) trauma = Math.min(0.5, trauma + 0.12 + n * 0.004);
+}
+let pendingSparkles = [];
+
+function puff(x, y, count, rgba) {
+  for (let i = 0; i < count; i++) {
+    if (particles.length > 500) particles.shift();
+    const a = Math.random() * TAU, sp = 15 + Math.random() * 40;
+    particles.push({ kind: 'dust', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp * 0.6 - 10, life: 0.6 + Math.random() * 0.4, max: 1, r: 3 + Math.random() * 4, col: rgba });
+  }
+}
+
+function sparkle(x, y, count, hue) {
+  for (let i = 0; i < count; i++) {
+    if (particles.length > 500) particles.shift();
+    const a = Math.random() * TAU, sp = 40 + Math.random() * 120;
+    particles.push({ kind: 'spark', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60, life: 0.5 + Math.random() * 0.5, max: 1, r: 6 + Math.random() * 8, hue });
+  }
+}
+
+// ===========================================================================
+// Sound: synthesised, off by default (HANDBOOK §7). Notes climb a pentatonic
+// scale along a run, so every chain plays a tune.
+// ===========================================================================
+const SCALE = [0, 2, 4, 7, 9];
+let lastClack = 0;
+function ensureAudio() {
+  if (audio || !soundOn) return;
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+}
+function tone(freq, dur, type, vol, delay) {
+  if (!soundOn || !audio) return;
+  const t = audio.currentTime + (delay || 0), o = audio.createOscillator(), g = audio.createGain();
+  o.type = type || 'sine'; o.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol || 0.06, t + 0.004);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(audio.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+function click(vol, freq) {
+  if (!soundOn || !audio) return;
+  const t = audio.currentTime, n = Math.floor(audio.sampleRate * 0.03);
+  const buf = audio.createBuffer(1, n, audio.sampleRate), ch = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 4);
+  const s = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+  s.buffer = buf; f.type = 'bandpass'; f.frequency.value = freq || 2600; f.Q.value = 2.5; g.gain.value = vol;
+  s.connect(f); f.connect(g); g.connect(audio.destination); s.start(t);
+}
+const noteFreq = i => 330 * Math.pow(2, (SCALE[i % 5] + 12 * (Math.floor(i / 5) % 3)) / 12);
+const sfx = {
+  clack(i) {
+    if (!soundOn || !audio) return;
+    if (audio.currentTime - lastClack < 0.022) return;
+    lastClack = audio.currentTime;
+    click(0.22, 2200 + (i % 5) * 180);
+    tone(noteFreq(i), 0.16, 'triangle', 0.045);
+  },
+  thud(speed) { click(clamp(speed * 0.02, 0.03, 0.09), 600); },
+  place() { click(0.08, 3400); },
+  flick() { click(0.16, 1800); tone(660, 0.08, 'sine', 0.04); },
+  fanfare(n) { [0, 4, 7, 12, 16].slice(0, n >= 20 ? 5 : 3).forEach((s, k) => tone(523 * Math.pow(2, s / 12), 0.35, 'triangle', 0.05, k * 0.09)); },
+  stand() { [0, 2, 4, 7].forEach((s, k) => tone(392 * Math.pow(2, s / 12), 0.12, 'sine', 0.035, k * 0.06)); },
+  tick() { tone(900, 0.03, 'square', 0.02); },
+};
+
+// ===========================================================================
+// Building runs
+// ===========================================================================
+function nextColour() { const c = colourCursor % PALETTE.length; colourCursor++; return c; }
+
+// Places dominoes on a list of points, each facing along the path.
+function placeSequence(pts, anchor, colFn, stagger) {
+  const placed = [];
+  for (let k = 0; k < pts.length; k++) {
+    const p = pts[k];
+    const prev = k > 0 ? pts[k - 1] : (anchor ? { x: anchor.x, y: anchor.y } : null);
+    const next = k < pts.length - 1 ? pts[k + 1] : null;
+    let dx = 0, dy = 0;
+    if (prev) { const l = Math.hypot(p.x - prev.x, p.y - prev.y) || 1; dx += (p.x - prev.x) / l; dy += (p.y - prev.y) / l; }
+    if (next) { const l = Math.hypot(next.x - p.x, next.y - p.y) || 1; dx += (next.x - p.x) / l; dy += (next.y - p.y) / l; }
+    const phi = (dx || dy) ? Math.atan2(dy, dx) : lastDir;
+    const d = addDomino(p.x, p.y, phi, colFn(k), (stagger || 0) * k);
+    if (d) placed.push(d);
+  }
+  return placed;
+}
+
+function resample(poly, step) {
+  const out = [{ x: poly[0].x, y: poly[0].y }];
+  let carry = 0;
+  for (let i = 1; i < poly.length; i++) {
+    const a = poly[i - 1], b = poly[i];
+    const seg = Math.hypot(b.x - a.x, b.y - a.y);
+    let t = step - carry;
+    while (t <= seg) { out.push({ x: a.x + (b.x - a.x) * t / seg, y: a.y + (b.y - a.y) * t / seg }); t += step; }
+    carry = seg - (t - step);
+  }
+  return out;
+}
+
+function buildStarter() {
+  // An S-shaped run that splits into two branches: it shows every idea at once.
+  const poly = [];
+  const x0 = W * 0.24, x1 = W * 0.60, yc = H * 0.56, amp = Math.min(H * 0.12, 90);
+  for (let i = 0; i <= 80; i++) {
+    const t = i / 80;
+    poly.push({ x: x0 + (x1 - x0) * t, y: yc - amp * Math.sin(t * TAU) });
+  }
+  const main = placeSequence(resample(poly, gap), null, k => Math.floor(k / 3) % PALETTE.length, 0.012);
+  const j = main[main.length - 1];
+  if (!j) return;
+  for (const side of [-1, 1]) {
+    const pts = [];
+    let ang = j.phi + side * 0.62, x = j.x, y = j.y;
+    for (let k = 0; k < 9; k++) {
+      x += Math.cos(ang) * gap; y += Math.sin(ang) * gap;
+      pts.push({ x, y });
+      ang -= side * 0.1;
+    }
+    placeSequence(pts, j, () => side < 0 ? 4 : 0, 0.012);
+  }
+  introDom = main[0] || null;
+  colourCursor = 1;
+}
+
+// Moves a stamp's centre inward so the whole stamp fits on the table:
+// a stamp cut off at the edge would leave a gap and stop the run.
+function fitCentre(cx, cy, R) {
+  return [clamp(cx, Math.min(W / 2, R + 12), Math.max(W / 2, W - R - 12)),
+          clamp(cy, Math.min(H / 2, R + HD * K + 12), Math.max(H / 2, H - R - 12))];
+}
+
+function stampSpiral(cx, cy) {
+  const pts = [];
+  const r0 = 48, b = (HD + TH + 8) / TAU;  // inside 48 px the turn is too tight to fall round
+  [cx, cy] = fitCentre(cx, cy, r0 + (HD + TH + 8) * 2.0 + WD);
+  let ang = 0, r = r0;
+  while (r < r0 + (HD + TH + 8) * 2.0) {
+    pts.push({ x: cx + Math.cos(ang) * r, y: cy + Math.sin(ang) * r });
+    ang += gap / r; r = r0 + b * ang;
+  }
+  pts.reverse(); // the run starts on the outside and spirals in
+  const col = nextColour();
+  const placed = placeSequence(pts, null, () => col, 0.008);
+  if (placed.length) sfx.place();
+}
+
+function stampRing(cx, cy) {
+  const R = Math.max(70, gap * 3.2);
+  const n = Math.max(8, Math.floor(TAU * R / gap));
+  [cx, cy] = fitCentre(cx, cy, R + WD);
+  const pts = [];
+  for (let k = 0; k < n; k++) { const a = k / n * TAU; pts.push({ x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R }); }
+  const col = nextColour();
+  const placed = placeSequence(pts, null, () => col, 0.008);
+  if (placed.length) sfx.place();
+}
+
+// ===========================================================================
+// Input (HANDBOOK §2.3). Mouse only. The right button is a verb, not a menu.
+// ===========================================================================
+function local(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+// The pointer stands for a spot on the table. A domino's body is drawn above
+// its base, so picks compare the pointer with the middle of the body.
+function pick(px, py, maxR) {
+  let best = null, bd = maxR;
+  for (const d of doms) {
+    if (now < d.appearAt) continue;
+    const t = topOf(d);
+    const mx = (d.x + t.x) / 2, my = (d.y + t.y) / 2;
+    const dist = Math.hypot(mx - px, my - py);
+    if (dist < bd) { bd = dist; best = d; }
+  }
+  return best;
+}
+
+function startStroke(p) {
+  const anchor = pick(p.x, p.y, PICK_R);
+  stroke = {
+    ax: anchor ? anchor.x : p.x, ay: anchor ? anchor.y : p.y,
+    anchor, first: null, prev: anchor, prevPrev: null, count: 0, dx: 0, dy: 0,
+    col: nextColour(), sx: p.x, sy: p.y,
+  };
+  if (anchor) hint('Branching off! Draw where the new line should go.');
+}
+
+function extendStroke(p) {
+  if (!stroke) return;
+  // The first domino waits until we know which way the line is going.
+  if (!stroke.anchor && !stroke.first) {
+    const dx = p.x - stroke.sx, dy = p.y - stroke.sy;
+    if (Math.hypot(dx, dy) < 8) return;
+    const phi = Math.atan2(dy, dx);
+    const d = addDomino(stroke.sx, stroke.sy, phi, stroke.col, 0);
+    stroke.first = d || { x: stroke.sx, y: stroke.sy };
+    stroke.dx = Math.cos(phi); stroke.dy = Math.sin(phi);
+    stroke.prev = d; stroke.ax = stroke.sx; stroke.ay = stroke.sy;
+    if (d) { stroke.count++; sfx.place(); }
+  }
+  let guard = 0;
+  for (;;) {
+    const dx = p.x - stroke.ax, dy = p.y - stroke.ay;
+    const dist = Math.hypot(dx, dy);
+    if (dist < gap || guard++ > 40) break;
+    let ux = dx / dist, uy = dy / dist, limited = false, step = gap;
+    if (stroke.anchor && stroke.count === 0) {
+      // The first domino of a branch turns 34 to 43 degrees off the old line:
+      // far enough to clear the line's own next domino, near enough for the
+      // branch domino's fall to reach it. It also stands a little closer.
+      // The rest of the branch then curves round toward the pointer.
+      const an = stroke.anchor, sgn = (ux * an.fx + uy * an.fy) >= 0 ? 1 : -1;
+      const bx = sgn * an.fx, by = sgn * an.fy;
+      const want = Math.atan2(bx * uy - by * ux, bx * ux + by * uy);
+      const turn = (want < 0 ? -1 : 1) * clamp(Math.abs(want), 0.6, 0.75);
+      ux = bx * Math.cos(turn) - by * Math.sin(turn); uy = bx * Math.sin(turn) + by * Math.cos(turn);
+      step = gap * 0.85;
+    } else if (stroke.dx || stroke.dy) {
+      // A line of dominoes cannot fall round a sharp corner, so each new one
+      // turns at most MAX_TURN from the last. Sharp drags become curves.
+      const turn = Math.atan2(stroke.dx * uy - stroke.dy * ux, stroke.dx * ux + stroke.dy * uy);
+      if (Math.abs(turn) > MAX_TURN) {
+        const tt = Math.sign(turn) * MAX_TURN;
+        ux = stroke.dx * Math.cos(tt) - stroke.dy * Math.sin(tt); uy = stroke.dx * Math.sin(tt) + stroke.dy * Math.cos(tt);
+        limited = true;
+      }
+    }
+    const nx = stroke.ax + ux * step, ny = stroke.ay + uy * step;
+    const phi = Math.atan2(uy, ux);
+    const d = addDomino(nx, ny, phi, stroke.col, 0);
+    if (d) {
+      // Smooth the curve: the previous domino faces between its two neighbours.
+      const pv = stroke.prev;
+      if (pv && pv !== stroke.anchor) {
+        if (stroke.prevPrev) {
+          const ix = pv.x - stroke.prevPrev.x, iy = pv.y - stroke.prevPrev.y, il = Math.hypot(ix, iy) || 1;
+          setFacing(pv, Math.atan2(iy / il + uy, ix / il + ux));
+        } else setFacing(pv, phi);
+      }
+      stroke.prevPrev = pv; stroke.prev = d; stroke.count++;
+      lastDir = phi;
+      sfx.place();
+    }
+    stroke.ax = nx; stroke.ay = ny;
+    stroke.dx = ux; stroke.dy = uy;
+    if (limited) break; // one turning step per pointer move, so a still pointer never spins a circle
+  }
+}
+
+function endStroke(p) {
+  if (!stroke) return;
+  if (stroke.count === 0 && !stroke.anchor) {
+    if (addDomino(stroke.sx, stroke.sy, lastDir, stroke.col, 0)) sfx.place();
+  }
+  if (stroke.count > 0) { introDom = null; hint('Right-click the first domino to knock them down.'); }
+  stroke = null;
+}
+
+function flick(p) {
+  const d = pick(p.x, p.y, PICK_R + 6);
+  if (!d || Math.abs(d.th) > 1.2) {
+    rings.push({ x: p.x, y: p.y, r: 4, life: 0.4, max: 0.4 });
+    return;
+  }
+  const t = topOf(d);
+  const mx = (d.x + t.x) / 2, my = (d.y + t.y) / 2;
+  const vx = mx - p.x, vy = my - p.y, vl = Math.hypot(vx, vy);
+  let sg = 1;
+  if (vl > 5) { const c = (vx * d.fx + vy * d.fy) / vl; if (Math.abs(c) > 0.35) sg = Math.sign(c); }
+  d.restoreAt = null; wake(d);
+  d.om += sg * 4.2;
+  d.glow = 0.8;
+  rings.push({ x: mx, y: my, r: 6, life: 0.45, max: 0.45 });
+  sfx.flick();
+  if (d === introDom) introDom = null;
+  hint('');
+}
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('contextmenu', e => e.preventDefault());
+
+// Pointer Events send pointerdown only for the FIRST button pressed. Any other
+// button change arrives as a pointermove, so compare e.buttons every time.
+let prevButtons = 0;
+function onButtons(e) {
+  const p = local(e);
+  const nb = e.buttons, ob = prevButtons;
+  prevButtons = nb;
+  if ((nb & 2) && !(ob & 2)) flick(p);
+  if ((nb & 1) && !(ob & 1)) startStroke(p);
+  if (!(nb & 1) && (ob & 1)) endStroke(p);
+}
+
+canvas.addEventListener('pointerdown', e => {
+  ensureAudio();
+  const p = local(e);
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
+  onButtons(e);
+});
+
+window.addEventListener('pointermove', e => {
+  const p = local(e);
+  const t = performance.now();
+  const dt = Math.max(1, t - (pointer.lastT || t - 16)) / 1000;
+  const dx = p.x - pointer.x, dy = p.y - pointer.y;
+  if (pointer.inside && Math.abs(dx) + Math.abs(dy) < 300) {
+    pointer.vx = pointer.vx * 0.5 + (dx / dt) * 0.5;
+    pointer.vy = pointer.vy * 0.5 + (dy / dt) * 0.5;
+    if (Math.abs(dx) + Math.abs(dy) > 0.5) ghostDir = Math.atan2(dy, dx);
+    if (Math.hypot(pointer.vx, pointer.vy) > 400 && Math.random() < 0.5) {
+      particles.push({ kind: 'air', x: p.x, y: p.y, vx: pointer.vx * 0.15, vy: pointer.vy * 0.15, life: 0.5, max: 0.5, r: 1.5 + Math.random() * 1.5 });
+    }
+  }
+  pointer.lastT = t;
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+  if (e.buttons !== prevButtons) onButtons(e);
+  if (e.buttons & 1) extendStroke(p);
+});
+
+window.addEventListener('pointerup', e => onButtons(e));
+window.addEventListener('blur', () => { if (stroke) endStroke(pointer); prevButtons = 0; });
+canvas.addEventListener('pointerleave', () => { pointer.inside = false; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  // Shift + wheel arrives as a sideways scroll, so read deltaX when deltaY is zero.
+  const delta = e.deltaY || e.deltaX;
+  if (!delta) return;
+  const old = gap;
+  gap = clamp(gap - Math.sign(delta) * 2, GAP_MIN, GAP_MAX);
+  if (gap !== old) { ensureAudio(); sfx.tick(); }
+  hint(gap >= HD + TH - 2 ? 'Too far apart! They will not reach.' : gap > 40 ? 'A wide gap. Will they still reach?' : '');
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') resetGame();
+  else if (k === 'u') standUp();
+  else if (k === 's' && pointer.inside) stampSpiral(pointer.x, pointer.y);
+  else if (k === 'o' && pointer.inside) stampRing(pointer.x, pointer.y);
+  else if (k === 'h') ui.panel.classList.toggle('hidden');
+  else if (k === 'm') toggleSound();
+});
+
+const ui = {
+  panel: document.getElementById('ui'), hint: document.getElementById('hint'),
+  gap: document.getElementById('gapVal'), stand: document.getElementById('standVal'),
+  fall: document.getElementById('fallVal'), run: document.getElementById('runVal'),
+  snd: document.getElementById('sndVal'), sound: document.getElementById('soundBtn'),
+};
+function hint(t) { ui.hint.textContent = t; }
+
+function toggleSound() {
+  soundOn = !soundOn;
+  ui.sound.textContent = soundOn ? 'Sound on' : 'Sound off';
+  if (soundOn) { ensureAudio(); if (audio && audio.state === 'suspended') audio.resume(); sfx.tick(); }
+}
+ui.sound.addEventListener('click', toggleSound);
+document.getElementById('resetBtn').addEventListener('click', () => { ensureAudio(); resetGame(); });
+document.getElementById('standBtn').addEventListener('click', () => { ensureAudio(); standUp(); });
+
+// Rewind: the last domino to fall stands up first.
+function standUp() {
+  const fallen = doms.filter(d => d.th !== 0 || d.om !== 0);
+  if (!fallen.length) return;
+  fallen.sort((a, b) => (b.fallAt || 0) - (a.fallAt || 0));
+  const spacing = Math.min(0.02, 1.2 / fallen.length);
+  fallen.forEach((d, k) => { d.restoreAt = now + k * spacing; d.om = 0; wake(d); });
+  cascade = null;
+  sfx.stand();
+}
+
+function resetGame() {
+  doms = []; particles = []; rings = []; banners = []; pendingSparkles = [];
+  floorDirty = true;
+  cascade = null; lastRun = 0; trauma = 0; stroke = null;
+  gap = GAP_START; lastDir = 0; colourCursor = 0; now = 0;
+  buildStarter();
+  hint('Right-click the glowing domino!');
+}
+
+// ===========================================================================
+// Drawing
+// ===========================================================================
+const cx8 = new Float64Array(8), cy8 = new Float64Array(8);
+const FACES = [
+  // corner index = ia*4 + ib*2 + ic
+  [4, 6, 7, 5], [0, 2, 3, 1],   // +a front, -a back: the big faces with pips
+  [2, 6, 7, 3], [0, 4, 5, 1],   // +b, -b: the long thin sides
+  [1, 5, 7, 3], [0, 4, 6, 2],   // +c top, -c bottom
+];
+
+// Fills the corner arrays for a domino. The block turns about its front or
+// back bottom edge by d.th, then the 3D point is drawn with an oblique view.
+function corners(d) {
+  const s = Math.sin(d.th), c = Math.cos(d.th);
+  const ap = d.th >= 0 ? TH / 2 : -TH / 2;
+  const z0 = d.drop, sc = d.scale;
+  for (let ia = 0; ia < 2; ia++) for (let ib = 0; ib < 2; ib++) for (let ic = 0; ic < 2; ic++) {
+    const a = (ia ? TH / 2 : -TH / 2) * sc, b = (ib ? WD / 2 : -WD / 2) * sc, h = (ic ? HD : 0) * sc;
+    const ar = a - ap;
+    const a2 = ap + ar * c + h * s;
+    const z = -ar * s + h * c + z0;
+    const X = d.x + a2 * d.fx + b * d.ux, Y = d.y + a2 * d.fy + b * d.uy;
+    const i = ia * 4 + ib * 2 + ic;
+    cx8[i] = X; cy8[i] = Y - z * K;
+  }
+}
+
+function cacheCorners(d) {
+  corners(d);
+  for (let i = 0; i < 8; i++) { d.px[i] = cx8[i]; d.py[i] = cy8[i]; }
+  // Shadow: the base edge and the top edge, each pushed away from the light
+  // by its height. A quad is enough at this thickness.
+  const s = Math.sin(d.th), c = Math.cos(d.th), sg = d.th >= 0 ? 1 : -1;
+  const ap = sg * TH / 2;
+  const ta = ap + (-ap) * c + HD * s, tz = ap * s + HD * c + d.drop;
+  const bx = d.x, by = d.y;
+  const tx = d.x + ta * d.fx + tz * SHADOW_DX, ty = d.y + ta * d.fy + tz * SHADOW_DY;
+  const hx = d.ux * WD / 2, hy = d.uy * WD / 2;
+  d.sx[0] = bx - hx; d.sy[0] = by - hy; d.sx[1] = bx + hx; d.sy[1] = by + hy;
+  d.sx[2] = tx + hx; d.sy[2] = ty + hy; d.sx[3] = tx - hx; d.sy[3] = ty - hy;
+}
+
+function faceNormal(d, f, out) {
+  const s = Math.sin(d.th), c = Math.cos(d.th);
+  switch (f) {
+    case 0: out[0] = c * d.fx; out[1] = c * d.fy; out[2] = -s; break;
+    case 1: out[0] = -c * d.fx; out[1] = -c * d.fy; out[2] = s; break;
+    case 2: out[0] = d.ux; out[1] = d.uy; out[2] = 0; break;
+    case 3: out[0] = -d.ux; out[1] = -d.uy; out[2] = 0; break;
+    case 4: out[0] = s * d.fx; out[1] = s * d.fy; out[2] = c; break;
+    default: out[0] = -s * d.fx; out[1] = -s * d.fy; out[2] = -c;
+  }
+}
+const nrm = new Float64Array(3);
+
+// A point on a big face, given its position across (b) and up (h) the face.
+let fS = 0, fC = 1;
+function facePoint(d, front, b, h) {
+  const s = fS, c = fC;
+  const ap = d.th >= 0 ? TH / 2 : -TH / 2;
+  const a = (front ? TH / 2 + 0.3 : -TH / 2 - 0.3) * d.scale;
+  const ar = a - ap;
+  const a2 = ap + ar * c + h * d.scale * s;
+  const z = -ar * s + h * d.scale * c + d.drop;
+  const X = d.x + a2 * d.fx + b * d.scale * d.ux, Y = d.y + a2 * d.fy + b * d.scale * d.uy;
+  pt[0] = X; pt[1] = Y - z * K;
+}
+const pt = new Float64Array(2);
+const PIP_B = [-5.5, 0, 5.5];
+const PIP_STYLE = 'rgba(255, 252, 245, 0.95)';
+
+function drawDomino(d, g) {
+  g = g || ctx;
+  const cx8 = d.px, cy8 = d.py;
+  fS = Math.sin(d.th); fC = Math.cos(d.th);
+  for (let f = 0; f < 6; f++) {
+    faceNormal(d, f, nrm);
+    const vis = nrm[1] * K + nrm[2];
+    if (vis <= 0.001) continue;
+    const lit = Math.max(0, nrm[0] * LIGHT[0] + nrm[1] * LIGHT[1] + nrm[2] * LIGHT[2]);
+    const fc = FACES[f];
+    g.beginPath();
+    g.moveTo(cx8[fc[0]], cy8[fc[0]]);
+    g.lineTo(cx8[fc[1]], cy8[fc[1]]); g.lineTo(cx8[fc[2]], cy8[fc[2]]); g.lineTo(cx8[fc[3]], cy8[fc[3]]);
+    g.closePath();
+    g.fillStyle = faceStyles[d.col][Math.min(LEVELS - 1, Math.round(lit * (LEVELS - 1)))];
+    g.fill();
+    // Pips and a dividing line on a big face that faces us well enough.
+    if (f < 2 && vis > 0.12) {
+      const front = f === 0;
+      const ga = g.globalAlpha;
+      g.globalAlpha = ga * clamp((vis - 0.12) * 4, 0, 0.95);
+      g.beginPath();
+      // The dividing line, as a thin strip so it shares the pips' one fill.
+      facePoint(d, front, -WD / 2 + 3, HD / 2 - 0.7); const x0 = pt[0], y0 = pt[1];
+      facePoint(d, front, WD / 2 - 3, HD / 2 - 0.7); const x1 = pt[0], y1 = pt[1];
+      facePoint(d, front, WD / 2 - 3, HD / 2 + 0.7); const x2 = pt[0], y2 = pt[1];
+      facePoint(d, front, -WD / 2 + 3, HD / 2 + 0.7);
+      g.moveTo(x0, y0); g.lineTo(x1, y1); g.lineTo(x2, y2); g.lineTo(pt[0], pt[1]); g.closePath();
+      // Pips as small squares: at this size they read as dots, and cost far less than arcs.
+      const halves = d.pips || (d.pips = [d.pa, d.pb]);
+      for (let hv = 0; hv < 2; hv++) {
+        const base = hv ? HD * 0.75 : HD * 0.25, cells = PIPS[halves[hv]];
+        for (let q = 0; q < cells.length; q++) {
+          const cell = cells[q];
+          const b = PIP_B[cell % 3], h = base + (1 - Math.floor(cell / 3)) * 6.5;
+          facePoint(d, front, front ? b : -b, h);
+          g.rect(pt[0] - 1.7, pt[1] - 1.7, 3.4, 3.4);
+        }
+      }
+      g.fillStyle = PIP_STYLE; g.fill();
+      g.globalAlpha = ga;
+    }
+  }
+}
+
+function sortKey(d) {
+  // Painter's order: things nearer the bottom of the table are nearer to us.
+  const s = Math.sin(d.th), sg = d.th >= 0 ? 1 : -1;
+  return d.y + d.fy * HD * 0.5 * s * (sg > 0 ? 1 : 1);
+}
+
+const drawList = [];
+
+// Fallen dominoes that have settled lie almost flat, so they can sit on one
+// layer under everything else and be drawn just once.
+function drawToFloor(d) {
+  cacheCorners(d);
+  floorCtx.beginPath();
+  floorCtx.moveTo(d.sx[0], d.sy[0]); floorCtx.lineTo(d.sx[1], d.sy[1]); floorCtx.lineTo(d.sx[2], d.sy[2]); floorCtx.lineTo(d.sx[3], d.sy[3]); floorCtx.closePath();
+  floorCtx.fillStyle = 'rgba(40, 18, 4, 0.30)'; floorCtx.fill();
+  drawDomino(d, floorCtx);
+  d.inFloor = true;
+}
+function updateFloor() {
+  if (floorDirty) {
+    floorCtx.setTransform(1, 0, 0, 1, 0, 0);
+    floorCtx.clearRect(0, 0, floor.width, floor.height);
+    floorCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    floorCtx.lineJoin = 'round';
+    for (const d of doms) d.inFloor = false;
+    floorDirty = false;
+  }
+  for (const d of doms) if (d.sleep && !d.inFloor && d.restoreAt === null) drawToFloor(d);
+}
+function draw(t) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (bg) ctx.drawImage(bg, 0, 0, W, H);
+  ctx.save();
+  if (trauma > 0 && !reducedMotion) {
+    const tr = trauma * trauma;
+    ctx.translate(Math.sin(t * 0.047) * 6 * tr, Math.sin(t * 0.061 + 1) * 6 * tr);
+    ctx.rotate(Math.sin(t * 0.033 + 2) * 0.01 * tr);
+  }
+
+  updateFloor();
+  ctx.drawImage(floor, 0, 0, W, H);
+
+  drawList.length = 0;
+  for (const d of doms) if (now >= d.appearAt && !d.inFloor) drawList.push(d);
+  for (const d of drawList) d.key = sortKey(d);
+  drawList.sort((a, b) => a.key - b.key);
+
+  // Shadows first, in one path so overlaps do not double-darken.
+  ctx.beginPath();
+  for (const d of drawList) {
+    cacheCorners(d);
+    ctx.moveTo(d.sx[0], d.sy[0]); ctx.lineTo(d.sx[1], d.sy[1]); ctx.lineTo(d.sx[2], d.sy[2]); ctx.lineTo(d.sx[3], d.sy[3]); ctx.closePath();
+  }
+  ctx.fillStyle = 'rgba(40, 18, 4, 0.30)';
+  ctx.fill('nonzero');
+
+  // The intro glow under the first domino of the starter run.
+  if (introDom && now >= introDom.appearAt) {
+    const tp = topOf(introDom);
+    const pulse = 0.55 + 0.45 * Math.sin(t * 0.006);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.65 * pulse;
+    const r = 70 + 14 * pulse;
+    ctx.drawImage(glowSprite, (introDom.x + tp.x) / 2 - r / 2, (introDom.y + tp.y) / 2 - r / 2, r, r);
+    ctx.restore();
+  }
+
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(45, 25, 12, 0.45)'; ctx.lineWidth = 1;
+  for (const d of drawList) drawDomino(d);
+
+  // Glows on dominoes that just landed or were flicked (additive light).
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const d of doms) {
+    if (d.glow <= 0 || now < d.appearAt) continue;
+    const tp = topOf(d);
+    const r = 34 + 30 * d.glow;
+    ctx.globalAlpha = d.glow * 0.55;
+    ctx.drawImage(glowSprite, tp.x - r / 2, tp.y - r / 2, r, r);
+  }
+  ctx.restore();
+
+  drawGhost(t);
+  drawParticles();
+  drawRings();
+  if (introDom && now >= introDom.appearAt) drawArrow(t);
+  ctx.restore();
+  drawBanners();
+}
+
+// A faint domino under the cursor shows where the next one goes.
+function drawGhost() {
+  if (!pointer.inside) return;
+  let x = pointer.x, y = pointer.y, phi = ghostDir;
+  if (stroke) {
+    const dx = pointer.x - stroke.ax, dy = pointer.y - stroke.ay, l = Math.hypot(dx, dy);
+    if (l < 1) return;
+    x = stroke.ax + dx / l * gap; y = stroke.ay + dy / l * gap; phi = Math.atan2(dy, dx);
+    // Dotted guide from the last domino to where the next will stand.
+    ctx.save();
+    ctx.setLineDash([3, 5]); ctx.strokeStyle = 'rgba(255, 245, 225, 0.45)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(stroke.ax, stroke.ay); ctx.lineTo(x, y); ctx.stroke();
+    ctx.restore();
+  } else if (pick(pointer.x, pointer.y, PICK_R)) {
+    return; // hovering a domino: it is a branch point, not a new spot
+  }
+  const g = ghost;
+  g.x = x; g.y = y; setFacing(g, phi);
+  cacheCorners(g);
+  ctx.save(); ctx.globalAlpha = 0.28;
+  drawDomino(g);
+  ctx.restore();
+}
+const ghost = { x: 0, y: 0, phi: 0, fx: 1, fy: 0, ux: 0, uy: 1, th: 0, om: 0, col: 2, pa: 0, pb: 0, drop: 0, scale: 1,
+  px: new Float32Array(8), py: new Float32Array(8), sx: new Float32Array(4), sy: new Float32Array(4) };
+
+function drawArrow(t) {
+  const tp = topOf(introDom);
+  const bob = Math.sin(t * 0.008) * 7;
+  const x = (introDom.x + tp.x) / 2 - 34 - bob, y = (introDom.y + tp.y) / 2 - 30 - bob;
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(Math.PI / 4);
+  ctx.fillStyle = 'rgba(255, 250, 235, 0.95)';
+  ctx.strokeStyle = 'rgba(60, 30, 10, 0.6)'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(14, 0); ctx.lineTo(0, -10); ctx.lineTo(0, -4); ctx.lineTo(-16, -4);
+  ctx.lineTo(-16, 4); ctx.lineTo(0, 4); ctx.lineTo(0, 10); ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+function stepParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.kind === 'spark') { p.vy += 220 * dt; p.vx *= 0.97; }
+    else { p.vx *= 0.92; p.vy *= 0.92; }
+  }
+  for (let i = rings.length - 1; i >= 0; i--) { rings[i].life -= dt; rings[i].r += 120 * dt; if (rings[i].life <= 0) rings.splice(i, 1); }
+  for (let i = banners.length - 1; i >= 0; i--) { banners[i].t += dt; if (banners[i].t > banners[i].life) banners.splice(i, 1); }
+  // Celebration sparkles travel along the run in the order it fell.
+  for (let i = pendingSparkles.length - 1; i >= 0; i--) {
+    const d = pendingSparkles[i];
+    if (now >= d.sparkleAt) {
+      const tp = topOf(d);
+      sparkle((d.x + tp.x) / 2, (d.y + tp.y) / 2, reducedMotion ? 2 : 5, d.col);
+      d.glow = 1;
+      pendingSparkles.splice(i, 1);
+    }
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    const a = p.life / p.max;
+    if (p.kind === 'dust') {
+      ctx.globalAlpha = a * 0.5;
+      ctx.fillStyle = p.col + '1)';
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (1.6 - a * 0.6), 0, TAU); ctx.fill();
+    } else if (p.kind === 'air') {
+      ctx.globalAlpha = a * 0.35;
+      ctx.fillStyle = '#fff6e6';
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, TAU); ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const p of particles) {
+    if (p.kind !== 'spark') continue;
+    const a = p.life / p.max, r = p.r * (0.4 + a);
+    ctx.globalAlpha = a;
+    ctx.drawImage(glowSprite, p.x - r, p.y - r, r * 2, r * 2);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+function drawRings() {
+  for (const r of rings) {
+    ctx.globalAlpha = r.life / r.max;
+    ctx.strokeStyle = 'rgba(255, 245, 220, 0.9)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = 'rgba(45, 25, 12, 0.45)'; ctx.lineWidth = 1;
+}
+
+const easeOutBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+function drawBanners() {
+  for (const b of banners) {
+    const inT = clamp(b.t / 0.45, 0, 1), outA = clamp((b.life - b.t) / 0.6, 0, 1);
+    const s = easeOutBack(inT);
+    ctx.save();
+    ctx.translate(b.x, b.y - b.t * 12);
+    ctx.scale(s, s);
+    ctx.globalAlpha = outA;
+    ctx.font = '800 30px ui-rounded, "Trebuchet MS", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 7; ctx.strokeStyle = 'rgba(60, 28, 8, 0.85)'; ctx.strokeText(b.text, 0, 0);
+    ctx.fillStyle = '#fff4d6'; ctx.fillText(b.text, 0, 0);
+    ctx.restore();
+  }
+}
+
+// ===========================================================================
+// Controls pane, live values
+// ===========================================================================
+let panelT = 0;
+function updatePanel(dt) {
+  panelT += dt;
+  if (panelT < 0.1) return;
+  panelT = 0;
+  let standing = 0, falling = 0;
+  for (const d of doms) {
+    if (now < d.appearAt) continue;
+    if (Math.abs(d.th) < THC) standing++;
+    else if (Math.abs(d.om) > 0.05 && d.restoreAt === null) falling++;
+  }
+  const label = gap >= HD + TH - 2 ? 'too far!' : gap > 40 ? 'wide' : gap > 26 ? 'medium' : 'close';
+  ui.gap.textContent = gap + ' px, ' + label;
+  ui.stand.textContent = standing + ' of ' + doms.length;
+  ui.fall.textContent = falling;
+  ui.run.textContent = lastRun ? lastRun + ' in a row' : '-';
+  ui.snd.textContent = soundOn ? 'on' : 'off';
+}
+
+// ===========================================================================
+// Test hook, read-only.
+// ===========================================================================
+window.GAME = {
+  get count() { return doms.length; },
+  get gap() { return gap; },
+  get lastRun() { return lastRun; },
+  get standing() { return doms.filter(d => Math.abs(d.th) < THC).length; },
+  get fallen() { return doms.filter(d => Math.abs(d.th) > 1.2).length; },
+  get moving() { return anyMoving(); },
+  get soundOn() { return soundOn; },
+  get banners() { return banners.length; },
+  dominoes() {
+    return doms.map(d => {
+      const t = topOf(d);
+      return { id: d.id, x: d.x, y: d.y, phi: d.phi, theta: d.th, omega: d.om, screenX: (d.x + t.x) / 2, screenY: (d.y + t.y) / 2, visible: now >= d.appearAt };
+    });
+  },
+  maxDominoes: MAX_DOMINOES,
+  tippingAngle: THC,
+};
+
+// ===========================================================================
+// Main loop: fixed timestep (HANDBOOK §2.1)
+// ===========================================================================
+let acc = 0, last = 0;
+let frameMs = 0;
+function frame(t) {
+  const dtReal = Math.min((t - last) / 1000, 0.1);
+  acc += dtReal;
+  last = t;
+  const t0 = performance.now();
+  while (acc >= STEP) { update(STEP); acc -= STEP; }
+  stepParticles(dtReal);
+  const t1 = performance.now();
+  draw(t);
+  window.GAME.updateMs = (window.GAME.updateMs || 0) * 0.95 + (t1 - t0) * 0.05;
+  updatePanel(dtReal);
+  frameMs = frameMs * 0.95 + (performance.now() - t0) * 0.05;
+  window.GAME.frameMs = frameMs;
+  requestAnimationFrame(frame);
+}
+
+document.addEventListener('visibilitychange', () => { last = performance.now(); acc = 0; });
+
+// The app's iframe can report a 0x0 window when this script first runs,
+// so wait for a real size before laying anything out (HANDBOOK §0 rule 7).
+function boot() {
+  if (window.innerWidth < 200 || window.innerHeight < 200) { requestAnimationFrame(boot); return; }
+  fit();
+  resetGame();
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+window.addEventListener('resize', () => { if (window.innerWidth >= 200 && window.innerHeight >= 200) fit(); });
+boot();
+})();
+</script>
+</body>
+</html>
