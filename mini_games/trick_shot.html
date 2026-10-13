@@ -1,0 +1,1327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trick Shot</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #16261d; }
+  body { font-family: ui-rounded, 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif; }
+  canvas { display: block; position: fixed; inset: 0; cursor: crosshair; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    width: 248px; padding: 14px 16px 12px;
+    background: rgba(12, 22, 16, 0.72); border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #c9d6cc; font-size: 12.5px; line-height: 1.6;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    transition: opacity 0.25s;
+  }
+  #ui.hidden { opacity: 0; }
+  #ui h3 { color: #fff; font-size: 16px; letter-spacing: 0.4px; margin-bottom: 4px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 10px; }
+  #ui .k { color: #f3d27a; font-weight: 700; white-space: nowrap; }
+  #ui .d { color: #c9d6cc; text-align: right; }
+  #ui .v { color: #8ee3a8; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  #ui .rule { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 8px 0 7px; }
+  #ui .keys { color: #8fa596; font-size: 11px; margin-top: 6px; }
+  #ui .hint { color: #f3d27a; font-style: italic; font-size: 11.5px; margin-top: 6px; min-height: 18px; }
+  .pill {
+    position: fixed; z-index: 10; border-radius: 999px; cursor: pointer;
+    font: 700 13px ui-rounded, 'Trebuchet MS', sans-serif; letter-spacing: 0.3px;
+    color: #e9f3ea; background: rgba(12, 22, 16, 0.80); border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .pill:hover { background: rgba(34, 64, 44, 0.92); border-color: rgba(255, 255, 255, 0.35); }
+  .pill:focus-visible { outline: 3px solid #f3d27a; outline-offset: 2px; }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 26px; }
+  #soundBtn { bottom: 24px; right: 20px; padding: 9px 16px; font-size: 12px; }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="Trick Shot crazy golf"></canvas>
+<div id="ui">
+  <h3>&#x26F3; Trick Shot</h3>
+  <div class="row"><span class="k">Move</span><span class="d">aim guide</span></div>
+  <div class="row"><span class="k">Left drag</span><span class="d">pull back, let go</span></div>
+  <div class="row"><span class="k">Right hold</span><span class="d">caddie shows path</span></div>
+  <div class="row"><span class="k">Wheel</span><span class="d">curve the ball</span></div>
+  <div class="rule"></div>
+  <div class="row"><span>Hole</span><span class="v" id="holeVal">1</span></div>
+  <div class="row"><span>Course</span><span class="v" id="courseVal">-</span></div>
+  <div class="row"><span>Curve</span><span class="v" id="curveVal">straight</span></div>
+  <div class="row"><span>Shots this hole</span><span class="v" id="shotsVal">0</span></div>
+  <div class="row"><span>Holes sunk</span><span class="v" id="sunkVal">0</span></div>
+  <div class="row"><span>Holes in one</span><span class="v" id="hioVal">0</span></div>
+  <div class="row"><span>Best trick</span><span class="v" id="bestVal">-</span></div>
+  <div class="keys">Keys: R reset &middot; N new hole &middot; H hide this &middot; M sound</div>
+  <div class="hint" id="hint">Pull back from the ball and let go.</div>
+</div>
+<button class="pill" id="soundBtn" type="button">Sound on</button>
+<button class="pill" id="resetBtn" type="button">&#x21BA; New course</button>
+<script>
+(() => {
+'use strict';
+
+// ===========================================================================
+// Constants. Every length is in CSS pixels, every speed in CSS px per second.
+// ===========================================================================
+const BALL_R = 9;
+const HOLE_R = 16;
+const RAIL_R = 7;              // half the thickness of a wooden wall
+const STEP = 1 / 120;          // physics step. The search uses the same step.
+const MAX_PULL = 200;          // drag length that gives full power
+const MIN_POWER = 70;
+const MAX_POWER = 1500;
+const ROLL_DECEL = 150;        // constant rolling resistance
+const DRAG_K = 0.42;           // speed-proportional drag, per second
+const SAND_MULT = 4.5;         // sand multiplies both friction terms
+const STOP_SPEED = 7;
+const WALL_E = 0.80;           // restitution of the wooden walls
+const BUMPER_E = 0.92;
+const BUMPER_KICK = 230;       // speed a bumper adds along its normal
+const MAX_SPEED = 1700;
+const CAPTURE_SPEED = 560;     // slower than this over the cup, and the ball drops
+const PULL_R = HOLE_R * 2.9;   // the cup's gentle slope reaches this far
+const PULL_ACC = 600;
+// Inside this distance the slope beats rolling friction by 5%, so a slow ball
+// keeps rolling in. Outside it, a slow ball is allowed to stop.
+const STOP_R = PULL_R * (1 - 1.05 * ROLL_DECEL / PULL_ACC);
+const CURVE = 0.9;             // rad/s of turn per unit of curve at full speed
+const CURVE_STEPS = 3;         // the wheel goes from -3 to +3
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Seeded random numbers, so the search and the game see the same layout.
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// ===========================================================================
+// Canvas (HANDBOOK §2.2)
+// ===========================================================================
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, dpr = 1;
+function fit() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+const ui = {
+  panel: document.getElementById('ui'),
+  hole: document.getElementById('holeVal'), course: document.getElementById('courseVal'),
+  curve: document.getElementById('curveVal'), shots: document.getElementById('shotsVal'),
+  sunk: document.getElementById('sunkVal'), hio: document.getElementById('hioVal'),
+  best: document.getElementById('bestVal'), hint: document.getElementById('hint'),
+  sound: document.getElementById('soundBtn'),
+};
+function hint(s) { if (ui.hint.textContent !== s) ui.hint.textContent = s; }
+
+// The green sits to the right of the controls pane and above the reset button.
+function greenBox() {
+  const panelOn = !ui.panel.classList.contains('hidden') && W >= 760;
+  const x0 = panelOn ? 16 + 248 + 22 : 20;
+  return { x0, y0: 20, x1: W - 20, y1: H - 76 };
+}
+
+// ===========================================================================
+// Physics. One step function, shared by the live game, the caddie's preview
+// and the solvability search, so a shot the search finds is a shot that works.
+// ===========================================================================
+function inEllipse(e, x, y, pad) {
+  const dx = (x - e.x) / (e.rx + pad), dy = (y - e.y) / (e.ry + pad);
+  return dx * dx + dy * dy < 1;
+}
+
+function collideCapsule(b, w, ev) {
+  const abx = w.bx - w.ax, aby = w.by - w.ay;
+  const L2 = abx * abx + aby * aby;
+  let t = L2 > 0 ? ((b.x - w.ax) * abx + (b.y - w.ay) * aby) / L2 : 0;
+  t = clamp(t, 0, 1);
+  const qx = w.ax + abx * t, qy = w.ay + aby * t;
+  const dx = b.x - qx, dy = b.y - qy;
+  const R = w.r + BALL_R;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= R * R) return;
+  let nx, ny;
+  const d = Math.sqrt(d2);
+  if (d > 1e-6) { nx = dx / d; ny = dy / d; }
+  else { const l = Math.sqrt(L2) || 1; nx = -aby / l; ny = abx / l; }
+  b.x = qx + nx * R; b.y = qy + ny * R;
+  const vn = b.vx * nx + b.vy * ny;
+  if (vn < 0) {
+    const tx = -ny, ty = nx, vt = b.vx * tx + b.vy * ty;
+    b.vx = (-vn * WALL_E) * nx + vt * 0.97 * tx;
+    b.vy = (-vn * WALL_E) * ny + vt * 0.97 * ty;
+    b.spin *= 0.5;
+    if (ev) { ev.bounces++; ev.hit = Math.max(ev.hit, -vn); ev.hitWall = w; }
+  }
+}
+
+function collideBumper(b, c, ev) {
+  const dx = b.x - c.x, dy = b.y - c.y;
+  const R = c.r + BALL_R;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= R * R) return;
+  const d = Math.sqrt(d2) || 1e-6;
+  const nx = dx / d, ny = dy / d;
+  b.x = c.x + nx * R; b.y = c.y + ny * R;
+  const vn = b.vx * nx + b.vy * ny;
+  if (vn < 0) {
+    b.vx -= (1 + BUMPER_E) * vn * nx; b.vy -= (1 + BUMPER_E) * vn * ny;
+    b.vx += nx * BUMPER_KICK; b.vy += ny * BUMPER_KICK;
+    const s = Math.hypot(b.vx, b.vy);
+    if (s > MAX_SPEED) { b.vx *= MAX_SPEED / s; b.vy *= MAX_SPEED / s; }
+    b.spin *= 0.5;
+    if (ev) { ev.bumpers++; ev.hit = Math.max(ev.hit, -vn); ev.hitBumper = c; }
+  }
+}
+
+function collideBounds(b, L, ev) {
+  const g = L.box;
+  let hit = 0;
+  if (b.x < g.x0 + BALL_R) { b.x = g.x0 + BALL_R; if (b.vx < 0) { hit = -b.vx; b.vx = -b.vx * WALL_E; } }
+  if (b.x > g.x1 - BALL_R) { b.x = g.x1 - BALL_R; if (b.vx > 0) { hit = b.vx; b.vx = -b.vx * WALL_E; } }
+  if (b.y < g.y0 + BALL_R) { b.y = g.y0 + BALL_R; if (b.vy < 0) { hit = -b.vy; b.vy = -b.vy * WALL_E; } }
+  if (b.y > g.y1 - BALL_R) { b.y = g.y1 - BALL_R; if (b.vy > 0) { hit = b.vy; b.vy = -b.vy * WALL_E; } }
+  if (hit > 0) { b.spin *= 0.5; if (ev) { ev.bounces++; ev.hit = Math.max(ev.hit, hit); ev.hitRail = true; } }
+}
+
+// Advance one STEP. Returns 'sunk', 'water', 'stopped' or null (still rolling).
+function stepBall(b, L, ev) {
+  const speed0 = Math.hypot(b.vx, b.vy);
+  const n = Math.max(1, Math.ceil(speed0 * STEP / 4));   // never move more than 4 px per sub-step
+  const h = STEP / n;
+  for (let k = 0; k < n; k++) {
+    let speed = Math.hypot(b.vx, b.vy);
+    let inSand = false;
+    for (const s of L.sands) if (inEllipse(s, b.x, b.y, 0)) { inSand = true; break; }
+    if (inSand && ev) ev.sand = true;
+    if (b.spin && speed > 1) {
+      const a = b.spin * CURVE * Math.min(1, speed / 500) * h;
+      const c = Math.cos(a), s = Math.sin(a);
+      const vx = b.vx * c - b.vy * s; b.vy = b.vx * s + b.vy * c; b.vx = vx;
+      b.spin *= Math.exp(-0.45 * h);
+    }
+    const hx = L.hole.x - b.x, hy = L.hole.y - b.y, dh = Math.hypot(hx, hy);
+    if (dh < PULL_R && dh > 0.01) {
+      const pull = PULL_ACC * (1 - dh / PULL_R) * h;
+      b.vx += hx / dh * pull; b.vy += hy / dh * pull;
+    }
+    speed = Math.hypot(b.vx, b.vy);
+    const m = inSand ? SAND_MULT : 1;
+    const dec = (ROLL_DECEL + DRAG_K * speed) * m * h;
+    if (speed <= dec) { b.vx = 0; b.vy = 0; }
+    else { const f = (speed - dec) / speed; b.vx *= f; b.vy *= f; }
+
+    b.x += b.vx * h; b.y += b.vy * h;
+    for (let pass = 0; pass < 2; pass++) {
+      for (const w of L.walls) collideCapsule(b, w, ev);
+      for (const c of L.bumpers) collideBumper(b, c, ev);
+      collideBounds(b, L, ev);
+    }
+    const sp = Math.hypot(b.vx, b.vy);
+    if (ev) ev.top = Math.max(ev.top, sp);
+    const ddx = b.x - L.hole.x, ddy = b.y - L.hole.y;
+    if (ddx * ddx + ddy * ddy < (HOLE_R - 3) * (HOLE_R - 3) && sp < CAPTURE_SPEED) return 'sunk';
+    for (const p of L.ponds) if (inEllipse(p, b.x, b.y, -4)) return 'water';
+  }
+  const sp = Math.hypot(b.vx, b.vy);
+  const dh = Math.hypot(b.x - L.hole.x, b.y - L.hole.y);
+  if (sp < STOP_SPEED && dh > STOP_R) { b.vx = 0; b.vy = 0; return 'stopped'; }
+  return null;
+}
+
+function newEvents() { return { bounces: 0, bumpers: 0, sand: false, hit: 0, top: 0, hitWall: null, hitBumper: null, hitRail: false }; }
+
+function shotVelocity(angle, power) { return { vx: Math.cos(angle) * power, vy: Math.sin(angle) * power }; }
+
+// Plays one shot from the tee. If `track` is given, it records the nearest the
+// ball came to the cup while slow enough to drop, which guides the fine search.
+function simulate(L, angle, power, spin, maxT, track) {
+  const v = shotVelocity(angle, power);
+  const b = { x: L.tee.x, y: L.tee.y, vx: v.vx, vy: v.vy, spin: spin || 0 };
+  const steps = Math.round((maxT || 10) / STEP);
+  for (let i = 0; i < steps; i++) {
+    const r = stepBall(b, L, null);
+    if (track && Math.hypot(b.vx, b.vy) < CAPTURE_SPEED * 1.4) {
+      track.miss = Math.min(track.miss, Math.hypot(b.x - L.hole.x, b.y - L.hole.y));
+    }
+    if (r) return r;
+  }
+  return 'timeout';
+}
+
+// ===========================================================================
+// Hole templates. Each one is a deliberately designed shape that may vary
+// only within safe limits. Coordinates are fractions of the green.
+// ===========================================================================
+function builder(box, rng) {
+  const w = box.x1 - box.x0, h = box.y1 - box.y0;
+  const mx = rng() < 0.5, my = rng() < 0.5;
+  const P = (u, v) => ({ x: box.x0 + (mx ? 1 - u : u) * w, y: box.y0 + (my ? 1 - v : v) * h });
+  const R = (a, b) => a + (b - a) * rng();
+  const L = { box, walls: [], bumpers: [], ponds: [], sands: [], tee: null, hole: null, name: '' };
+  const wall = (u1, v1, u2, v2) => { const a = P(u1, v1), b = P(u2, v2); L.walls.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y, r: RAIL_R }); };
+  const bumper = (u, v, r) => { const p = P(u, v); L.bumpers.push({ x: p.x, y: p.y, r }); };
+  const ellipse = (list, u, v, ru, rv) => { const p = P(u, v); list.push({ x: p.x, y: p.y, rx: ru * w, ry: rv * h }); };
+  return { L, P, R, wall, bumper, ellipse, w, h, rng };
+}
+
+const TEMPLATES = [
+  {
+    name: 'The Narrow Gate',
+    build(B) {
+      const { L, R, wall } = B;
+      const g = R(0.42, 0.58), tilt = R(-0.05, 0.05);
+      const c = R(0.25, 0.75), gap = R(58, 74) / B.h;
+      wall(g + tilt, -0.02, g + tilt * (c - gap / 2), c - gap / 2);
+      wall(g + tilt * (c + gap / 2), c + gap / 2, g, 1.02);
+      L.tee = B.P(R(0.08, 0.2), R(0.12, 0.88));
+      L.hole = B.P(R(0.74, 0.9), R(0.12, 0.88));
+      if (B.rng() < 0.6) B.bumper(R(0.66, 0.8), R(0.25, 0.75), R(16, 22));
+    },
+  },
+  {
+    name: 'Bank Robbery',
+    build(B) {
+      const { L, R, wall } = B;
+      const u = R(0.42, 0.56), reach = R(0.58, 0.74);
+      wall(u, -0.02, u + R(-0.04, 0.04), reach);
+      L.tee = B.P(R(0.08, 0.2), R(0.12, 0.35));
+      L.hole = B.P(R(0.74, 0.9), R(0.1, 0.35));
+      if (B.rng() < 0.5) wall(R(0.7, 0.8), R(0.55, 0.7), R(0.86, 0.96), R(0.55, 0.7));
+    },
+  },
+  {
+    name: 'The Slalom',
+    build(B) {
+      const { L, R, wall } = B;
+      const u1 = R(0.32, 0.4), u2 = R(0.6, 0.68);
+      wall(u1, -0.02, u1, R(0.5, 0.6));
+      wall(u2, 1.02, u2, R(0.4, 0.5));
+      L.tee = B.P(R(0.07, 0.17), R(0.15, 0.85));
+      L.hole = B.P(R(0.83, 0.93), R(0.15, 0.85));
+    },
+  },
+  {
+    name: 'Bumper Bonanza',
+    build(B) {
+      const { L, R, wall, bumper } = B;
+      const n = 3 + Math.floor(B.rng() * 3);
+      for (let i = 0; i < n; i++) bumper(R(0.32, 0.68), R(0.12, 0.88), R(15, 24));
+      const hu = R(0.78, 0.88), hv = R(0.25, 0.75);
+      L.hole = B.P(hu, hv);
+      // A pocket around the cup. Its mouth faces up or down the green, not at the tee.
+      const s = 0.07, open = B.rng() < 0.5 ? -1 : 1;
+      const k = s * B.w / B.h;
+      const back = hv - open * k, front = hv + open * k * 0.5;
+      wall(hu - s, back, hu - s, front);
+      wall(hu + s, back, hu + s, front);
+      wall(hu - s, back, hu + s, back);
+      L.tee = B.P(R(0.07, 0.18), R(0.15, 0.85));
+    },
+  },
+  {
+    name: 'Duck Pond',
+    build(B) {
+      const { L, R, wall, ellipse } = B;
+      const pu = R(0.45, 0.55), pv = R(0.4, 0.6);
+      ellipse(L.ponds, pu, pv, R(0.1, 0.16), R(0.18, 0.28));
+      ellipse(L.sands, R(0.7, 0.8), R(0.2, 0.8), R(0.06, 0.09), R(0.08, 0.14));
+      L.tee = B.P(R(0.07, 0.18), R(0.3, 0.7));
+      L.hole = B.P(R(0.8, 0.92), R(0.2, 0.8));
+      if (B.rng() < 0.7) { const v = B.rng() < 0.5 ? R(0.06, 0.14) : R(0.86, 0.94); wall(R(0.3, 0.4), v, R(0.6, 0.7), v); }
+    },
+  },
+  {
+    name: 'Corner Pocket',
+    build(B) {
+      const { L, R, wall } = B;
+      L.hole = B.P(R(0.86, 0.93), R(0.08, 0.16));
+      wall(R(0.66, 0.74), -0.02, R(0.74, 0.8), R(0.32, 0.42));
+      wall(R(0.36, 0.46), R(0.3, 0.45), R(0.5, 0.6), R(0.55, 0.7));
+      L.tee = B.P(R(0.08, 0.2), R(0.6, 0.9));
+      if (B.rng() < 0.5) B.bumper(R(0.6, 0.72), R(0.7, 0.88), R(16, 22));
+    },
+  },
+];
+
+// A plain hole used only if every template attempt fails, for example in a
+// tiny window. It still goes through the same search before it is used.
+const FALLBACK = {
+  name: 'The Practice Green',
+  build(B) {
+    const { L, R, wall } = B;
+    L.tee = B.P(0.15, 0.5);
+    L.hole = B.P(0.85, R(0.35, 0.65));
+    wall(0.5, -0.02, 0.5, 0.22);
+    wall(0.5, 0.78, 0.5, 1.02);
+  },
+};
+
+function distToSegment(px, py, w) {
+  const abx = w.bx - w.ax, aby = w.by - w.ay, L2 = abx * abx + aby * aby;
+  const t = L2 > 0 ? clamp(((px - w.ax) * abx + (py - w.ay) * aby) / L2, 0, 1) : 0;
+  return Math.hypot(px - (w.ax + abx * t), py - (w.ay + aby * t));
+}
+
+// The ball must not start in a wall, a bumper, water or the cup, and the cup
+// must not sit in a wall, a bumper, water or sand.
+function validLayout(L) {
+  const g = L.box;
+  const inside = (p, m) => p.x > g.x0 + m && p.x < g.x1 - m && p.y > g.y0 + m && p.y < g.y1 - m;
+  if (!inside(L.tee, 24) || !inside(L.hole, 26)) return false;
+  for (const w of L.walls) {
+    if (distToSegment(L.tee.x, L.tee.y, w) < w.r + BALL_R + 14) return false;
+    if (distToSegment(L.hole.x, L.hole.y, w) < w.r + HOLE_R + 8) return false;
+  }
+  for (const c of L.bumpers) {
+    if (Math.hypot(L.tee.x - c.x, L.tee.y - c.y) < c.r + BALL_R + 18) return false;
+    if (Math.hypot(L.hole.x - c.x, L.hole.y - c.y) < c.r + HOLE_R + 18) return false;
+    for (const w of L.walls) if (distToSegment(c.x, c.y, w) < c.r + w.r + 2 * BALL_R + 6) return false;
+    for (const d of L.bumpers) if (d !== c && Math.hypot(c.x - d.x, c.y - d.y) < c.r + d.r + 2 * BALL_R + 6) return false;
+  }
+  for (const p of L.ponds.concat(L.sands)) {
+    if (inEllipse(p, L.tee.x, L.tee.y, BALL_R + 16)) return false;
+    if (inEllipse(p, L.hole.x, L.hole.y, PULL_R + 4)) return false;
+  }
+  return Math.hypot(L.tee.x - L.hole.x, L.tee.y - L.hole.y) > 0.3 * Math.min(g.x1 - g.x0, g.y1 - g.y0);
+}
+
+// ===========================================================================
+// The solvability search. It plays shots with the real physics and no curve.
+// Stage 1 tries every 1.5 degrees at six powers and notes each near miss.
+// Stage 2 sweeps a quarter of a degree at a time around the best near misses.
+// A layout is accepted only if a whole window of neighbouring angles sinks,
+// so the solution is a skill shot, not a fluke. Stage 1 also measures how
+// easy the hole is, and holes that are too easy for the child's progress are
+// rejected. It is a generator, so the work is spread over frames.
+// ===========================================================================
+const COARSE = 240;
+const POWERS = [380, 540, 720, 920, 1150, 1450];
+const FINE_STEP = 0.25 * Math.PI / 180;
+const FINE_HALF = 6;           // stage 2 covers +-1.5 degrees around a candidate
+const CANDIDATES = 24;
+const POWER_SLACK = 0.05;      // the winning shot must work 5% softer and 5% harder
+
+function maxEaseFor(holeIndex) {
+  if (holeIndex < 2) return 0.30;
+  if (holeIndex < 6) return 0.12;
+  return 0.06;
+}
+// The narrowest window of working angles a hole may have, in degrees.
+function minWidthFor(holeIndex) {
+  if (holeIndex < 2) return 1.25;
+  if (holeIndex < 6) return 0.75;
+  return 0.5;
+}
+
+function* searchShots(L, maxEase, minWidthDeg) {
+  const total = COARSE * POWERS.length;
+  const cands = [];
+  let wins = 0, done = 0;
+  for (let p = 0; p < POWERS.length; p++) {
+    for (let a = 0; a < COARSE; a++) {
+      const track = { miss: Infinity };
+      const angle = a / COARSE * TAU;
+      const r = simulate(L, angle, POWERS[p], 0, 10, track);
+      if (r === 'sunk') { wins++; track.miss = 0; }
+      if (track.miss < 90) cands.push({ angle, power: POWERS[p], miss: track.miss });
+      done++;
+      if (wins > maxEase * total) return { ease: wins / total, robust: [], tooEasy: true };
+      if ((done & 7) === 0) yield;
+    }
+  }
+  cands.sort((x, y) => x.miss - y.miss);
+  const need = Math.max(2, Math.round(minWidthDeg / 0.25));   // samples in a row
+  let best = null;
+  for (const c of cands.slice(0, CANDIDATES)) {
+    let run = 0, bestRun = 0, bestEnd = 0;
+    for (let k = -FINE_HALF; k <= FINE_HALF; k++) {
+      if (simulate(L, c.angle + k * FINE_STEP, c.power, 0, 10) === 'sunk') { run++; if (run > bestRun) { bestRun = run; bestEnd = k; } }
+      else run = 0;
+      if ((++done & 7) === 0) yield;
+    }
+    if (bestRun >= need && (!best || bestRun > best.run)) {
+      // The shot must also forgive a slightly short or long pull.
+      const angle = c.angle + (bestEnd - (bestRun - 1) / 2) * FINE_STEP;
+      const soft = simulate(L, angle, c.power * (1 - POWER_SLACK), 0, 10) === 'sunk';
+      const hard = simulate(L, angle, c.power * (1 + POWER_SLACK), 0, 10) === 'sunk';
+      done += 2;
+      if (soft && hard) {
+        best = { angle, power: c.power, run: bestRun };
+        if (bestRun >= 2 * FINE_HALF) break;
+      }
+    }
+  }
+  return { ease: wins / total, robust: best ? [{ angle: best.angle, power: best.power, width: best.run * 0.25 }] : [], tooEasy: false };
+}
+
+let lastTemplate = -1;
+function* makeHole(holeIndex, seed) {
+  const rng = makeRng(seed);
+  const box = greenBox();
+  for (let attempt = 0; attempt < 16; attempt++) {
+    let ti;
+    do { ti = Math.floor(rng() * TEMPLATES.length); } while (ti === lastTemplate && TEMPLATES.length > 1);
+    const B = builder(box, rng);
+    TEMPLATES[ti].build(B);
+    B.L.name = TEMPLATES[ti].name;
+    if (!validLayout(B.L)) { yield; continue; }
+    const res = yield* searchShots(B.L, maxEaseFor(holeIndex), minWidthFor(holeIndex));
+    if (res.robust.length) {
+      lastTemplate = ti;
+      B.L.solution = res.robust[0];
+      B.L.ease = res.ease; B.L.seed = seed; B.L.attempts = attempt + 1;
+      return B.L;
+    }
+  }
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const B = builder(box, rng);
+    FALLBACK.build(B);
+    B.L.name = FALLBACK.name;
+    if (!validLayout(B.L)) continue;
+    const res = yield* searchShots(B.L, 1, 0.5);
+    if (res.robust.length) { B.L.solution = res.robust[0]; B.L.ease = res.ease; B.L.seed = seed; return B.L; }
+  }
+  return null;
+}
+
+// Runs one generator in time slices. Several can exist; each gets a budget.
+function makeJob(gen) { return { gen, result: undefined, done: false }; }
+function runJob(job, ms) {
+  if (!job || job.done) return;
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
+    const r = job.gen.next();
+    if (r.done) { job.done = true; job.result = r.value; return; }
+  }
+}
+
+// ===========================================================================
+// Game state
+// ===========================================================================
+let course = null;          // the layout being played
+let nextJob = null;         // the next layout, made in the background
+let verifyJob = null;       // re-checks the current layout after a resize
+let state = 'loading';      // loading, aiming, rolling, sunk, splash, swap
+let stateT = 0;
+let ball = { x: 0, y: 0, vx: 0, vy: 0, spin: 0, r: BALL_R };
+let lastShotFrom = { x: 0, y: 0 };
+let shotEvents = newEvents();
+let curve = 0;
+let lastShot = null;
+let holeIndex = 0, sunk = 0, holesInOne = 0, shotsThisHole = 0, bestTrick = null;
+let pointer = { x: 0, y: 0, inside: false, buttons: 0 };
+let drag = null;            // {sx, sy} press point while aiming
+let caddie = false;         // right button held
+let sim = 0;                // seconds of simulated time
+let seedBase = (Math.random() * 1e9) >>> 0, seedCount = 0;
+let sparks = [], rings = [], confetti = [], trail = [], banners = [];
+let shake = 0, flagLift = 0, wind = 0, windTarget = 0, ballFade = 1, ballScale = 1;
+let popT = 0;               // time since the current layout appeared
+let soundOn = true, audio = null;
+
+function nextSeed() { seedCount++; return (seedBase + seedCount * 2654435761) >>> 0; }
+function queueNext() { nextJob = makeJob(makeHole(holeIndex + 1, nextSeed())); }
+
+function startCourse(L) {
+  course = L;
+  ball.x = L.tee.x; ball.y = L.tee.y; ball.vx = 0; ball.vy = 0; ball.spin = 0;
+  lastShotFrom = { x: L.tee.x, y: L.tee.y };
+  shotsThisHole = 0; drag = null; trail = [];
+  ballFade = 1; ballScale = 1; flagLift = 0;
+  state = 'aiming'; stateT = 0; popT = 0;
+  hint(holeIndex === 0 ? 'Pull back from the ball and let go.' : 'New hole! Hold the right button to see the path.');
+  queueNext();
+}
+
+function resetGame() {
+  holeIndex = 0; sunk = 0; holesInOne = 0; bestTrick = null; curve = 0;
+  sparks = []; rings = []; confetti = []; banners = []; trail = [];
+  drag = null; caddie = false; shake = 0; wind = 0; windTarget = 0;
+  verifyJob = null; course = null; lastTemplate = -1;
+  seedBase = (Math.random() * 1e9) >>> 0; seedCount = 0;
+  nextJob = makeJob(makeHole(0, nextSeed()));
+  state = 'loading'; stateT = 0;
+  hint('Mowing the green...');
+}
+
+// ===========================================================================
+// Sound: tiny synthesised effects, no files.
+// ===========================================================================
+function ensureAudio() {
+  if (audio || !soundOn) return;
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+}
+function tone(freq, dur, type, vol, slide) {
+  if (!soundOn || !audio) return;
+  const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+  o.type = type || 'sine'; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol || 0.08, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(audio.destination); o.start(t); o.stop(t + dur + 0.02);
+}
+function noise(dur, vol, lowpass) {
+  if (!soundOn || !audio) return;
+  const t = audio.currentTime, n = Math.floor(audio.sampleRate * dur);
+  const buf = audio.createBuffer(1, n, audio.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const s = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+  s.buffer = buf; f.type = 'lowpass'; f.frequency.value = lowpass || 1200; g.gain.value = vol || 0.1;
+  s.connect(f); f.connect(g); g.connect(audio.destination); s.start(t);
+}
+const sfx = {
+  putt(p) { tone(220 + p * 180, 0.07, 'triangle', 0.10, 0.6); noise(0.03, 0.05, 3000); },
+  wall(v) { tone(380 + Math.random() * 60, 0.05, 'square', clamp(v / 1500, 0.02, 0.07), 0.5); },
+  bumper() { tone(520, 0.18, 'sine', 0.09, 1.9); tone(780, 0.12, 'triangle', 0.04, 1.5); },
+  plunk() { tone(180, 0.16, 'sine', 0.14, 0.55); setTimeout(() => [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.22, 'triangle', 0.06), i * 85)), 120); },
+  splash() { noise(0.45, 0.16, 900); tone(300, 0.25, 'sine', 0.05, 0.4); },
+  tick() { tone(900, 0.025, 'square', 0.025); },
+};
+
+// ===========================================================================
+// Input (HANDBOOK §2.3). Mouse only. The right button is a verb, not a menu.
+// ===========================================================================
+function local(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('contextmenu', e => e.preventDefault());
+
+// Pointer Events send pointerdown only for the FIRST button pressed. A second
+// button pressed or released while one is held arrives as a pointermove with
+// a changed e.buttons. So every handler compares e.buttons with the last value
+// and acts on the change. Without this, holding right during a left drag would
+// never show the caddie's path.
+let prevButtons = 0;
+function onButtons(e) {
+  const p = local(e);
+  const nb = e.buttons, ob = prevButtons;
+  prevButtons = nb;
+  pointer.buttons = nb;
+  if ((nb & 2) && !(ob & 2)) {
+    caddie = true;
+    if (state === 'rolling') hint('The caddie waits until the ball stops.');
+    else if (state === 'aiming') hint('The caddie shows the first bounces. After that, you are on your own!');
+  }
+  if (!(nb & 2) && (ob & 2)) caddie = false;
+  if ((nb & 1) && !(ob & 1)) {
+    if (state === 'aiming') {
+      drag = { sx: p.x, sy: p.y };
+      hint('Pull further for more power. Let go to putt.');
+    } else if (state === 'rolling') {
+      hint('Wait for the ball to stop.');
+      rings.push({ x: p.x, y: p.y, r: 4, life: 0.5, max: 0.5, color: '255,255,255' });
+    }
+  }
+  if (!(nb & 1) && (ob & 1) && drag) {
+    const shot = currentShot();
+    drag = null;
+    if (!shot || state !== 'aiming') hint('Pull back a little further, then let go.');
+    else shoot(shot.angle, shot.power);
+  }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  ensureAudio();
+  const p = local(e);
+  pointer.x = p.x; pointer.y = p.y;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
+  onButtons(e);
+});
+
+window.addEventListener('pointermove', e => {
+  const p = local(e);
+  const dx = p.x - pointer.x;
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+  windTarget = clamp(windTarget + dx * 0.02, -1.4, 1.4);
+  if (e.buttons !== prevButtons) onButtons(e);
+});
+
+window.addEventListener('pointerup', e => onButtons(e));
+window.addEventListener('blur', () => { prevButtons = 0; caddie = false; drag = null; });
+canvas.addEventListener('pointerleave', () => { pointer.inside = false; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  // Browsers turn Shift + wheel into a sideways scroll, so read deltaX when deltaY is zero.
+  const delta = e.deltaY || e.deltaX;
+  if (!delta) return;
+  const dir = Math.sign(delta);
+  const old = curve;
+  curve = clamp(curve - dir, -CURVE_STEPS, CURVE_STEPS);
+  if (curve !== old) { ensureAudio(); sfx.tick(); }
+  hint(curve === 0 ? 'Straight shot.' : 'The ball will curve ' + (curve < 0 ? 'left' : 'right') + '. Hold the right button to see it.');
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') resetGame();
+  else if (k === 'n' && (state === 'aiming' || state === 'rolling')) skipHole();
+  else if (k === 'h') { ui.panel.classList.toggle('hidden'); onResize(); }
+  else if (k === 'm') toggleSound();
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => { ensureAudio(); resetGame(); });
+function toggleSound() {
+  soundOn = !soundOn;
+  ui.sound.textContent = soundOn ? 'Sound on' : 'Sound off';
+  if (soundOn) { ensureAudio(); sfx.tick(); }
+}
+ui.sound.addEventListener('click', toggleSound);
+
+// The shot the current drag would make: the ball goes opposite to the pull.
+function currentShot() {
+  if (!drag) return null;
+  const dx = drag.sx - pointer.x, dy = drag.sy - pointer.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 10) return null;
+  const t = Math.min(len, MAX_PULL) / MAX_PULL;
+  return { angle: Math.atan2(dy, dx), power: MIN_POWER + (MAX_POWER - MIN_POWER) * t, t };
+}
+
+function shoot(angle, power) {
+  const v = shotVelocity(angle, power);
+  ball.vx = v.vx; ball.vy = v.vy; ball.spin = curve;
+  lastShotFrom = { x: ball.x, y: ball.y };
+  lastShot = { angle, power, x: ball.x, y: ball.y };
+  shotEvents = newEvents();
+  shotsThisHole++;
+  state = 'rolling'; stateT = 0;
+  sfx.putt(power / MAX_POWER);
+  for (let i = 0; i < 10; i++) spark(ball.x, ball.y, '255,250,220', 120);
+  hint(curve ? 'Look at it curve!' : 'Rolling...');
+}
+
+function skipHole() {
+  hint('Off to a new hole.');
+  state = 'swap'; stateT = 0;
+}
+
+// ===========================================================================
+// Juice helpers
+// ===========================================================================
+function spark(x, y, color, speed) {
+  if (sparks.length > 260) sparks.shift();
+  const a = Math.random() * TAU, s = (0.3 + Math.random()) * (speed || 90);
+  sparks.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.5 + Math.random() * 0.4, max: 0.9, color, r: 1 + Math.random() * 2 });
+}
+const CONFETTI = ['#ff6b6b', '#ffd166', '#06d6a0', '#4cc9f0', '#f72585', '#ffffff'];
+function celebrate(x, y) {
+  for (let i = 0; i < 90; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.4, s = 220 + Math.random() * 420;
+    confetti.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 14, life: 1.6 + Math.random() * 0.8, color: CONFETTI[i % CONFETTI.length], w: 4 + Math.random() * 4, h: 7 + Math.random() * 6 });
+  }
+  rings.push({ x, y, r: HOLE_R, life: 0.7, max: 0.7, color: '255,230,140' });
+  rings.push({ x, y, r: HOLE_R, life: 1.0, max: 1.0, color: '255,255,255' });
+}
+
+function trickName(ev, first) {
+  const parts = [];
+  if (ev.bumpers >= 3) parts.push('Pinball wizard');
+  else if (ev.bumpers === 2) parts.push('Bumper bonanza');
+  else if (ev.bumpers === 1) parts.push('Bumper bounce');
+  const b = ev.bounces - ev.bumpers;
+  if (b >= 3) parts.push(b + '-wall bank');
+  else if (b === 2) parts.push('Double bank');
+  else if (b === 1) parts.push('Bank shot');
+  if (ev.curved) parts.push('Curve ball');
+  if (ev.sand) parts.push('Sand save');
+  let title = first ? 'Hole in one!' : (parts.length ? '' : 'In the hole!');
+  return { title, sub: parts.join(' + '), score: (first ? 3 : 0) + ev.bumpers + b + (ev.curved ? 2 : 0) + (ev.sand ? 1 : 0) };
+}
+
+// ===========================================================================
+// Update
+// ===========================================================================
+let acc = 0, last = performance.now();
+function update(dt) {
+  sim += dt; stateT += dt; popT += dt;
+  wind = lerp(wind, windTarget, 1 - Math.exp(-3 * dt));
+  windTarget *= Math.exp(-0.8 * dt);
+
+  if (state === 'loading') {
+    runJob(nextJob, 24);
+    if (nextJob && nextJob.done && stateT > 0.35) {
+      if (nextJob.result) startCourse(nextJob.result);
+      else { nextJob = makeJob(makeHole(holeIndex, nextSeed())); }
+    }
+  } else {
+    runJob(verifyJob, 4);
+    runJob(nextJob, 5);
+  }
+
+  if (verifyJob && verifyJob.done) {
+    const res = verifyJob.result;
+    verifyJob = null;
+    if (res && !res.robust.length && state === 'aiming') { hint('The green changed shape, so here is a fresh hole.'); state = 'swap'; stateT = 0; }
+    else if (res && res.robust.length && course) course.solution = res.robust[0];
+  }
+
+  if (state === 'rolling') {
+    const ev = shotEvents;
+    const before = { b: ev.bounces, p: ev.bumpers };
+    ev.hit = 0;
+    const r = stepBall(ball, course, ev);
+    if (ball.spin && Math.abs(ball.spin) > 0.3) ev.curved = true;
+    if (ev.bumpers > before.p) {
+      sfx.bumper(); shake = Math.min(1, shake + 0.35);
+      const c = ev.hitBumper; c.flash = 1;
+      for (let i = 0; i < 12; i++) spark(ball.x, ball.y, '255,220,120', 160);
+    } else if (ev.bounces > before.b) {
+      sfx.wall(ev.hit);
+      if (ev.hitWall) ev.hitWall.flash = 1;
+      if (ev.hit > 500) { shake = Math.min(1, shake + ev.hit / 4000); for (let i = 0; i < 5; i++) spark(ball.x, ball.y, '255,240,200', 90); }
+    }
+    trail.push({ x: ball.x, y: ball.y, life: 0.45 });
+    if (r === 'sunk') {
+      state = 'sunk'; stateT = 0; sunk++;
+      const first = shotsThisHole === 1;
+      if (first) holesInOne++;
+      const t = trickName(ev, first);
+      if (!bestTrick || t.score > bestTrick.score) bestTrick = { score: t.score, label: t.sub || t.title };
+      banners.push({ title: t.title || t.sub, sub: t.title ? t.sub : '', life: 2.2, max: 2.2 });
+      sfx.plunk(); celebrate(course.hole.x, course.hole.y); shake = Math.min(1, shake + 0.4);
+      hint(first ? 'Wow, a hole in one!' : 'In the hole! Well played.');
+    } else if (r === 'water') {
+      state = 'splash'; stateT = 0;
+      sfx.splash();
+      for (let i = 0; i < 26; i++) spark(ball.x, ball.y, '150,210,255', 140);
+      rings.push({ x: ball.x, y: ball.y, r: 6, life: 0.9, max: 0.9, color: '190,230,255' });
+      rings.push({ x: ball.x, y: ball.y, r: 3, life: 1.2, max: 1.2, color: '190,230,255' });
+      hint('Splash! The duck gives the ball back.');
+    } else if (r === 'stopped' || stateT > 25) {
+      ball.vx = 0; ball.vy = 0;
+      state = 'aiming'; stateT = 0;
+      hint(shotsThisHole === 1 ? 'So close. Try again from here.' : 'Have another go from here.');
+    }
+  } else if (state === 'sunk') {
+    ballScale = Math.max(0, 1 - stateT / 0.35);
+    ball.x = lerp(ball.x, course.hole.x, 0.25); ball.y = lerp(ball.y, course.hole.y, 0.25);
+    flagLift = Math.min(1, stateT / 0.4);
+    if (stateT > 1.5) { state = 'swap'; stateT = 0; }
+  } else if (state === 'splash') {
+    ballFade = Math.max(0, 1 - stateT / 0.3);
+    if (stateT > 0.9) {
+      ball.x = lastShotFrom.x; ball.y = lastShotFrom.y; ball.vx = ball.vy = 0; ball.spin = 0;
+      ballFade = 1; ballScale = 0.01; state = 'aiming'; stateT = 0;
+      rings.push({ x: ball.x, y: ball.y, r: 4, life: 0.5, max: 0.5, color: '255,255,255' });
+    }
+  } else if (state === 'swap') {
+    // Wait for the next layout, then pop it in.
+    if (stateT > 0.3 && nextJob && nextJob.done) {
+      const L = nextJob.result;
+      if (L) { holeIndex++; startCourse(L); }
+      else { nextJob = makeJob(makeHole(holeIndex + 1, nextSeed())); }
+    } else if (stateT > 0.3) {
+      runJob(nextJob, 20);
+      hint('Mowing the next green...');
+    }
+  }
+  if (state === 'aiming' && ballScale < 1) ballScale = Math.min(1, ballScale + dt * 5);
+
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i]; s.life -= dt;
+    if (s.life <= 0) { sparks.splice(i, 1); continue; }
+    s.x += s.vx * dt; s.y += s.vy * dt; s.vx *= Math.exp(-4 * dt); s.vy *= Math.exp(-4 * dt);
+  }
+  for (let i = rings.length - 1; i >= 0; i--) { const r = rings[i]; r.life -= dt; r.r += 90 * dt; if (r.life <= 0) rings.splice(i, 1); }
+  for (let i = confetti.length - 1; i >= 0; i--) {
+    const c = confetti[i]; c.life -= dt;
+    if (c.life <= 0) { confetti.splice(i, 1); continue; }
+    c.vy += 520 * dt; c.vx *= Math.exp(-1.6 * dt); c.vy *= Math.exp(-1.6 * dt);
+    c.x += c.vx * dt; c.y += c.vy * dt; c.rot += c.vr * dt;
+  }
+  for (let i = trail.length - 1; i >= 0; i--) { trail[i].life -= dt; if (trail[i].life <= 0) trail.splice(i, 1); }
+  for (let i = banners.length - 1; i >= 0; i--) { banners[i].life -= dt; if (banners[i].life <= 0) banners.splice(i, 1); }
+  if (course) {
+    for (const w of course.walls) if (w.flash) w.flash = Math.max(0, w.flash - dt * 4);
+    for (const c of course.bumpers) if (c.flash) c.flash = Math.max(0, c.flash - dt * 3);
+  }
+  shake *= Math.exp(-7 * dt);
+}
+
+// ===========================================================================
+// Drawing
+// ===========================================================================
+function popScale(delay) {
+  // Under-damped spring from 0 to 1, HANDBOOK §3.2, used for the pop-in.
+  const t = Math.max(0, popT - delay);
+  if (t <= 0) return 0;
+  return 1 - Math.exp(-7 * t) * Math.cos(11 * t);
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+let feltPattern = null, feltKey = '';
+function drawBackdrop() {
+  const g = ctx.createRadialGradient(W * 0.55, H * 0.45, 50, W * 0.55, H * 0.45, Math.max(W, H) * 0.8);
+  g.addColorStop(0, '#22402d'); g.addColorStop(1, '#0f1d15');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // Little clover dots around the course.
+  ctx.fillStyle = 'rgba(160, 220, 170, 0.06)';
+  for (let i = 0; i < 160; i++) {
+    const x = (i * 97.3) % W, y = (i * 61.7 + (i % 7) * 33) % H;
+    ctx.beginPath(); ctx.arc(x, y, 2 + (i % 3), 0, TAU); ctx.fill();
+  }
+}
+
+function drawGreen(box) {
+  const x = box.x0 - 14, y = box.y0 - 14, w = box.x1 - box.x0 + 28, h = box.y1 - box.y0 + 28;
+  // Shadow, wooden frame, then the felt.
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.45)'; ctx.shadowBlur = 24; ctx.shadowOffsetY = 8;
+  roundRect(x, y, w, h, 22); ctx.fillStyle = '#7a4b2a'; ctx.fill();
+  ctx.restore();
+  const wood = ctx.createLinearGradient(0, y, 0, y + h);
+  wood.addColorStop(0, '#a8703f'); wood.addColorStop(1, '#6e4224');
+  roundRect(x, y, w, h, 22); ctx.fillStyle = wood; ctx.fill();
+  roundRect(x + 2, y + 2, w - 4, h - 4, 20); ctx.strokeStyle = 'rgba(255,230,190,0.25)'; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.save();
+  roundRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 10); ctx.clip();
+  const felt = ctx.createLinearGradient(box.x0, box.y0, box.x1, box.y1);
+  felt.addColorStop(0, '#5fb36a'); felt.addColorStop(1, '#3f8f4f');
+  ctx.fillStyle = felt; ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+  // Mowing stripes.
+  ctx.fillStyle = 'rgba(255,255,255,0.045)';
+  const sw = 46;
+  for (let s = -H; s < W + H; s += sw * 2) {
+    ctx.beginPath(); ctx.moveTo(s, box.y0); ctx.lineTo(s + sw, box.y0); ctx.lineTo(s + sw - (box.y1 - box.y0) * 0.35, box.y1); ctx.lineTo(s - (box.y1 - box.y0) * 0.35, box.y1); ctx.closePath(); ctx.fill();
+  }
+  // Soft inner shadow along the frame.
+  const ig = ctx.createLinearGradient(0, box.y0, 0, box.y0 + 26);
+  ig.addColorStop(0, 'rgba(0,0,0,0.22)'); ig.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = ig; ctx.fillRect(box.x0, box.y0, box.x1 - box.x0, 26);
+  ctx.restore();
+}
+
+function drawPond(p, s) {
+  if (s <= 0) return;
+  ctx.save();
+  ctx.translate(p.x, p.y); ctx.scale(s, s);
+  ctx.beginPath(); ctx.ellipse(0, 0, p.rx + 6, p.ry + 6, 0, 0, TAU); ctx.fillStyle = 'rgba(214,196,140,0.9)'; ctx.fill();
+  const g = ctx.createRadialGradient(-p.rx * 0.3, -p.ry * 0.3, 4, 0, 0, Math.max(p.rx, p.ry));
+  g.addColorStop(0, '#6cc6e8'); g.addColorStop(1, '#2a7fb4');
+  ctx.beginPath(); ctx.ellipse(0, 0, p.rx, p.ry, 0, 0, TAU); ctx.fillStyle = g; ctx.fill();
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)'; ctx.lineWidth = 1.5;
+  for (let i = 0; i < 4; i++) {
+    const k = ((sim * 0.25 + i / 4) % 1);
+    ctx.globalAlpha = 1 - k;
+    ctx.beginPath(); ctx.ellipse(Math.sin(i * 2.1) * p.rx * 0.3, Math.cos(i * 1.7) * p.ry * 0.3, 6 + k * p.rx * 0.5, 4 + k * p.ry * 0.35, 0, 0, TAU); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // A rubber duck, because of course.
+  const dx = Math.sin(sim * 0.5) * p.rx * 0.35, dy = Math.cos(sim * 0.37) * p.ry * 0.3;
+  ctx.fillStyle = '#ffd23f';
+  ctx.beginPath(); ctx.ellipse(dx, dy, 9, 6.5, 0, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(dx + 6, dy - 6, 4.5, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#ff8c42'; ctx.beginPath(); ctx.moveTo(dx + 10, dy - 6); ctx.lineTo(dx + 14, dy - 5); ctx.lineTo(dx + 10, dy - 4); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(dx + 7, dy - 7, 0.9, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawSand(p, s) {
+  if (s <= 0) return;
+  ctx.save();
+  ctx.translate(p.x, p.y); ctx.scale(s, s);
+  ctx.beginPath(); ctx.ellipse(0, 0, p.rx, p.ry, 0, 0, TAU);
+  const g = ctx.createRadialGradient(-p.rx * 0.2, -p.ry * 0.2, 2, 0, 0, Math.max(p.rx, p.ry));
+  g.addColorStop(0, '#f3e2b3'); g.addColorStop(1, '#d9bf7f');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.clip();
+  ctx.fillStyle = 'rgba(150,120,60,0.25)';
+  for (let i = 0; i < 70; i++) { const a = i * 2.4, r = (i % 10) / 10; ctx.fillRect(Math.cos(a) * p.rx * r, Math.sin(a) * p.ry * r, 1.5, 1.5); }
+  ctx.restore();
+}
+
+function drawWall(w, s) {
+  if (s <= 0) return;
+  const mx = (w.ax + w.bx) / 2, my = (w.ay + w.by) / 2;
+  ctx.save();
+  ctx.translate(mx, my); ctx.scale(s, s); ctx.translate(-mx, -my);
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,0.28)'; ctx.lineWidth = w.r * 2;
+  ctx.beginPath(); ctx.moveTo(w.ax + 3, w.ay + 5); ctx.lineTo(w.bx + 3, w.by + 5); ctx.stroke();
+  ctx.strokeStyle = '#8a5530'; ctx.lineWidth = w.r * 2;
+  ctx.beginPath(); ctx.moveTo(w.ax, w.ay); ctx.lineTo(w.bx, w.by); ctx.stroke();
+  ctx.strokeStyle = w.flash ? `rgba(255,236,180,${0.4 + 0.6 * w.flash})` : 'rgba(255,214,160,0.45)';
+  ctx.lineWidth = w.r * 0.7;
+  ctx.beginPath(); ctx.moveTo(w.ax - 1, w.ay - 2); ctx.lineTo(w.bx - 1, w.by - 2); ctx.stroke();
+  ctx.restore();
+}
+
+const BUMPER_COLOURS = ['#ff5d8f', '#ffb703', '#4cc9f0', '#9b5de5', '#06d6a0'];
+function drawBumper(c, i, s) {
+  if (s <= 0) return;
+  const f = c.flash || 0, r = c.r * s * (1 + 0.18 * f);
+  const col = BUMPER_COLOURS[i % BUMPER_COLOURS.length];
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.arc(c.x + 3, c.y + 5, r, 0, TAU); ctx.fill();
+  if (f > 0) { ctx.shadowColor = col; ctx.shadowBlur = 24 * f; }
+  ctx.fillStyle = col; ctx.beginPath(); ctx.arc(c.x, c.y, r, 0, TAU); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.beginPath(); ctx.arc(c.x, c.y, r * 0.55, 0, TAU); ctx.fill();
+  ctx.fillStyle = col; ctx.beginPath(); ctx.arc(c.x, c.y, r * 0.3, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.beginPath(); ctx.arc(c.x - r * 0.35, c.y - r * 0.4, r * 0.18, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawHole(h, s) {
+  if (s <= 0) return;
+  ctx.save();
+  ctx.translate(h.x, h.y); ctx.scale(s, s);
+  ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.beginPath(); ctx.arc(0, 0, PULL_R, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#e9f5e6'; ctx.beginPath(); ctx.arc(0, 0, HOLE_R + 3, 0, TAU); ctx.fill();
+  const g = ctx.createRadialGradient(-3, -4, 1, 0, 0, HOLE_R);
+  g.addColorStop(0, '#000'); g.addColorStop(1, '#1b2a1e');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, HOLE_R, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawFlag(h, s) {
+  if (s <= 0) return;
+  const lift = flagLift * 26;
+  const top = h.y - 62 * s - lift;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,0,0,0.25)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(h.x + 2, h.y + 2); ctx.lineTo(h.x + 12, top + 10); ctx.stroke();
+  ctx.strokeStyle = '#f4f1e8'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(h.x, h.y - lift); ctx.lineTo(h.x, top); ctx.stroke();
+  // The flag ripples and leans with the "wind" that mouse movement stirs up.
+  const dir = wind >= 0 ? 1 : -1, len = 30 * s, ht = 18 * s;
+  ctx.fillStyle = '#ff4d4d';
+  ctx.beginPath(); ctx.moveTo(h.x, top);
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    ctx.lineTo(h.x + dir * len * t * (0.75 + 0.25 * Math.min(1, Math.abs(wind) + 0.4)), top + Math.sin(sim * 7 + t * 5) * 2.5 * t + t * Math.abs(wind) * 2);
+  }
+  for (let i = 10; i >= 0; i--) {
+    const t = i / 10;
+    ctx.lineTo(h.x + dir * len * t * (0.75 + 0.25 * Math.min(1, Math.abs(wind) + 0.4)), top + ht + Math.sin(sim * 7 + t * 5 + 0.6) * 2.5 * t - t * 3);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = `800 ${Math.round(10 * s)}px ui-rounded, sans-serif`; ctx.textAlign = 'center';
+  ctx.fillText(String(holeIndex + 1), h.x + dir * len * 0.42, top + ht * 0.66);
+  ctx.restore();
+}
+
+function drawBall() {
+  if (ballFade <= 0 || ballScale <= 0) return;
+  // Trail
+  for (const t of trail) {
+    ctx.fillStyle = `rgba(255,255,255,${0.35 * t.life / 0.45})`;
+    ctx.beginPath(); ctx.arc(t.x, t.y, BALL_R * 0.55 * (t.life / 0.45), 0, TAU); ctx.fill();
+  }
+  const r = BALL_R * ballScale;
+  ctx.save();
+  ctx.globalAlpha = ballFade;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.beginPath(); ctx.ellipse(ball.x + 3, ball.y + 4, r, r * 0.85, 0, 0, TAU); ctx.fill();
+  const g = ctx.createRadialGradient(ball.x - r * 0.35, ball.y - r * 0.4, 1, ball.x, ball.y, r);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#d8dde3');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ball.x, ball.y, r, 0, TAU); ctx.fill();
+  // A coloured band that rolls with the ball, so speed and curve are visible.
+  const roll = (ball.rollPhase || 0);
+  ctx.save(); ctx.beginPath(); ctx.arc(ball.x, ball.y, r, 0, TAU); ctx.clip();
+  ctx.strokeStyle = curve || ball.spin ? 'rgba(255,90,90,0.75)' : 'rgba(80,140,255,0.55)'; ctx.lineWidth = 2.2;
+  const off = Math.sin(roll) * r * 0.8;
+  const hd = ball.heading || 0;
+  ctx.beginPath(); ctx.moveTo(ball.x - Math.sin(hd) * r + Math.cos(hd) * off, ball.y + Math.cos(hd) * r + Math.sin(hd) * off);
+  ctx.lineTo(ball.x + Math.sin(hd) * r + Math.cos(hd) * off, ball.y - Math.cos(hd) * r + Math.sin(hd) * off); ctx.stroke();
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(0,0,0,0.18)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(ball.x, ball.y, r, 0, TAU); ctx.stroke();
+  ctx.restore();
+}
+
+function drawCurveDial() {
+  if (curve === 0 || state !== 'aiming') return;
+  const r = BALL_R + 9, dir = Math.sign(curve), n = Math.abs(curve);
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,120,120,0.9)'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+  const a0 = -Math.PI / 2, a1 = a0 + dir * (0.6 + n * 0.55);
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, r, Math.min(a0, a1), Math.max(a0, a1)); ctx.stroke();
+  const hx = ball.x + Math.cos(a1) * r, hy = ball.y + Math.sin(a1) * r, ta = a1 + dir * Math.PI / 2;
+  ctx.fillStyle = 'rgba(255,120,120,0.95)';
+  ctx.beginPath(); ctx.moveTo(hx + Math.cos(ta) * 6, hy + Math.sin(ta) * 6);
+  ctx.lineTo(hx + Math.cos(ta + 2.4) * 5, hy + Math.sin(ta + 2.4) * 5); ctx.lineTo(hx + Math.cos(ta - 2.4) * 5, hy + Math.sin(ta - 2.4) * 5); ctx.fill();
+  ctx.restore();
+}
+
+// The caddie's preview. Helpful, not perfect: it shows the path only up to the
+// second bounce, and never further than 1.6 seconds of rolling.
+function previewPath(angle, power) {
+  const v = shotVelocity(angle, power);
+  const b = { x: ball.x, y: ball.y, vx: v.vx, vy: v.vy, spin: curve };
+  const ev = newEvents();
+  const pts = [{ x: b.x, y: b.y }];
+  for (let i = 0; i < 1.6 / STEP; i++) {
+    const r = stepBall(b, course, ev);
+    if (i % 3 === 0) pts.push({ x: b.x, y: b.y });
+    if (r || ev.bounces >= 2) { pts.push({ x: b.x, y: b.y, end: r || 'bounce' }); break; }
+  }
+  return pts;
+}
+
+function drawAim() {
+  if (state !== 'aiming' || !course) return;
+  const shot = currentShot();
+  if (shot) {
+    // Elastic band back to the pointer.
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2; ctx.setLineDash([4, 6]);
+    ctx.beginPath(); ctx.moveTo(ball.x, ball.y);
+    ctx.lineTo(ball.x - Math.cos(shot.angle) * Math.min(MAX_PULL, shot.t * MAX_PULL), ball.y - Math.sin(shot.angle) * Math.min(MAX_PULL, shot.t * MAX_PULL));
+    ctx.stroke(); ctx.setLineDash([]);
+    // Power arrow, green to yellow to red.
+    const len = 34 + shot.t * 120;
+    const col = shot.t < 0.5 ? `rgb(${Math.round(120 + 270 * shot.t)},230,110)` : `rgb(255,${Math.round(230 - 300 * (shot.t - 0.5))},90)`;
+    const ex = ball.x + Math.cos(shot.angle) * len, ey = ball.y + Math.sin(shot.angle) * len;
+    ctx.strokeStyle = col; ctx.lineWidth = 5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(ball.x + Math.cos(shot.angle) * (BALL_R + 4), ball.y + Math.sin(shot.angle) * (BALL_R + 4)); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.fillStyle = col; ctx.beginPath();
+    ctx.moveTo(ex + Math.cos(shot.angle) * 12, ey + Math.sin(shot.angle) * 12);
+    ctx.lineTo(ex + Math.cos(shot.angle + 2.4) * 10, ey + Math.sin(shot.angle + 2.4) * 10);
+    ctx.lineTo(ex + Math.cos(shot.angle - 2.4) * 10, ey + Math.sin(shot.angle - 2.4) * 10); ctx.fill();
+    // Power ring around the ball.
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(ball.x, ball.y, BALL_R + 16, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = col;
+    ctx.beginPath(); ctx.arc(ball.x, ball.y, BALL_R + 16, -Math.PI / 2, -Math.PI / 2 + TAU * shot.t); ctx.stroke();
+    ctx.restore();
+  } else if (pointer.inside && !drag) {
+    // Movement alone: a soft guide from the ball towards the pointer.
+    const dx = pointer.x - ball.x, dy = pointer.y - ball.y, d = Math.hypot(dx, dy);
+    if (d > BALL_R + 10) {
+      const n = Math.min(d, 140);
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      for (let s = BALL_R + 12; s < n; s += 12) {
+        const a = 1 - s / 150;
+        ctx.globalAlpha = Math.max(0, a);
+        ctx.beginPath(); ctx.arc(ball.x + dx / d * s, ball.y + dy / d * s, 2.2, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    }
+  }
+  if (caddie) {
+    let angle, power;
+    if (shot) { angle = shot.angle; power = shot.power; }
+    else {
+      const dx = pointer.x - ball.x, dy = pointer.y - ball.y;
+      angle = Math.atan2(dy, dx); power = MIN_POWER + (MAX_POWER - MIN_POWER) * clamp(Math.hypot(dx, dy) / 600, 0.15, 1);
+    }
+    const pts = previewPath(angle, power);
+    ctx.save();
+    for (let i = 1; i < pts.length; i++) {
+      const k = i / pts.length;
+      ctx.fillStyle = `rgba(255,246,190,${0.9 * (1 - k * 0.85)})`;
+      ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, 3 - 1.6 * k, 0, TAU); ctx.fill();
+    }
+    const end = pts[pts.length - 1];
+    if (end.end === 'sunk') { ctx.strokeStyle = 'rgba(255,240,150,0.9)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(end.x, end.y, 12, 0, TAU); ctx.stroke(); }
+    if (end.end === 'water') { ctx.fillStyle = 'rgba(190,230,255,0.9)'; ctx.font = '700 12px ui-rounded, sans-serif'; ctx.textAlign = 'center'; ctx.fillText('splash!', end.x, end.y - 12); }
+    ctx.restore();
+  }
+}
+
+function drawEffects() {
+  ctx.save();
+  for (const r of rings) {
+    ctx.globalAlpha = Math.max(0, r.life / r.max);
+    ctx.strokeStyle = `rgb(${r.color})`; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.stroke();
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  for (const s of sparks) {
+    ctx.globalAlpha = Math.max(0, s.life / s.max);
+    ctx.fillStyle = `rgb(${s.color})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, TAU); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  for (const c of confetti) {
+    ctx.globalAlpha = clamp(c.life, 0, 1);
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.rot);
+    ctx.fillStyle = c.color; ctx.fillRect(-c.w / 2, -c.h / 2 * Math.abs(Math.cos(c.rot * 1.7)), c.w, c.h * Math.abs(Math.cos(c.rot * 1.7)) + 1);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawBanners(box) {
+  for (const b of banners) {
+    const age = b.max - b.life, k = Math.min(1, age / 0.25), fade = Math.min(1, b.life / 0.4);
+    const s = 0.6 + 0.4 * (1 - Math.exp(-8 * age) * Math.cos(10 * age));
+    const cx = (box.x0 + box.x1) / 2, cy = box.y0 + (box.y1 - box.y0) * 0.3 - k * 10;
+    ctx.save();
+    ctx.globalAlpha = fade; ctx.translate(cx, cy); ctx.scale(s, s);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '900 46px ui-rounded, "Trebuchet MS", sans-serif';
+    ctx.lineWidth = 8; ctx.strokeStyle = 'rgba(30,50,30,0.75)'; ctx.strokeText(b.title, 0, 0);
+    ctx.fillStyle = '#fff4c2'; ctx.fillText(b.title, 0, 0);
+    if (b.sub) {
+      ctx.font = '800 22px ui-rounded, "Trebuchet MS", sans-serif';
+      ctx.lineWidth = 6; ctx.strokeText(b.sub, 0, 40); ctx.fillStyle = '#9ff0b8'; ctx.fillText(b.sub, 0, 40);
+    }
+    ctx.restore();
+  }
+}
+
+function drawLoading(box) {
+  const cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+  ctx.save();
+  ctx.fillStyle = 'rgba(255,255,255,0.85)'; ctx.font = '800 20px ui-rounded, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('Mowing the green...', cx, cy + 46);
+  // A little mower stripe sweeping across.
+  const t = (sim * 0.8) % 1;
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(box.x0 + (box.x1 - box.x0) * t - 30, box.y0, 60, box.y1 - box.y0);
+  for (let i = 0; i < 3; i++) {
+    const a = sim * 4 + i * TAU / 3;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 16, cy + Math.sin(a) * 16, 4, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawBackdrop();
+  const box = course ? course.box : greenBox();
+  ctx.save();
+  if (shake > 0.01) ctx.translate((Math.random() - 0.5) * shake * 8, (Math.random() - 0.5) * shake * 8);
+  drawGreen(box);
+  if (course && state !== 'loading') {
+    // During 'swap' the old hole shrinks away; a new one pops in via popT.
+    const out = state === 'swap' ? Math.max(0, 1 - stateT / 0.3) : 1;
+    let k = 0;
+    for (const p of course.sands) drawSand(p, popScale(0.05 * k++) * out);
+    for (const p of course.ponds) drawPond(p, popScale(0.05 * k++) * out);
+    drawHole(course.hole, popScale(0.05) * out);
+    for (const w of course.walls) drawWall(w, popScale(0.08 + 0.06 * k++) * out);
+    course.bumpers.forEach((c, i) => drawBumper(c, i, popScale(0.1 + 0.06 * k++) * out));
+    drawAim();
+    if (state !== 'swap') drawBall();
+    drawCurveDial();
+    drawFlag(course.hole, popScale(0.2) * out);
+  } else {
+    drawLoading(box);
+  }
+  if (state === 'swap' && stateT > 0.3) drawLoading(box);
+  drawEffects();
+  ctx.restore();
+  drawBanners(box);
+}
+
+function updatePanel() {
+  ui.hole.textContent = String(holeIndex + 1);
+  ui.course.textContent = course && state !== 'loading' ? course.name : '-';
+  ui.curve.textContent = curve === 0 ? 'straight' : (curve < 0 ? 'left ' : 'right ') + Math.abs(curve);
+  ui.shots.textContent = String(shotsThisHole);
+  ui.sunk.textContent = String(sunk);
+  ui.hio.textContent = String(holesInOne);
+  ui.best.textContent = bestTrick ? bestTrick.label : '-';
+}
+
+// ===========================================================================
+// Test hook, read-only. Field names follow the benchmark's Trick Shot brief.
+// ===========================================================================
+const STATE_NAMES = { aiming: 'aiming', rolling: 'rolling', sunk: 'sunk', splash: 'rolling', swap: 'sunk', loading: 'sunk' };
+window.GAME = {};
+function publish() {
+  const G = window.GAME;
+  G.ball = { x: ball.x, y: ball.y, vx: ball.vx, vy: ball.vy, r: BALL_R };
+  G.hole = course ? { x: course.hole.x, y: course.hole.y, r: HOLE_R } : null;
+  G.walls = course ? course.walls.map(w => ({ ax: w.ax, ay: w.ay, bx: w.bx, by: w.by, r: w.r })) : [];
+  G.bumpers = course ? course.bumpers.map(c => ({ x: c.x, y: c.y, r: c.r })) : [];
+  G.ponds = course ? course.ponds.map(p => ({ x: p.x, y: p.y, rx: p.rx, ry: p.ry })) : [];
+  G.box = course ? Object.assign({}, course.box) : null;
+  G.state = STATE_NAMES[state] || state;
+  G.phase = state;
+  G.streak = sunk;
+  G.holeIndex = holeIndex;
+  G.shots = shotsThisHole;
+  G.curve = curve;
+  G.friction = ROLL_DECEL;
+  G.course = course ? course.name : null;
+  G.solution = course && course.solution ? Object.assign({}, course.solution) : null;
+  G.ease = course ? course.ease : null;
+  G.lastShot = lastShot;
+  G.maxPull = MAX_PULL; G.minPower = MIN_POWER; G.maxPower = MAX_POWER;
+  // Pure function for tests: plays a shot on a copy of the current layout.
+  G.simulateShot = (angle, power, spin) => course ? simulate(course, angle, power, spin || 0, 12) : null;
+}
+
+// ===========================================================================
+// Main loop: fixed timestep (HANDBOOK §2.1)
+// ===========================================================================
+function frame(t) {
+  acc += Math.min((t - last) / 1000, 0.1);
+  last = t;
+  while (acc >= STEP) {
+    update(STEP);
+    acc -= STEP;
+  }
+  const sp = Math.hypot(ball.vx, ball.vy);
+  if (sp > 1) { ball.heading = Math.atan2(ball.vy, ball.vx); ball.rollPhase = (ball.rollPhase || 0) + sp / BALL_R / 60; }
+  draw();
+  updatePanel();
+  publish();
+  requestAnimationFrame(frame);
+}
+
+// Rescale the layout when the window changes, then re-check it can still be solved.
+function onResize() {
+  fit();
+  if (!course) return;
+  const o = course.box, n = greenBox();
+  const sx = (n.x1 - n.x0) / (o.x1 - o.x0), sy = (n.y1 - n.y0) / (o.y1 - o.y0);
+  if (Math.abs(sx - 1) < 1e-3 && Math.abs(sy - 1) < 1e-3 && n.x0 === o.x0 && n.y0 === o.y0) return;
+  const map = p => { p.x = n.x0 + (p.x - o.x0) * sx; p.y = n.y0 + (p.y - o.y0) * sy; };
+  map(course.tee); map(course.hole); map(ball); map(lastShotFrom);
+  for (const w of course.walls) { const a = { x: w.ax, y: w.ay }, b = { x: w.bx, y: w.by }; map(a); map(b); w.ax = a.x; w.ay = a.y; w.bx = b.x; w.by = b.y; }
+  for (const c of course.bumpers) map(c);
+  for (const e of course.ponds.concat(course.sands)) { map(e); e.rx *= sx; e.ry *= sy; }
+  course.box = n;
+  // Keep the resting ball clear of anything it may now overlap.
+  for (let i = 0; i < 4; i++) { for (const w of course.walls) collideCapsule(ball, w, null); for (const c of course.bumpers) collideBumper(ball, c, null); collideBounds(ball, course, null); }
+  course.tee = { x: ball.x, y: ball.y };
+  verifyJob = makeJob(searchShots(course, 1, 0.5));
+  queueNext();
+}
+
+// The app's iframe can report a 0x0 window when this script first runs, so wait for a real size.
+function boot() {
+  if (window.innerWidth < 200 || window.innerHeight < 200) { requestAnimationFrame(boot); return; }
+  fit();
+  resetGame();
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+window.addEventListener('resize', onResize);
+boot();
+})();
+</script>
+</body>
+</html>

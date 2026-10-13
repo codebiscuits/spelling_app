@@ -79,6 +79,12 @@ checklist for new games and the bar existing ones are held to:
    background and panel, with no gears, for exactly this reason. If a game
    wants to remember a setting, wrap every access in `try`/`catch` and fall
    back to the default.
+7. **Wait for a real window size before laying anything out.** Inside the
+   app's iframe, `innerWidth` and `innerHeight` can read 0 when the script
+   first runs. A game that places objects then, clamped to the window, puts
+   them all in the top-left corner under the controls pane. Gear Garden did
+   exactly this. Start from a `boot()` that re-schedules itself with
+   `requestAnimationFrame` until the window is at least 200 x 200.
 
 ---
 
@@ -182,8 +188,18 @@ Details that matter:
   `mouseDown` booleans, which go stale when the button is released off-canvas.
 - **Listen for `mouseup` on `window`, not the canvas**, so a drag that ends
   outside the window doesn't leave the game stuck in "dragging".
+- **A second button pressed mid-drag does not fire a down event.** Pointer
+  Events send `pointerdown` only for the first button. Pressing or releasing
+  another button while one is held arrives as a `pointermove` whose
+  `e.buttons` has changed. So "hold right while dragging left" never reaches
+  a `pointerdown` handler. Keep the last `e.buttons`, and on every
+  `pointerdown`, `pointermove` and `pointerup` act on the bits that changed.
+  `trick_shot.html` and `magnet_lab.html` both do this in `onButtons()`.
 - **Normalise wheel deltas** with `Math.sign(e.deltaY)` — the magnitude of
-  `deltaY` varies wildly between mice, trackpads, and browsers.
+  `deltaY` varies wildly between mice, trackpads, and browsers. **With Shift
+  held, browsers turn the wheel into a sideways scroll**: `deltaY` is 0 and
+  the value is in `deltaX`. Read `e.deltaY || e.deltaX`, or Shift + wheel
+  does nothing.
 - Movement must matter even with no button held (§1): idle cursor motion
   stirring the simulation is the hook that pulls a child in.
 

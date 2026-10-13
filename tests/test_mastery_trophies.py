@@ -8,6 +8,7 @@ from services.gamification import (
     table_fact_keys,
 )
 from database import SCHEMA
+from templates_env import REWARD_GAMES
 from tests.conftest import (
     app_db, make_list, make_user, make_words, run_full_test, setup_practice_list,
 )
@@ -209,7 +210,7 @@ def test_cabinet_shows_every_slot_with_titles_and_unique_ids(child_client):
     ids = re.findall(r'<linearGradient id="(tr\d+b)"', page)
     assert len(ids) == len(set(ids))
     assert "/static/img/trophy.svg" not in page
-    assert "of 15 discovered" in page
+    assert f"of {len(REWARD_GAMES)} discovered" in page
 
 
 def test_start_records_are_not_shown_as_trophies_on_the_dashboard(child_client):
