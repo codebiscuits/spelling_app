@@ -55,6 +55,7 @@ MINI_GAMES = [
     {"file": "topple_tower.html",  "name": "Topple Tower",  "description": "Topple a block tower with explosions and gravity wells", "tier": "reward", "release_order": 14},
     {"file": "gear_garden_v1.html", "name": "Gear Garden", "description": "Build and explore expressive semi-real gear machines", "tier": "reward", "release_order": 15},
     {"file": "trick_shot.html",    "name": "Trick Shot",    "description": "Crazy golf with bank shots, bumpers and curve balls", "tier": "reward", "release_order": 16},
+    {"file": "magnet_lab.html",    "name": "Magnet Lab",    "description": "Drop bar magnets and watch a field of compass needles swing", "tier": "reward", "release_order": 17},
 ]
 
 REWARD_GAMES = sorted(
