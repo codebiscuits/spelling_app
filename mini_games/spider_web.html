@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Spider Web</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #0b1230;
+    font-family: ui-rounded, 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  }
+  canvas { position: fixed; inset: 0; display: block; }
+  #fx { cursor: crosshair; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    width: 272px; padding: 14px 16px 12px;
+    background: rgba(8, 10, 28, 0.70); border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #c3cbe0; font-size: 12.5px; line-height: 1.6;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    transition: opacity 0.25s;
+  }
+  #ui.hidden { opacity: 0; }
+  #ui h3 { color: #fff; font-size: 16px; letter-spacing: 0.4px; margin-bottom: 4px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 10px; }
+  #ui .k { color: #ffb36b; font-weight: 700; white-space: nowrap; }
+  #ui .d { text-align: right; }
+  #ui .v { color: #9fd8ff; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  #ui .rule { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 8px 0 7px; }
+  #ui .keys { color: #8a93ad; font-size: 11px; margin-top: 6px; line-height: 1.5; }
+  #ui .hint { color: #ffd08a; font-style: italic; font-size: 11.5px; margin-top: 6px; min-height: 18px; }
+  .pill {
+    position: fixed; z-index: 10; border-radius: 999px; cursor: pointer;
+    font: 700 13px ui-rounded, 'Trebuchet MS', sans-serif; letter-spacing: 0.3px;
+    color: #e6ebf7; background: rgba(8, 10, 28, 0.80); border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .pill:hover { background: rgba(30, 40, 90, 0.92); border-color: rgba(255, 255, 255, 0.35); }
+  .pill:focus-visible { outline: 3px solid #ffb36b; outline-offset: 2px; }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 26px; }
+  #soundBtn { bottom: 24px; right: 20px; padding: 10px 18px; font-size: 13px; }
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<canvas id="fx"></canvas>
+<div id="ui">
+  <h3>&#x1F578;&#xFE0F; Spider Web</h3>
+  <div class="row"><span class="k">Move</span><span class="d">blow wind on the web</span></div>
+  <div class="row"><span class="k">Left drag</span><span class="d">spin silk</span></div>
+  <div class="row"><span class="k">Left click</span><span class="d">add a dew drop</span></div>
+  <div class="row"><span class="k">Right click</span><span class="d">pluck a strand</span></div>
+  <div class="row"><span class="k">Right drag</span><span class="d">strum strands</span></div>
+  <div class="row"><span class="k">Wheel</span><span class="d">tighter, looser silk</span></div>
+  <div class="rule"></div>
+  <div class="row"><span>Strands</span><span class="v" id="strandVal">0 / 60</span></div>
+  <div class="row"><span>New silk</span><span class="v" id="tenVal">-</span></div>
+  <div class="row"><span>Dew drops</span><span class="v" id="dewVal">0</span></div>
+  <div class="row"><span>Wind</span><span class="v" id="windVal">-</span></div>
+  <div class="row"><span>Breeze</span><span class="v" id="breezeVal">on</span></div>
+  <div class="row"><span>Frame time</span><span class="v" id="msVal">-</span></div>
+  <div class="keys">Keys: Space gust &middot; D dewy morning &middot; B breeze on/off &middot; H hide this &middot; R reset &middot; M sound</div>
+  <div class="hint" id="hint">Drag from a twig to spin a strand of silk.</div>
+</div>
+<button class="pill" id="soundBtn" type="button">&#x1F507; Sound off</button>
+<button class="pill" id="resetBtn" type="button">&#x21BA; New web</button>
+<script>
+(() => {
+'use strict';
+
+// ===========================================================================
+// Constants. Lengths are CSS pixels, times are seconds.
+// ===========================================================================
+const STEP = 1 / 60;        // fixed physics step (HANDBOOK §2.1)
+const GRAV = 900;           // px/s²
+const ITER = 12;            // constraint passes per step: more is stiffer silk
+const SEG = 14;             // rest length of one silk segment while spinning
+const MAX_SEGS = 100;       // upper bound on points in one strand; see maxSegs
+const MAX_STRANDS = 60;     // designed maximum (HANDBOOK §7: the max is the designed state)
+const MAX_PARTS = 3200;
+const SNAP = 1.9;           // a segment stretched past this times its rest length snaps
+const PAYOUT = 2400;        // silk pays out at most this fast, px/s; a faster yank stretches the strand
+const SNAP_LAG = 120;       // the strand being spun snaps when it is this many px longer than its silk
+const MAX_DROPS = 70;
+const WIND_R = 210;         // reach of the pointer's wind
+const TENSION_STEPS = 10;
+const DEFAULT_TENSION = 6;
+const PENTA = [0, 2, 4, 7, 9];
+const NOTES = 15;           // three octaves of pentatonic notes
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const bg = document.getElementById('bg'), bctx = bg.getContext('2d');
+const fx = document.getElementById('fx'), ctx = fx.getContext('2d');
+const ui = {
+  panel: document.getElementById('ui'), strand: document.getElementById('strandVal'), ten: document.getElementById('tenVal'),
+  dew: document.getElementById('dewVal'), wind: document.getElementById('windVal'), breeze: document.getElementById('breezeVal'),
+  ms: document.getElementById('msVal'), hint: document.getElementById('hint'), sound: document.getElementById('soundBtn'),
+};
+function hint(s) { if (ui.hint.textContent !== s) ui.hint.textContent = s; }
+
+// Cosine palette (HANDBOOK §4.1), moonlit: teal, lilac, gold.
+function pal(t) {
+  return [0, 1, 2].map(i => clamp(Math.round(255 * ([0.62, 0.62, 0.70][i] + [0.38, 0.32, 0.30][i] * Math.cos(TAU * ([1, 1, 1][i] * t + [0.0, 0.18, 0.40][i])))), 0, 255));
+}
+
+// ===========================================================================
+// State
+// ===========================================================================
+let W = 0, H = 0, dpr = 1;
+let maxSegs = 70;           // silk one strand can pay out: 0.8 of the window's diagonal
+let twigs = [];             // { pts: [[x,y]...], w0, w1, leaves: [...] }
+let strands = [];
+let parts = [];             // unique particles, rebuilt when strands change
+let partsDirty = true;
+let drops = [];
+let sparks = [], notes = [], rings = [], lights = [], fireflies = [], stars = [];
+let tension = DEFAULT_TENSION;
+let breezeOn = true;
+let spin = null;            // the strand being spun: { s, E, start, freeStart, sx, sy, dist }
+let prevButtons = 0;
+let pointer = { x: -1e4, y: -1e4, inside: false };
+let wind = { vx: 0, vy: 0, lastX: -1e4, lastY: -1e4, lastT: 0 };
+let gust = 0;
+let simTime = 0, dewTimer = 0;
+let soundOn = false, audio = null, ksCache = [];
+let scrollLabel = null;     // { text, life }
+let stats = { plucks: 0, snaps: 0, attaches: 0, drips: 0, formed: 0, placed: 0 };
+let serial = 0;
+let spider = null;
+let msAvg = 0, msWorst = 0;
+
+function slackOf(t) { return 1.30 - 0.035 * t; }   // 0: very loose (1.30), 10: tight (0.95)
+function tensionWord(t) { return t >= 8 ? 'tight' : t >= 5 ? 'springy' : t >= 2 ? 'loose' : 'floppy'; }
+
+// ===========================================================================
+// Twigs: the fixed anchors around the edge. Coordinates are fractions of the
+// window, so the scene fits any size. Kept clear of the controls pane
+// (top-left) and the reset button (bottom-centre).
+// ===========================================================================
+const TWIG_DEFS = [
+  { p: [[0.30, -0.03], [0.33, 0.09], [0.38, 0.17], [0.45, 0.21]], w0: 13, w1: 4 },
+  { p: [[0.38, 0.17], [0.40, 0.08], [0.43, 0.04]], w0: 5, w1: 2.5 },
+  { p: [[0.76, -0.03], [0.78, 0.11], [0.82, 0.23], [0.81, 0.32]], w0: 12, w1: 4 },
+  { p: [[1.03, 0.50], [0.93, 0.52], [0.85, 0.57], [0.80, 0.62]], w0: 14, w1: 4 },
+  { p: [[0.93, 0.52], [0.90, 0.44]], w0: 5, w1: 2.5 },
+  { p: [[0.64, 1.03], [0.645, 0.90], [0.67, 0.79], [0.71, 0.72]], w0: 8, w1: 3 },
+  { p: [[0.27, 1.03], [0.275, 0.90], [0.26, 0.80], [0.23, 0.73]], w0: 8, w1: 3 },
+  { p: [[-0.03, 0.68], [0.07, 0.66], [0.15, 0.62], [0.21, 0.59]], w0: 13, w1: 4 },
+];
+
+function buildTwigs() {
+  twigs = TWIG_DEFS.map((d, ti) => {
+    const pts = d.p.map(q => [q[0] * W, q[1] * H]);
+    const leaves = [];
+    let seed = ti * 17 + 3;
+    const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+    for (let i = 0; i < pts.length - 1; i++) {
+      for (let k = 0; k < 2; k++) {
+        if (rnd() < 0.45) continue;
+        const t = 0.25 + rnd() * 0.6;
+        leaves.push({ x: lerp(pts[i][0], pts[i + 1][0], t), y: lerp(pts[i][1], pts[i + 1][1], t), a: rnd() * TAU, s: 9 + rnd() * 9 });
+      }
+    }
+    return { pts, w0: d.w0, w1: d.w1, leaves };
+  });
+}
+function twigPoint(ti, u) {
+  const tw = twigs[ti], i = Math.min(Math.floor(u), tw.pts.length - 2), t = u - i;
+  return [lerp(tw.pts[i][0], tw.pts[i + 1][0], t), lerp(tw.pts[i][1], tw.pts[i + 1][1], t)];
+}
+function twigWidth(ti, u) { const tw = twigs[ti]; return lerp(tw.w0, tw.w1, u / (tw.pts.length - 1)); }
+// Nearest point on any twig: { ti, u, x, y, d } where d is distance from the bark surface.
+function nearestTwig(x, y) {
+  let best = null;
+  twigs.forEach((tw, ti) => {
+    for (let i = 0; i < tw.pts.length - 1; i++) {
+      const [ax, ay] = tw.pts[i], [bx, by] = tw.pts[i + 1];
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+      const t = clamp(((x - ax) * dx + (y - ay) * dy) / L2, 0, 1);
+      const px = ax + dx * t, py = ay + dy * t;
+      if (px < 2 || px > W - 2 || py < 2 || py > H - 2) continue;   // only the part on screen
+      const u = i + t;
+      const d = Math.max(0, Math.hypot(x - px, y - py) - twigWidth(ti, u) / 2);
+      if (!best || d < best.d) best = { ti, u, x: px, y: py, d };
+    }
+  });
+  return best;
+}
+
+// ===========================================================================
+// Particles and strands (HANDBOOK §3.1: Verlet ropes with distance constraints)
+// ===========================================================================
+function particle(x, y) { return { x, y, px: x, py: y, pin: false, twig: -1, u: 0, floaty: false, ax: 0, ay: 0, strands: [], stamp: 0 }; }
+function twigParticle(ti, u) {
+  const [x, y] = twigPoint(ti, u), p = particle(x, y);
+  p.pin = true; p.twig = ti; p.u = u;
+  return p;
+}
+function newStrand(pts, rest) {
+  const s = { id: ++serial, pts, rest, born: simTime, vib: 0, hue: 0.5, falling: false, fade: 1, fadeRate: 0.4, lastPluck: -1, note: 0 };
+  strands.push(s);
+  partsDirty = true;
+  return s;
+}
+function strandLength(s) { let L = 0; for (let i = 0; i < s.rest.length; i++) L += s.rest[i]; return L; }
+function noteFor(s) {
+  const L = clamp(strandLength(s), 50, 1000);
+  const n = (Math.log(L) - Math.log(50)) / (Math.log(1000) - Math.log(50));
+  return Math.round((1 - n) * (NOTES - 1));          // shorter is higher
+}
+
+let stampSerial = 0;
+function rebuildParts() {
+  stampSerial++;
+  parts = [];
+  for (const s of strands) for (const p of s.pts) {
+    if (p.stamp !== stampSerial) { p.stamp = stampSerial; p.strands = []; parts.push(p); }
+    p.strands.push(s);
+  }
+  partsDirty = false;
+}
+
+// A strand made between two particles, as a straight line of segments.
+function strandBetween(a, b, slack) {
+  const d = Math.hypot(b.x - a.x, b.y - a.y);
+  const n = clamp(Math.round(d / SEG), 2, MAX_SEGS - 1);
+  const pts = [a];
+  for (let i = 1; i < n; i++) pts.push(particle(lerp(a.x, b.x, i / n), lerp(a.y, b.y, i / n)));
+  pts.push(b);
+  const rest = new Array(n).fill(d * slack / n);
+  return newStrand(pts, rest);
+}
+
+// Break a strand at segment k. Pieces that hang on nothing fall and fade.
+function splitStrand(s, k) {
+  const i = strands.indexOf(s);
+  if (i < 0) return;
+  strands.splice(i, 1);
+  const A = s.pts.slice(0, k + 1), B = s.pts.slice(k + 1);
+  const pieces = [];
+  if (A.length >= 2) pieces.push(newStrand(A, s.rest.slice(0, k)));
+  if (B.length >= 2) pieces.push(newStrand(B, s.rest.slice(k + 1)));
+  rebuildParts();
+  for (const n of pieces) {
+    n.vib = 1; n.hue = s.hue; n.born = s.born; n.falling = s.falling; n.fade = s.fade; n.fadeRate = s.fadeRate;
+    if (!n.falling && !n.pts.some(p => p.pin || p.strands.length > 1)) { n.falling = true; n.fadeRate = 0.45; }
+  }
+  for (const d of drops) {
+    if (d.mode !== 0 || d.s !== s) continue;
+    if (d.seg < k && A.length >= 2) d.s = pieces[0];
+    else if (d.seg > k && B.length >= 2) { d.s = pieces[pieces.length - 1]; d.seg -= k + 1; }
+    else fallDrop(d);
+  }
+  if (spider && spider.s === s) spider.s = pieces[0] || null;
+  return pieces;
+}
+
+// Let a whole strand go: copy any pinned or shared points so it hangs on
+// nothing, then it falls and fades.
+function releaseStrand(s, rate) {
+  if (partsDirty) rebuildParts();
+  s.pts = s.pts.map(p => {
+    if (!p.pin && p.strands.length <= 1) return p;
+    const q = particle(p.x, p.y); q.px = p.px; q.py = p.py; return q;
+  });
+  s.falling = true; s.fadeRate = rate || 0.5;
+  partsDirty = true;
+  for (const d of drops) if (d.mode === 0 && d.s === s) fallDrop(d);
+}
+
+function removeStrand(s) {
+  const i = strands.indexOf(s);
+  if (i >= 0) strands.splice(i, 1);
+  partsDirty = true;
+  for (const d of drops) if (d.mode === 0 && d.s === s) fallDrop(d);
+  if (spin && spin.s === s) spin = null;
+}
+
+function liveStrands() { return strands.filter(s => !s.falling); }
+
+// Keep the web under the designed maximum: the oldest strand lets go.
+function enforceCap() {
+  let live = liveStrands();
+  let total = 0; for (const s of strands) total += s.pts.length;
+  while ((live.length > MAX_STRANDS || total > MAX_PARTS) && live.length > 1) {
+    const old = live.find(s => !spin || s !== spin.s);
+    if (!old) break;
+    releaseStrand(old, 0.6);
+    total -= old.pts.length;
+    live = liveStrands();
+    hint('The oldest strand let go to make room.');
+  }
+}
+
+// ===========================================================================
+// Hit tests
+// ===========================================================================
+// Nearest segment of a live strand: { s, seg, t, x, y, d }.
+function nearestSegment(x, y, maxD, exclude) {
+  let best = null, bd = maxD;
+  for (const s of strands) {
+    if (s.falling || s === exclude) continue;
+    const P = s.pts;
+    for (let i = 0; i < P.length - 1; i++) {
+      const a = P[i], b = P[i + 1];
+      const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy || 1;
+      const t = clamp(((x - a.x) * dx + (y - a.y) * dy) / L2, 0, 1);
+      const px = a.x + dx * t, py = a.y + dy * t, d = Math.hypot(x - px, y - py);
+      if (d < bd) { bd = d; best = { s, seg: i, t, x: px, y: py, d }; }
+    }
+  }
+  return best;
+}
+// Where a strand end would attach: an existing strand point or a new twig point.
+function findAttach(x, y, rS, rT, exclude) {
+  const seg = nearestSegment(x, y, rS, exclude);
+  const tw = nearestTwig(x, y);
+  const twOk = tw && tw.d < rT;
+  if (seg && (!twOk || seg.d <= tw.d)) {
+    let p = seg.t < 0.5 ? seg.s.pts[seg.seg] : seg.s.pts[seg.seg + 1];
+    if (exclude && exclude.pts.includes(p)) p = seg.t < 0.5 ? seg.s.pts[seg.seg + 1] : seg.s.pts[seg.seg];
+    if (exclude && exclude.pts.includes(p)) return null;
+    return { kind: 'strand', p, x: p.x, y: p.y };
+  }
+  if (twOk) return { kind: 'twig', ti: tw.ti, u: tw.u, x: tw.x, y: tw.y };
+  return null;
+}
+function attachParticle(a) { return a.kind === 'twig' ? twigParticle(a.ti, a.u) : a.p; }
+
+// ===========================================================================
+// Spinning silk (left drag). Silk pays out from the start point as the
+// pointer moves away, but only PAYOUT px a second, as a real spider's
+// spinnerets would. A fast yank outruns the silk, stretches the strand and
+// snaps it. Past maxSegs no more silk comes out at all.
+// ===========================================================================
+function startSpin(x, y) {
+  let a = findAttach(x, y, 26, 34) || findAttach(x, y, 60, 60);
+  let start, freeStart = false;
+  if (a) start = attachParticle(a);
+  else { start = particle(x, y); start.pin = true; freeStart = true; }
+  const E = particle(x, y); E.pin = true;
+  const s = newStrand([start, E], [Math.max(2, Math.hypot(x - start.x, y - start.y))]);
+  s.hue = 0.55;
+  spin = { s, E, start, freeStart, sx: x, sy: y, dist: 0, budget: 3 * SEG };
+  if (spider) spider.ride = true;
+  if (a) burst(start.x, start.y, 5, '200,225,255', 50);
+}
+
+function payOut(dt) {
+  const { s, E } = spin;
+  spin.budget = Math.min(spin.budget + PAYOUT * dt, 4 * SEG);
+  E.x = E.px = pointer.x; E.y = E.py = pointer.y;
+  spin.dist = Math.max(spin.dist, Math.hypot(pointer.x - spin.sx, pointer.y - spin.sy));
+  let guard = 0;
+  while (guard++ < 40) {
+    const n = s.pts.length, k = s.pts[n - 2];
+    const dx = E.x - k.x, dy = E.y - k.y, d = Math.hypot(dx, dy);
+    if (d <= SEG * 1.25) { s.rest[n - 2] = clamp(d, 2, SEG); break; }
+    if (s.pts.length >= maxSegs || spin.budget < SEG) break;
+    spin.budget -= SEG;
+    const q = particle(k.x + dx / d * SEG, k.y + dy / d * SEG);
+    s.pts.splice(n - 1, 0, q);
+    s.rest[n - 2] = SEG;
+    s.rest.splice(n - 1, 0, SEG);
+    partsDirty = true;
+  }
+}
+
+function endSpin(x, y) {
+  const sp = spin; spin = null;
+  if (!sp || strands.indexOf(sp.s) < 0) { if (spider) spider.ride = false; return; }
+  const s = sp.s;
+  if (spider) spider.ride = false;
+  // A click, not a drag: a dew drop on the strand, or a little sparkle.
+  if (sp.dist < 12) {
+    removeStrand(s);
+    const hit = nearestSegment(x, y, 30);
+    if (hit) { addDrop(hit.s, hit.seg, hit.t, 3.2); stats.placed++; burst(hit.x, hit.y, 6, '190,230,255', 40); sfx.plip(); hint('A dew drop! Big drops slide down to the low points.'); }
+    else { burst(x, y, 8, '255,230,170', 60); rings.push({ x, y, r: 3, life: 0.5, max: 0.5, color: '255,230,170' }); hint('Drag from a twig to spin a strand of silk.'); }
+    return;
+  }
+  const a = findAttach(x, y, 30, 36, s);
+  if (a && !(a.kind === 'strand' && a.p === sp.start)) {
+    const end = attachParticle(a);
+    s.pts[s.pts.length - 1] = end;
+    partsDirty = true;
+    const n = s.pts.length - 1;
+    // At least one segment per 24 px, so a fast flick still makes a smooth strand.
+    const straight = Math.hypot(end.x - sp.start.x, end.y - sp.start.y);
+    const need = clamp(Math.ceil(straight / 24), 1, MAX_SEGS - 1);
+    if (n < need) {
+      const keep = [s.pts[0]];
+      for (let i = 1; i < need; i++) keep.push(particle(lerp(sp.start.x, end.x, i / need), lerp(sp.start.y, end.y, i / need)));
+      keep.push(end);
+      s.pts = keep;
+    }
+    const total = straight * slackOf(tension);
+    s.rest = new Array(s.pts.length - 1).fill(Math.max(1, total / (s.pts.length - 1)));
+    s.vib = 1; s.hue = noteFor(s) / (NOTES - 1);
+    burst(end.x, end.y, 10, '210,235,255', 80);
+    stats.attaches++;
+    sfx.tink(noteFor(s));
+    hint(sp.freeStart ? 'Joined! Now right-click a strand to pluck it.' : 'Joined! Right-click a strand to pluck it.');
+  } else {
+    sp.E.pin = false;
+    if (sp.freeStart) {
+      sp.start.pin = false;
+      for (const p of s.pts) p.floaty = true;
+      s.falling = true; s.fadeRate = 1 / 6;
+      hint('A floating thread! Start on a twig or a strand to make it stay.');
+    } else hint('A loose strand. It dangles from where you started.');
+  }
+  if (sp.freeStart && sp.start.pin && s.pts[0] === sp.start && !s.falling) sp.start.pin = false;
+  rebuildParts();
+  enforceCap();
+  if (spider && !s.falling && strands.includes(s)) spiderTo(s);
+}
+
+// ===========================================================================
+// Plucking (right click) and strumming (right drag)
+// ===========================================================================
+function pluck(s, seg, t, fromX, fromY, strength) {
+  if (simTime - s.lastPluck < 0.12) return;
+  s.lastPluck = simTime;
+  const P = s.pts, n = P.length, k = clamp(seg + t, 0.5, n - 1.5);
+  const a = P[0], b = P[n - 1];
+  let nx = -(b.y - a.y), ny = b.x - a.x;
+  const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+  const hx = lerp(P[seg].x, P[seg + 1].x, t), hy = lerp(P[seg].y, P[seg + 1].y, t);
+  if ((hx - fromX) * nx + (hy - fromY) * ny < 0) { nx = -nx; ny = -ny; }   // push away from the pointer
+  const amp = Math.min(16, 4 + strandLength(s) * 0.03) * (strength || 1);
+  for (let i = 0; i < n; i++) {
+    const p = P[i];
+    if (p.pin) continue;
+    const f = i <= k ? i / k : (n - 1 - i) / (n - 1 - k);
+    p.x += nx * amp * f; p.y += ny * amp * f;
+    p.px = p.x; p.py = p.y;
+  }
+  const note = noteFor(s);
+  s.vib = 1; s.hue = note / (NOTES - 1); s.note = note;
+  stats.plucks++;
+  sfx.pluck(note);
+  const c = pal(s.hue);
+  notes.push({ x: hx, y: hy - 8, vx: (Math.random() - 0.5) * 30, vy: -55, life: 1.4, max: 1.4, color: c.join(','), ch: Math.random() < 0.5 ? '♪' : '♫' });
+  lights.push({ s, pos: seg + t, dir: 1, life: 1, color: c.join(',') }, { s, pos: seg + t, dir: -1, life: 1, color: c.join(',') });
+  for (const d of drops) if (d.mode === 0 && d.s === s && Math.random() < 0.3) fallDrop(d, nx * 120, ny * 120 - 80);
+  hint('Twang! Short strands sing high, long strands sing low.');
+}
+
+// Every live strand crossed by the pointer's path from (x0,y0) to (x1,y1).
+function strum(x0, y0, x1, y1) {
+  const hits = [];
+  for (const s of strands) {
+    if (s.falling) continue;
+    const P = s.pts;
+    for (let i = 0; i < P.length - 1; i++) {
+      const a = P[i], b = P[i + 1];
+      const r = segCross(x0, y0, x1, y1, a.x, a.y, b.x, b.y);
+      if (r >= 0) { hits.push({ s, seg: i, t: r }); break; }
+    }
+  }
+  for (const h of hits) pluck(h.s, h.seg, h.t, x0, y0, 0.8);
+}
+function segCross(ax, ay, bx, by, cx, cy, dx, dy) {
+  const rx = bx - ax, ry = by - ay, sx = dx - cx, sy = dy - cy;
+  const den = rx * sy - ry * sx;
+  if (Math.abs(den) < 1e-9) return -1;
+  const t = ((cx - ax) * sy - (cy - ay) * sx) / den, u = ((cx - ax) * ry - (cy - ay) * rx) / den;
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? u : -1;
+}
+
+// ===========================================================================
+// Dew drops: they condense slowly, slide to low points, merge, and drip off.
+// ===========================================================================
+function addDrop(s, seg, t, r) {
+  if (drops.length >= MAX_DROPS + 20) return;
+  drops.push({ s, seg, t, r: r || 0.6, v: 0, mode: 0, x: 0, y: 0, vx: 0, vy: 0, tw: Math.random() * TAU });
+}
+function fallDrop(d, vx, vy) {
+  if (d.mode === 1) return;
+  if (d.s && d.s.pts[d.seg + 1]) {
+    const a = d.s.pts[d.seg], b = d.s.pts[d.seg + 1];
+    d.x = lerp(a.x, b.x, d.t); d.y = lerp(a.y, b.y, d.t) + d.r * 0.7;
+    d.vx = (vx || 0) + (lerp(a.x - a.px, b.x - b.px, d.t)) / STEP * 0.6;
+    d.vy = (vy || 0) + (lerp(a.y - a.py, b.y - b.py, d.t)) / STEP * 0.6;
+  }
+  d.mode = 1; d.s = null;
+}
+function dropOnStrandEnd(d, end) {
+  const s = d.s, P = s.pts, p = end > 0 ? P[P.length - 1] : P[0];
+  if (p.pin) { d.t = end > 0 ? 1 : 0; d.seg = end > 0 ? P.length - 2 : 0; d.v = 0; return; }
+  const others = p.strands.filter(o => o !== s && !o.falling);
+  if (!others.length) { d.t = end > 0 ? 1 : 0; d.seg = end > 0 ? P.length - 2 : 0; fallDrop(d); stats.drips++; return; }
+  // A junction: carry on down whichever neighbouring segment is lower.
+  const o = others[(Math.random() * others.length) | 0], idx = o.pts.indexOf(p), Q = o.pts;
+  const up = idx + 1 < Q.length ? Q[idx + 1].y : -1e9, dn = idx - 1 >= 0 ? Q[idx - 1].y : -1e9;
+  d.s = o;
+  if (up >= dn) { d.seg = idx; d.t = 0; d.v = Math.abs(d.v); }
+  else { d.seg = idx - 1; d.t = 1; d.v = -Math.abs(d.v); }
+}
+function updateDrops(dt) {
+  if (dewTimer -= dt, dewTimer <= 0) {
+    dewTimer = 0.35;
+    const live = liveStrands().filter(s => s !== (spin && spin.s));
+    let onWeb = 0; for (const d of drops) if (d.mode === 0) onWeb++;
+    if (live.length && onWeb < MAX_DROPS) {
+      const s = live[(Math.random() * live.length) | 0];
+      addDrop(s, (Math.random() * (s.pts.length - 1)) | 0, Math.random(), 0.6);
+      stats.formed++;
+    }
+  }
+  for (const d of drops) {
+    if (d.mode !== 0) continue;
+    const s = d.s;
+    if (!s || s.falling || strands.indexOf(s) < 0 || d.seg >= s.pts.length - 1) { fallDrop(d); continue; }
+    let a = s.pts[d.seg], b = s.pts[d.seg + 1];
+    let dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1;
+    d.r = Math.min(6.4, d.r + 0.32 * dt * (1 - d.r / 7));
+    if (d.r > 1.7) {
+      d.v += GRAV * 0.55 * (dy / len) * dt;
+      d.v *= Math.exp(-2.2 * dt);
+      d.t += d.v * dt / len;
+      let guard = 0;
+      while ((d.t > 1 || d.t < 0) && d.mode === 0 && guard++ < 8) {
+        if (d.t > 1) {
+          if (d.seg + 1 < s.pts.length - 1) { d.seg++; d.t -= 1; }
+          else dropOnStrandEnd(d, 1);
+        } else {
+          if (d.seg > 0) { d.seg--; d.t += 1; }
+          else dropOnStrandEnd(d, -1);
+        }
+        if (d.mode === 0 && d.s !== s) break;
+      }
+      if (d.mode !== 0) continue;
+      d.t = clamp(d.t, 0, 1);
+    }
+    a = d.s.pts[d.seg]; b = d.s.pts[d.seg + 1];
+    // The drop's weight pulls its strand down a little.
+    const wgt = 34 * d.r * d.r;
+    a.ay += wgt * (1 - d.t); b.ay += wgt * d.t;
+    d.x = lerp(a.x, b.x, d.t); d.y = lerp(a.y, b.y, d.t) + d.r * 0.7;
+    // Shaken hard: it flies off. Fat and resting at a low point: it drips.
+    const sv = Math.hypot(a.x - a.px, a.y - a.py) / STEP;
+    if (sv > 520 && Math.random() < dt * 4) { fallDrop(d); continue; }
+    if (d.r > 5.8 || (d.r > 4.6 && Math.abs(d.v) < 8 && Math.random() < dt * 0.6)) { fallDrop(d); stats.drips++; }
+  }
+  // Drops that touch on the same strand join into one bigger drop.
+  for (let i = 0; i < drops.length; i++) {
+    const a = drops[i];
+    if (a.mode !== 0 || a.r <= 0) continue;
+    for (let j = i + 1; j < drops.length; j++) {
+      const b = drops[j];
+      if (b.mode !== 0 || b.s !== a.s || b.r <= 0) continue;
+      if (Math.abs(a.seg - b.seg) > 1) continue;
+      if (Math.hypot(a.x - b.x, a.y - b.y) < (a.r + b.r) * 0.9) {
+        const big = a.r >= b.r ? a : b, small = big === a ? b : a;
+        big.r = Math.cbrt(a.r ** 3 + b.r ** 3); big.tw = 0;
+        small.r = 0;
+      }
+    }
+  }
+  for (let i = drops.length - 1; i >= 0; i--) {
+    const d = drops[i];
+    if (d.r <= 0) { drops.splice(i, 1); continue; }
+    if (d.mode !== 1) continue;
+    d.vy += GRAV * dt; d.x += d.vx * dt; d.y += d.vy * dt;
+    if (d.y > H - 10) {
+      for (let k = 0; k < 5; k++) spark(d.x, H - 12, '170,215,255', 70, -1);
+      rings.push({ x: d.x, y: H - 10, r: 2, life: 0.4, max: 0.4, color: '170,215,255', flat: true });
+      sfx.plip();
+      drops.splice(i, 1);
+    } else if (d.x < -40 || d.x > W + 40) drops.splice(i, 1);
+  }
+}
+
+// ===========================================================================
+// The friendly spider. Purely for looks: it rides the pointer while you spin,
+// then walks along the newest strand and looks at the pointer.
+// ===========================================================================
+function makeSpider() {
+  spider = { x: W * 0.5, y: H * 0.3, vx: 0, vy: 0, s: null, pos: 0, target: 0, wait: 1, phase: 0, ang: 0, blink: 0, ride: false, thread: null };
+  const s = liveStrands()[0];
+  if (s) { spiderTo(s); const p = spiderPoint(); spider.x = p.x; spider.y = p.y + 8; }
+}
+function spiderTo(s) { spider.s = s; spider.pos = (s.pts.length - 1) * 0.5; spider.target = spider.pos; spider.thread = { x: spider.x, y: spider.y, life: 0.6 }; }
+function spiderPoint() {
+  const s = spider.s, P = s.pts, i = clamp(Math.floor(spider.pos), 0, P.length - 2), t = clamp(spider.pos - i, 0, 1);
+  const a = P[i], b = P[i + 1];
+  return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), ang: Math.atan2(b.y - a.y, b.x - a.x) };
+}
+function updateSpider(dt) {
+  const sp = spider;
+  let tx, ty, ang = 0;
+  if (sp.ride && spin) { tx = spin.E.x; ty = spin.E.y + 9; }
+  else {
+    if (!sp.s || sp.s.falling || strands.indexOf(sp.s) < 0) {
+      const live = liveStrands();
+      if (live.length) spiderTo(live[live.length - 1]); else sp.s = null;
+    }
+    if (sp.s) {
+      const n = sp.s.pts.length - 1;
+      sp.target = clamp(sp.target, 0.2, n - 0.2);
+      const step = 2.4 * dt;   // segments per second
+      if (Math.abs(sp.target - sp.pos) > step) sp.pos += Math.sign(sp.target - sp.pos) * step;
+      else { sp.pos = sp.target; if ((sp.wait -= dt) <= 0) { sp.wait = 1.5 + Math.random() * 3; sp.target = n * (0.15 + Math.random() * 0.7); } }
+      sp.pos = clamp(sp.pos, 0, n);
+      const p = spiderPoint();
+      ang = p.ang; if (ang > Math.PI / 2) ang -= Math.PI; if (ang < -Math.PI / 2) ang += Math.PI;
+      tx = p.x; ty = p.y + 8;
+    } else { const [x, y] = twigPoint(0, 2.6); tx = x; ty = y + 14; }
+  }
+  // Damped spring follow (HANDBOOK §3.2).
+  const om = 16;
+  sp.vx += (tx - sp.x) * om * om * dt; sp.vy += (ty - sp.y) * om * om * dt;
+  const damp = Math.exp(-2 * om * dt); sp.vx *= damp; sp.vy *= damp;
+  sp.x += sp.vx * dt; sp.y += sp.vy * dt;
+  sp.ang = lerp(sp.ang, ang, 1 - Math.exp(-8 * dt));
+  sp.phase += Math.min(Math.hypot(sp.vx, sp.vy), 400) * dt * 0.09;
+  if ((sp.blink -= dt) < -3 - Math.random() * 3) sp.blink = 0.14;
+  if (sp.thread && (sp.thread.life -= dt) <= 0) sp.thread = null;
+}
+
+// ===========================================================================
+// Sound (off by default, HANDBOOK §7). Plucks are Karplus-Strong strings
+// synthesised into small buffers once, then reused. No files.
+// ===========================================================================
+function ensureAudio() {
+  if (audio || !soundOn) return;
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+  if (audio) {
+    master = audio.createDynamicsCompressor();
+    master.threshold.value = -18; master.ratio.value = 6;
+    master.connect(audio.destination);
+  }
+}
+let master = null;
+function noteFreq(i) { return 196 * 2 ** ((12 * Math.floor(i / 5) + PENTA[i % 5]) / 12); }
+function ksBuffer(i) {
+  if (ksCache[i]) return ksCache[i];
+  const sr = audio.sampleRate, f = noteFreq(i), N = Math.max(2, Math.round(sr / f));
+  const len = Math.floor(sr * 1.6), buf = audio.createBuffer(1, len, sr), d = buf.getChannelData(0);
+  const ring = new Float32Array(N);
+  let seed = 12345 + i;
+  for (let k = 0; k < N; k++) { seed = (seed * 16807) % 2147483647; ring[k] = (seed / 2147483647) * 2 - 1; }
+  let prev = 0, idx = 0;
+  const decay = 0.996 - i * 0.0002;
+  for (let k = 0; k < len; k++) {
+    const cur = ring[idx];
+    d[k] = cur;
+    ring[idx] = decay * 0.5 * (cur + prev);
+    prev = cur; idx = (idx + 1) % N;
+  }
+  for (let k = 0; k < 64; k++) d[k] *= k / 64;
+  return (ksCache[i] = buf);
+}
+function playBuffer(buf, vol, rate) {
+  const src = audio.createBufferSource(), g = audio.createGain();
+  src.buffer = buf; if (rate) src.playbackRate.value = rate;
+  g.gain.value = vol;
+  src.connect(g); g.connect(master); src.start();
+}
+function tone(freq, dur, type, vol, slide) {
+  if (!soundOn || !audio) return;
+  const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+  o.type = type || 'sine'; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol || 0.05, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+}
+let lastPlip = 0;
+const sfx = {
+  pluck(i) { if (soundOn && audio) playBuffer(ksBuffer(i), 0.32); },
+  snap() { if (soundOn && audio) { playBuffer(ksBuffer(2), 0.3, 0.7); tone(380, 0.25, 'triangle', 0.05, 0.4); } },
+  tink(i) { tone(noteFreq(i + 10), 0.12, 'sine', 0.05); },
+  plip() { if (simTime - lastPlip < 0.06) return; lastPlip = simTime; tone(700 + Math.random() * 300, 0.09, 'sine', 0.035, 2.2); },
+  tick(up) { tone(up ? 760 : 520, 0.03, 'sine', 0.03); },
+  whoosh() {
+    if (!soundOn || !audio) return;
+    const len = Math.floor(audio.sampleRate * 0.7), buf = audio.createBuffer(1, len, audio.sampleRate), d = buf.getChannelData(0);
+    for (let k = 0; k < len; k++) d[k] = (Math.random() * 2 - 1) * Math.sin(Math.PI * k / len) * 0.5;
+    const src = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+    f.type = 'lowpass'; f.frequency.value = 700; g.gain.value = 0.25;
+    src.buffer = buf; src.connect(f); f.connect(g); g.connect(master); src.start();
+  },
+};
+function toggleSound() {
+  soundOn = !soundOn;
+  ui.sound.innerHTML = soundOn ? '&#x1F50A; Sound on' : '&#x1F507; Sound off';
+  if (soundOn) { ensureAudio(); if (audio && audio.state === 'suspended') audio.resume(); sfx.pluck(7); }
+}
+
+// ===========================================================================
+// Effects
+// ===========================================================================
+function spark(x, y, color, speed, up) {
+  if (sparks.length > 400) sparks.shift();
+  const a = up ? -Math.PI / 2 + (Math.random() - 0.5) * 2.2 : Math.random() * TAU, s = (0.3 + Math.random()) * (speed || 80);
+  sparks.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.4 + Math.random() * 0.5, max: 0.9, color, r: 0.8 + Math.random() * 1.6, g: up ? 300 : 40 });
+}
+function burst(x, y, n, color, speed) { for (let i = 0; i < n; i++) spark(x, y, color, speed); }
+
+// ===========================================================================
+// Simulation step
+// ===========================================================================
+function windAt(x, y, out) {
+  let ax = 0, ay = 0;
+  if (breezeOn) { ax += 26 * Math.sin(simTime * 0.7 + y * 0.004) + 14 * Math.sin(simTime * 1.9 + x * 0.006); ay += 6 * Math.sin(simTime * 1.3 + x * 0.01); }
+  ax += gust * 1400 * (0.8 + 0.2 * Math.sin(y * 0.02 + simTime * 3));
+  ay -= gust * 120;
+  if (pointer.inside && !spin) {
+    const dx = x - pointer.x, dy = y - pointer.y, d2 = dx * dx + dy * dy;
+    if (d2 < WIND_R * WIND_R) {
+      const f = 1 - Math.sqrt(d2) / WIND_R, k = f * f * 3.2;
+      ax += wind.vx * k; ay += wind.vy * k;
+    }
+  }
+  out.x = ax; out.y = ay;
+}
+const tmpW = { x: 0, y: 0 };
+
+function update(dt) {
+  simTime += dt;
+  if (partsDirty) rebuildParts();
+  if (spin) payOut(dt);
+  if (partsDirty) rebuildParts();
+  // Pointer wind fades when the mouse stops.
+  wind.vx *= Math.exp(-5 * dt); wind.vy *= Math.exp(-5 * dt);
+  gust *= Math.exp(-1.6 * dt);
+  updateDrops(dt);
+
+  const dt2 = dt * dt;
+  for (const p of parts) {
+    if (p.pin) { p.ax = p.ay = 0; continue; }
+    windAt(p.x, p.y, tmpW);
+    const damp = p.floaty ? 0.985 : 0.9975;
+    const g = p.floaty ? GRAV * 0.04 : GRAV;
+    const vx = (p.x - p.px) * damp, vy = (p.y - p.py) * damp;
+    p.px = p.x; p.py = p.y;
+    p.x += vx + (tmpW.x * (p.floaty ? 0.5 : 1) + p.ax) * dt2;
+    p.y += vy + (g + tmpW.y + p.ay) * dt2;
+    p.ax = p.ay = 0;
+  }
+  for (let it = 0; it < ITER; it++) {
+    for (const s of strands) {
+      const P = s.pts, R = s.rest;
+      for (let i = 0; i < R.length; i++) {
+        const a = P[i], b = P[i + 1];
+        const wa = a.pin ? 0 : 1, wb = b.pin ? 0 : 1, wsum = wa + wb;
+        if (!wsum) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1e-6;
+        if (d <= R[i] * 0.999) {
+          // Silk does not push back when it is slack, except a little, so it can buckle.
+          const c = (d - R[i]) / d * 0.06 / wsum;
+          a.x += dx * c * wa; a.y += dy * c * wa; b.x -= dx * c * wb; b.y -= dy * c * wb;
+          continue;
+        }
+        const c = (d - R[i]) / d / wsum;
+        a.x += dx * c * wa; a.y += dy * c * wa; b.x -= dx * c * wb; b.y -= dy * c * wb;
+      }
+    }
+  }
+  // Snapping (HANDBOOK §3.1 tearing). The worst-stretched segment goes.
+  for (let si = strands.length - 1; si >= 0; si--) {
+    const s = strands[si];
+    if (s.falling || s.pts.length < 2) continue;
+    let worst = 0, wk = -1, len = 0, restSum = 0;
+    for (let i = 0; i < s.rest.length; i++) {
+      const a = s.pts[i], b = s.pts[i + 1];
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy);
+      len += d; restSum += s.rest[i];
+      const r = d / s.rest[i];
+      if (r > worst) { worst = r; wk = i; }
+    }
+    // The strand being spun snaps when the pointer has run far ahead of
+    // the silk. Any other strand snaps when one segment is far over-stretched.
+    if (spin && spin.s === s) { if (len - restSum > Math.max(SNAP_LAG, restSum * 0.3)) snapStrand(s, wk); }
+    else if (worst > SNAP) snapStrand(s, wk);
+  }
+  // Tidy up: fade falling strands and drop ones that left the screen.
+  for (let i = strands.length - 1; i >= 0; i--) {
+    const s = strands[i];
+    s.vib = Math.max(0, s.vib - dt * 0.9);
+    if (s.falling) s.fade -= dt * s.fadeRate;
+    let gone = s.fade <= 0;
+    if (!gone) { gone = true; for (const p of s.pts) if (p.y < H + 60 && p.x > -200 && p.x < W + 200) { gone = false; break; } }
+    if (gone && !(spin && spin.s === s)) removeStrand(s);
+  }
+  // Wind motes and fireflies.
+  for (const f of fireflies) {
+    windAt(f.x, f.y, tmpW);
+    f.a += (Math.sin(simTime * 0.9 + f.seed) * 0.8) * dt;
+    f.vx += (Math.cos(f.a) * 18 + tmpW.x * 0.35 - f.vx * 0.8) * dt;
+    f.vy += (Math.sin(f.a) * 18 + tmpW.y * 0.35 - f.vy * 0.8) * dt;
+    f.x += f.vx * dt; f.y += f.vy * dt;
+    if (f.x < -20) f.x = W + 20; if (f.x > W + 20) f.x = -20;
+    if (f.y < 40) f.vy += 30 * dt; if (f.y > H - 30) f.vy -= 30 * dt;
+  }
+  if (spider) updateSpider(dt);
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i]; s.life -= dt;
+    if (s.life <= 0) { sparks.splice(i, 1); continue; }
+    s.vy += s.g * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.vx *= Math.exp(-2 * dt);
+  }
+  for (let i = notes.length - 1; i >= 0; i--) { const n = notes[i]; n.life -= dt; n.x += n.vx * dt; n.y += n.vy * dt; n.vy *= Math.exp(-0.8 * dt); if (n.life <= 0) notes.splice(i, 1); }
+  for (let i = rings.length - 1; i >= 0; i--) { const r = rings[i]; r.life -= dt; r.r += 90 * dt; if (r.life <= 0) rings.splice(i, 1); }
+  for (let i = lights.length - 1; i >= 0; i--) {
+    const l = lights[i]; l.life -= dt * 0.9; l.pos += l.dir * dt * 38;
+    if (l.life <= 0 || l.pos < 0 || l.pos > l.s.pts.length - 1 || strands.indexOf(l.s) < 0) lights.splice(i, 1);
+  }
+  if (scrollLabel && (scrollLabel.life -= dt) <= 0) scrollLabel = null;
+}
+
+function snapStrand(s, k) {
+  const a = s.pts[k], b = s.pts[k + 1];
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  burst(mx, my, 16, '230,240,255', 140);
+  rings.push({ x: mx, y: my, r: 4, life: 0.45, max: 0.45, color: '230,240,255' });
+  stats.snaps++;
+  sfx.snap();
+  const wasSpin = spin && spin.s === s;
+  splitStrand(s, k);
+  if (wasSpin) {
+    spin.E.pin = false;
+    if (spin.freeStart) spin.start.pin = false;
+    spin = null;
+    if (spider) spider.ride = false;
+    rebuildParts();
+    for (const n of strands) if (!n.falling && !n.pts.some(p => p.pin || p.strands.length > 1)) { n.falling = true; n.fadeRate = 0.45; }
+    hint('Snap! You pulled faster than the spider can spin.');
+  } else hint('Snap! That strand stretched too far.');
+  rebuildParts();
+}
+
+// ===========================================================================
+// Drawing
+// ===========================================================================
+let dropSprite, glowSprite, fireSprite, glintSprites = [];
+function makeSprites() {
+  const mk = (size, fn) => { const c = document.createElement('canvas'); c.width = c.height = size; fn(c.getContext('2d'), size); return c; };
+  dropSprite = mk(64, (g, S) => {
+    // A water bead: dark rim, light gathered at the bottom (refraction), a glint at top-right.
+    let gr = g.createRadialGradient(32, 38, 2, 32, 32, 30);
+    gr.addColorStop(0, 'rgba(220,240,255,0.85)'); gr.addColorStop(0.55, 'rgba(120,170,230,0.45)');
+    gr.addColorStop(0.9, 'rgba(200,225,255,0.75)'); gr.addColorStop(1, 'rgba(200,225,255,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(32, 32, 30, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.95)'; g.beginPath(); g.ellipse(40, 21, 7, 5, -0.6, 0, TAU); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.5)'; g.beginPath(); g.arc(25, 44, 4, 0, TAU); g.fill();
+  });
+  glowSprite = mk(64, (g) => {
+    const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.25, 'rgba(255,255,255,0.4)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  });
+  fireSprite = mk(48, (g) => {
+    const gr = g.createRadialGradient(24, 24, 0, 24, 24, 24);
+    gr.addColorStop(0, 'rgba(250,255,190,1)'); gr.addColorStop(0.2, 'rgba(200,255,120,0.55)'); gr.addColorStop(1, 'rgba(150,230,90,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 48, 48);
+  });
+  glintSprites = [];
+  for (let i = 0; i < 8; i++) {
+    const c = pal(i / 8);
+    glintSprites.push(mk(32, (g) => {
+      const gr = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+      gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.3, `rgba(${c[0]},${c[1]},${c[2]},0.6)`); gr.addColorStop(1, `rgba(${c[0]},${c[1]},${c[2]},0)`);
+      g.fillStyle = gr; g.fillRect(0, 0, 32, 32);
+    }));
+  }
+}
+
+function moonPos() { return { x: W * 0.84, y: H * 0.16, r: Math.min(W, H) * 0.055 }; }
+
+// The still background is drawn once per resize (HANDBOOK §6.5).
+function drawBackground() {
+  const g = bctx;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const sky = g.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#0a1030'); sky.addColorStop(0.55, '#1a2150'); sky.addColorStop(0.85, '#3a2c5e'); sky.addColorStop(1, '#4d3460');
+  g.fillStyle = sky; g.fillRect(0, 0, W, H);
+  const m = moonPos();
+  let gr = g.createRadialGradient(m.x, m.y, m.r * 0.5, m.x, m.y, m.r * 6);
+  gr.addColorStop(0, 'rgba(200,215,255,0.28)'); gr.addColorStop(1, 'rgba(200,215,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+  gr = g.createRadialGradient(m.x - m.r * 0.3, m.y - m.r * 0.3, m.r * 0.1, m.x, m.y, m.r);
+  gr.addColorStop(0, '#fffbe8'); gr.addColorStop(1, '#d9dcf0');
+  g.fillStyle = gr; g.beginPath(); g.arc(m.x, m.y, m.r, 0, TAU); g.fill();
+  g.fillStyle = 'rgba(160,165,200,0.35)';
+  [[-0.3, -0.2, 0.22], [0.25, 0.15, 0.16], [-0.05, 0.4, 0.12], [0.35, -0.35, 0.09]].forEach(([dx, dy, r]) => { g.beginPath(); g.arc(m.x + dx * m.r, m.y + dy * m.r, r * m.r, 0, TAU); g.fill(); });
+  // Far hills and trees, then a near hill: dusk silhouettes.
+  g.fillStyle = '#1b1d48';
+  g.beginPath(); g.moveTo(0, H);
+  for (let x = 0; x <= W; x += 20) g.lineTo(x, H * 0.78 - 40 * Math.sin(x * 0.004 + 1) - 22 * Math.sin(x * 0.011));
+  g.lineTo(W, H); g.fill();
+  for (let i = 0; i < 9; i++) {
+    const x = ((i * 0.137 + 0.05) % 1) * W, base = H * 0.78 - 40 * Math.sin(x * 0.004 + 1) - 22 * Math.sin(x * 0.011) + 6, h = 40 + (i * 37) % 50;
+    g.beginPath(); g.moveTo(x - h * 0.28, base); g.lineTo(x, base - h); g.lineTo(x + h * 0.28, base); g.fill();
+  }
+  g.fillStyle = '#11122e';
+  g.beginPath(); g.moveTo(0, H);
+  for (let x = 0; x <= W; x += 16) g.lineTo(x, H * 0.9 - 18 * Math.sin(x * 0.006 + 2.2) - 8 * Math.sin(x * 0.02));
+  g.lineTo(W, H); g.fill();
+  // Grass blades along the bottom.
+  g.strokeStyle = '#0c0d24'; g.lineWidth = 2; g.lineCap = 'round';
+  for (let x = 0; x < W; x += 7) {
+    const h = 10 + ((x * 13) % 22), lean = ((x * 7) % 9 - 4) * 1.5;
+    g.beginPath(); g.moveTo(x, H); g.quadraticCurveTo(x + lean * 0.3, H - h * 0.6, x + lean, H - h); g.stroke();
+  }
+  // Twigs, with a moonlit edge.
+  for (const tw of twigs) {
+    const P = tw.pts, n = P.length - 1;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < n; i++) {
+        const w = lerp(tw.w0, tw.w1, (i + 0.5) / n);
+        g.strokeStyle = pass ? 'rgba(170,160,210,0.35)' : '#2a1d2e';
+        g.lineWidth = pass ? Math.max(1, w * 0.25) : w;
+        g.beginPath();
+        const ox = pass ? w * 0.22 : 0, oy = pass ? -w * 0.22 : 0;
+        g.moveTo(P[i][0] + ox, P[i][1] + oy); g.lineTo(P[i + 1][0] + ox, P[i + 1][1] + oy); g.stroke();
+      }
+    }
+    for (const lf of tw.leaves) {
+      g.save(); g.translate(lf.x, lf.y); g.rotate(lf.a);
+      g.fillStyle = '#1d3a3a';
+      g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(lf.s * 0.5, -lf.s * 0.45, lf.s * 1.3, 0); g.quadraticCurveTo(lf.s * 0.5, lf.s * 0.45, 0, 0); g.fill();
+      g.strokeStyle = 'rgba(150,200,190,0.35)'; g.lineWidth = 1;
+      g.beginPath(); g.moveTo(1, 0); g.lineTo(lf.s * 1.15, 0); g.stroke();
+      g.restore();
+    }
+  }
+  // A soft vignette.
+  gr = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+  gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,10,0.45)');
+  g.fillStyle = gr; g.fillRect(0, 0, W, H);
+}
+
+function strandPath(s) {
+  const P = s.pts, n = P.length;
+  ctx.moveTo(P[0].x, P[0].y);
+  if (n === 2) { ctx.lineTo(P[1].x, P[1].y); return; }
+  for (let i = 1; i < n - 1; i++) ctx.quadraticCurveTo(P[i].x, P[i].y, (P[i].x + P[i + 1].x) / 2, (P[i].y + P[i + 1].y) / 2);
+  ctx.lineTo(P[n - 1].x, P[n - 1].y);
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter';
+  // Twinkling stars.
+  for (const st of stars) {
+    const a = st.b * (0.55 + 0.45 * Math.sin(simTime * st.f + st.p));
+    ctx.fillStyle = `rgba(220,225,255,${a.toFixed(3)})`;
+    ctx.fillRect(st.x * W, st.y * H, st.s, st.s);
+  }
+  // Fireflies.
+  for (const f of fireflies) {
+    const a = Math.max(0, Math.sin(simTime * f.f + f.seed)) ** 2;
+    if (a < 0.02) continue;
+    ctx.globalAlpha = a * 0.9;
+    ctx.drawImage(fireSprite, f.x - 12, f.y - 12, 24, 24);
+  }
+  ctx.globalAlpha = 1;
+
+  const hover = (!spin && pointer.inside && !(prevButtons & 1)) ? nearestSegment(pointer.x, pointer.y, 30) : null;
+  // Silk: a soft glow pass, then a fine bright core, batched (HANDBOOK §6.4).
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (const s of strands) if (!s.falling) strandPath(s);
+  ctx.strokeStyle = 'rgba(140,180,255,0.12)'; ctx.lineWidth = 4.5; ctx.stroke();
+  ctx.strokeStyle = 'rgba(215,230,255,0.62)'; ctx.lineWidth = 1.15; ctx.stroke();
+  for (const s of strands) {
+    if (s.falling) {
+      ctx.globalAlpha = clamp(s.fade, 0, 1) * 0.8;
+      ctx.beginPath(); strandPath(s);
+      ctx.strokeStyle = 'rgba(215,230,255,0.6)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (s.vib > 0.01 || (hover && hover.s === s)) {
+      const c = pal(s.hue), v = Math.max(s.vib, hover && hover.s === s ? 0.35 : 0);
+      ctx.beginPath(); strandPath(s);
+      ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${(0.35 * v).toFixed(3)})`; ctx.lineWidth = 7; ctx.stroke();
+      ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},${(0.8 * v).toFixed(3)})`; ctx.lineWidth = 1.8; ctx.stroke();
+    }
+  }
+  // Iridescent glints where a thread lies across the moonlight.
+  const m = moonPos();
+  let glints = 0;
+  for (const s of strands) {
+    if (s.falling) continue;
+    const P = s.pts;
+    for (let i = 0; i < P.length - 1 && glints < 260; i++) {
+      const a = P[i], b = P[i + 1];
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      let ux = m.x - mx, uy = m.y - my; const ul = Math.hypot(ux, uy) || 1; ux /= ul; uy /= ul;
+      let dx = b.x - a.x, dy = b.y - a.y; const dl = Math.hypot(dx, dy) || 1; dx /= dl; dy /= dl;
+      const c = dx * ux + dy * uy, ac = Math.abs(c);
+      if (ac > 0.09) continue;
+      const k = 1 - ac / 0.09;
+      ctx.globalAlpha = k * 0.75;
+      const spr = glintSprites[((i * 0.37 + s.id * 0.21 + (c > 0 ? 0.5 : 0)) * 8 | 0) % 8];
+      ctx.drawImage(spr, mx - 7, my - 7, 14, 14);
+      glints++;
+    }
+  }
+  ctx.globalAlpha = 1;
+  // Light running along a plucked strand.
+  for (const l of lights) {
+    const P = l.s.pts, i = clamp(Math.floor(l.pos), 0, P.length - 2), t = l.pos - i;
+    const x = lerp(P[i].x, P[i + 1].x, t), y = lerp(P[i].y, P[i + 1].y, t);
+    ctx.globalAlpha = clamp(l.life, 0, 1);
+    ctx.drawImage(glowSprite, x - 10, y - 10, 20, 20);
+  }
+  ctx.globalAlpha = 1;
+
+  // Dew drops.
+  ctx.globalCompositeOperation = 'source-over';
+  for (const d of drops) {
+    if (d.r <= 0) continue;
+    let sx = d.r * 3.0, sy = sx;
+    if (d.mode === 1) { const sp = Math.min(Math.hypot(d.vx, d.vy) / 900, 0.6); sy *= 1 + sp; sx *= 1 - sp * 0.4; }
+    ctx.drawImage(dropSprite, d.x - sx / 2, d.y - sy / 2, sx, sy);
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  for (const d of drops) {
+    if (d.r < 2.2 || d.mode !== 0) continue;
+    const tw = Math.max(0, Math.sin(simTime * 2.3 + d.tw * 7)) ** 12;
+    if (tw < 0.05) continue;
+    const r = d.r * 3.5 * tw;
+    ctx.globalAlpha = tw * 0.9;
+    ctx.drawImage(glowSprite, d.x + d.r * 0.4 - r, d.y - d.r * 0.5 - r, r * 2, r * 2);
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(d.x + d.r * 0.4 - r, d.y - d.r * 0.5); ctx.lineTo(d.x + d.r * 0.4 + r, d.y - d.r * 0.5);
+    ctx.moveTo(d.x + d.r * 0.4, d.y - d.r * 0.5 - r); ctx.lineTo(d.x + d.r * 0.4, d.y - d.r * 0.5 + r); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // While spinning: show where the strand will join.
+  if (spin) {
+    const a = findAttach(pointer.x, pointer.y, 30, 36, spin.s);
+    if (a) {
+      const pulse = 0.6 + 0.4 * Math.sin(simTime * 10);
+      ctx.globalAlpha = 0.8 * pulse;
+      ctx.drawImage(glowSprite, a.x - 16, a.y - 16, 32, 32);
+      ctx.globalAlpha = 1;
+    }
+  }
+  for (const s of sparks) {
+    ctx.globalAlpha = clamp(s.life / s.max, 0, 1);
+    ctx.fillStyle = `rgb(${s.color})`;
+    ctx.fillRect(s.x - s.r / 2, s.y - s.r / 2, s.r, s.r);
+  }
+  for (const r of rings) {
+    ctx.globalAlpha = clamp(r.life / r.max, 0, 1) * 0.6;
+    ctx.strokeStyle = `rgb(${r.color})`; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (r.flat) ctx.ellipse(r.x, r.y, r.r * 1.6, r.r * 0.4, 0, 0, TAU); else ctx.arc(r.x, r.y, r.r, 0, TAU);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  drawSpider();
+  ctx.font = '700 20px ui-rounded, "Trebuchet MS", sans-serif'; ctx.textAlign = 'center';
+  for (const n of notes) {
+    ctx.globalAlpha = clamp(n.life / n.max, 0, 1);
+    ctx.fillStyle = `rgb(${n.color})`;
+    ctx.fillText(n.ch, n.x, n.y);
+  }
+  ctx.globalAlpha = 1;
+  if (scrollLabel && pointer.inside) {
+    ctx.globalAlpha = clamp(scrollLabel.life * 2, 0, 1);
+    ctx.font = '700 13px ui-rounded, "Trebuchet MS", sans-serif';
+    const tw = ctx.measureText(scrollLabel.text).width + 18;
+    ctx.fillStyle = 'rgba(8,10,28,0.8)';
+    roundRect(pointer.x + 16, pointer.y + 14, tw, 24, 12); ctx.fill();
+    ctx.fillStyle = '#e6ebf7'; ctx.textAlign = 'left';
+    ctx.fillText(scrollLabel.text, pointer.x + 25, pointer.y + 31);
+    ctx.globalAlpha = 1;
+  }
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+
+function drawSpider() {
+  const sp = spider;
+  if (!sp) return;
+  // Drag line to where it came from, for a moment after a hop.
+  if (sp.thread) {
+    ctx.strokeStyle = `rgba(215,230,255,${(sp.thread.life * 0.6).toFixed(3)})`; ctx.lineWidth = 0.8;
+    ctx.beginPath(); ctx.moveTo(sp.thread.x, sp.thread.y); ctx.lineTo(sp.x, sp.y - 8); ctx.stroke();
+  }
+  if (sp.ride && spin) {
+    ctx.strokeStyle = 'rgba(215,230,255,0.7)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(spin.E.x, spin.E.y); ctx.lineTo(sp.x, sp.y - 5); ctx.stroke();
+  }
+  ctx.save();
+  ctx.translate(sp.x, sp.y);
+  ctx.scale(1.35, 1.35);
+  ctx.rotate(sp.ang + clamp(sp.vx * 0.0015, -0.4, 0.4));
+  // Legs: four a side, stepping with the walk phase.
+  ctx.strokeStyle = '#3b2a3f'; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  for (let side = -1; side <= 1; side += 2) {
+    for (let i = 0; i < 4; i++) {
+      const base = (-0.9 + i * 0.6), swing = Math.sin(sp.phase * 2 + i * 1.7 + (side > 0 ? Math.PI : 0)) * 0.25;
+      const a = -Math.PI / 2 + side * (Math.PI / 2 + (base + swing) * 0.6);
+      const kx = Math.cos(a) * 9, ky = Math.sin(a) * 9 - 5;
+      const fx2 = Math.cos(a) * 13 + side * 1, fy2 = -8 + Math.sin(sp.phase * 2 + i) * 1.2;
+      ctx.beginPath(); ctx.moveTo(0, -1); ctx.lineTo(kx, ky); ctx.lineTo(fx2, fy2); ctx.stroke();
+    }
+  }
+  // Abdomen and head.
+  let gr = ctx.createRadialGradient(-2, -1, 1, 0, 2, 9);
+  gr.addColorStop(0, '#8a6a8e'); gr.addColorStop(1, '#3b2a3f');
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.ellipse(0, 3, 8, 7, 0, 0, TAU); ctx.fill();
+  ctx.fillStyle = 'rgba(255,200,120,0.55)'; ctx.beginPath(); ctx.arc(-2.5, 4.5, 1.4, 0, TAU); ctx.arc(2.5, 4.5, 1.4, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#4a3550'; ctx.beginPath(); ctx.ellipse(0, -3.5, 5.5, 4.5, 0, 0, TAU); ctx.fill();
+  // Eyes that follow the pointer, and blink.
+  const lx = pointer.x - sp.x, ly = pointer.y - sp.y, ll = Math.hypot(lx, ly) || 1;
+  const ex = lx / ll * 1.2, ey = ly / ll * 1.2;
+  for (const s of [-1, 1]) {
+    const cx = s * 2.4, cy = -4.2;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.ellipse(cx, cy, 2.3, sp.blink > 0 ? 0.4 : 2.5, 0, 0, TAU); ctx.fill();
+    if (sp.blink <= 0) { ctx.fillStyle = '#1a1020'; ctx.beginPath(); ctx.arc(cx + ex, cy + ey, 1.2, 0, TAU); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
+// ===========================================================================
+// Input (HANDBOOK §2.3). Every handler compares e.buttons with the last
+// value, because a second button pressed during a drag arrives as a move.
+// ===========================================================================
+function local(e) { const r = fx.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+fx.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('contextmenu', e => e.preventDefault());
+let rightLast = null;
+
+function onButtons(e) {
+  const p = local(e), nb = e.buttons, ob = prevButtons;
+  prevButtons = nb;
+  if ((nb & 1) && !(ob & 1)) startSpin(p.x, p.y);
+  if (!(nb & 1) && (ob & 1)) endSpin(p.x, p.y);
+  if ((nb & 2) && !(ob & 2)) {
+    const hit = nearestSegment(p.x, p.y, 34);
+    if (hit) pluck(hit.s, hit.seg, hit.t, p.x, p.y, 1);
+    else { rings.push({ x: p.x, y: p.y, r: 4, life: 0.5, max: 0.5, color: '180,200,255' }); hint(liveStrands().length ? 'Right-click right on a strand to pluck it.' : 'Spin a strand first, then pluck it.'); }
+    rightLast = { x: p.x, y: p.y };
+  }
+  if (!(nb & 2) && (ob & 2)) rightLast = null;
+}
+
+fx.addEventListener('pointerdown', e => {
+  ensureAudio();
+  try { fx.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
+  movePointer(e);
+  onButtons(e);
+});
+function movePointer(e) {
+  const p = local(e), now = performance.now() / 1000;
+  if (pointer.inside && wind.lastT) {
+    const dt = Math.max(0.008, now - wind.lastT);
+    const vx = clamp((p.x - wind.lastX) / dt, -2500, 2500), vy = clamp((p.y - wind.lastY) / dt, -2500, 2500);
+    wind.vx = lerp(wind.vx, vx, 0.5); wind.vy = lerp(wind.vy, vy, 0.5);
+  }
+  wind.lastX = p.x; wind.lastY = p.y; wind.lastT = now;
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+}
+window.addEventListener('pointermove', e => {
+  movePointer(e);
+  if (e.buttons !== prevButtons) onButtons(e);
+  if ((prevButtons & 2) && rightLast) {
+    if (Math.hypot(pointer.x - rightLast.x, pointer.y - rightLast.y) > 3) { strum(rightLast.x, rightLast.y, pointer.x, pointer.y); rightLast = { x: pointer.x, y: pointer.y }; }
+  }
+});
+window.addEventListener('pointerup', e => onButtons(e));
+fx.addEventListener('pointerleave', () => { pointer.inside = false; wind.lastT = 0; });
+window.addEventListener('blur', () => { if (spin) endSpin(pointer.x, pointer.y); prevButtons = 0; rightLast = null; });
+
+fx.addEventListener('wheel', e => {
+  e.preventDefault();
+  // Browsers turn Shift + wheel into a sideways scroll, so read deltaX when deltaY is zero.
+  const delta = e.deltaY || e.deltaX;
+  if (!delta) return;
+  const up = delta < 0, old = tension;
+  tension = clamp(tension + (up ? 1 : -1), 0, TENSION_STEPS);
+  if (tension !== old) sfx.tick(up);
+  scrollLabel = { text: 'New silk: ' + tensionWord(tension) + ' ' + '●'.repeat(tension) + '○'.repeat(TENSION_STEPS - tension), life: 1.4 };
+  hint(up ? 'Tighter silk: new strands pull the web taut.' : 'Looser silk: new strands sag and flop.');
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') resetWeb();
+  else if (k === ' ') { e.preventDefault(); gust = 1; sfx.whoosh(); hint('Whoosh! A gust of wind.'); }
+  else if (k === 'd') {
+    const live = liveStrands();
+    for (let i = 0; i < 24 && live.length; i++) { const s = live[(Math.random() * live.length) | 0]; addDrop(s, (Math.random() * (s.pts.length - 1)) | 0, Math.random(), 1 + Math.random() * 2.5); }
+    hint('A dewy morning. Watch the drops gather and slide.');
+  }
+  else if (k === 'b') breezeOn = !breezeOn;
+  else if (k === 'h') ui.panel.classList.toggle('hidden');
+  else if (k === 'm') toggleSound();
+});
+document.getElementById('resetBtn').addEventListener('click', () => { ensureAudio(); resetWeb(); });
+ui.sound.addEventListener('click', toggleSound);
+
+// ===========================================================================
+// Reset, sizing, loop
+// ===========================================================================
+function resetWeb() {
+  strands = []; drops = []; sparks = []; notes = []; rings = []; lights = [];
+  spin = null; partsDirty = true; tension = DEFAULT_TENSION; breezeOn = true; gust = 0;
+  stats = { plucks: 0, snaps: 0, attaches: 0, drips: 0, formed: 0, placed: 0 };
+  // A starter frame: three strands between twigs, so there is something to pluck at once.
+  const A = twigParticle(0, 2.9), B = twigParticle(3, 2.6), C = twigParticle(7, 2.9), D = twigParticle(5, 2.7), E = twigParticle(2, 2.8);
+  strandBetween(A, B, 1.05);
+  strandBetween(C, B, 1.08);
+  strandBetween(A, D, 1.06);
+  strandBetween(E, C, 1.10);
+  rebuildParts();
+  for (const s of strands) s.hue = noteFor(s) / (NOTES - 1);
+  for (let i = 0; i < 120; i++) update(STEP);    // let the starter web settle before it is seen
+  sparks = []; notes = [];
+  simTime = 0;
+  for (let i = 0; i < 10; i++) { const s = strands[i % strands.length]; addDrop(s, (Math.random() * (s.pts.length - 1)) | 0, Math.random(), 0.8 + Math.random() * 1.6); }
+  makeSpider();
+  hint('Drag from a twig to spin a strand of silk.');
+}
+
+function fit() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  maxSegs = clamp(Math.round(0.8 * Math.hypot(W, H) / SEG), 30, MAX_SEGS);
+  for (const c of [bg, fx]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); c.style.width = W + 'px'; c.style.height = H + 'px'; }
+  buildTwigs();
+  // Points tied to twigs move with them.
+  for (const s of strands) for (const p of s.pts) if (p.twig >= 0) { const [x, y] = twigPoint(p.twig, p.u); p.x = p.px = x; p.y = p.py = y; }
+  drawBackground();
+}
+
+let acc = 0, last = performance.now();
+function frame(t) {
+  const t0 = performance.now();
+  acc += Math.min((t - last) / 1000, 0.1);
+  last = t;
+  let steps = 0;
+  // At most 4 steps a frame: a slow machine runs the web in slow motion
+  // rather than piling up catch-up steps that make every frame slower.
+  while (acc >= STEP && steps < 4) { update(STEP); acc -= STEP; steps++; }
+  if (steps === 4) acc = 0;
+  draw();
+  const ms = performance.now() - t0;
+  msAvg = msAvg ? lerp(msAvg, ms, 0.05) : ms;
+  msWorst = Math.max(msWorst * 0.995, ms);
+  updatePanel();
+  publish();
+  requestAnimationFrame(frame);
+}
+
+function updatePanel() {
+  ui.strand.textContent = liveStrands().length + ' / ' + MAX_STRANDS;
+  ui.ten.textContent = tensionWord(tension) + ' (' + tension + ')';
+  let n = 0; for (const d of drops) if (d.mode === 0) n++;
+  ui.dew.textContent = n;
+  const ws = Math.hypot(wind.vx, wind.vy) + gust * 1000;
+  ui.wind.textContent = ws < 40 ? (breezeOn ? 'gentle breeze' : 'still') : ws < 600 ? 'blowing' : 'strong!';
+  ui.breeze.textContent = breezeOn ? 'on' : 'off';
+  ui.ms.textContent = msAvg.toFixed(1) + ' ms';
+}
+
+// ===========================================================================
+// Test hook, read-only apart from the stress helper.
+// ===========================================================================
+window.GAME = {};
+function publish() {
+  const G = window.GAME;
+  G.strandCount = liveStrands().length;
+  G.particles = parts.length;
+  G.tension = tension;
+  G.slack = slackOf(tension);
+  G.drops = drops.filter(d => d.mode === 0).length;
+  G.falling = drops.filter(d => d.mode === 1).length;
+  G.spinning = !!spin;
+  G.frameMs = msAvg; G.worstMs = msWorst;
+  G.stats = Object.assign({}, stats);
+  G.breezeOn = breezeOn; G.soundOn = soundOn;
+  G.spider = spider ? { x: spider.x, y: spider.y, strand: spider.s ? spider.s.id : null } : null;
+  G.wind = Math.hypot(wind.vx, wind.vy);
+}
+window.GAME.strands = () => liveStrands().map(s => ({
+  id: s.id, n: s.pts.length, length: strandLength(s), vib: s.vib, note: noteFor(s),
+  startPinned: s.pts[0].pin, endPinned: s.pts[s.pts.length - 1].pin,
+  endShared: s.pts[s.pts.length - 1].strands.length > 1, startShared: s.pts[0].strands.length > 1,
+  pts: s.pts.map(p => [p.x, p.y]),
+}));
+window.GAME.canAttach = (x, y) => !!(findAttach(x, y, 26, 34) || findAttach(x, y, 60, 60));
+window.GAME.twigPoint = (ti, u) => { const [x, y] = twigPoint(ti, u); return { x, y }; };
+window.GAME.panel = () => Array.from(document.querySelectorAll('#ui .row')).map(r => r.textContent);
+// Fill the web to its designed maximum, for the frame-time test.
+window.GAME.stress = () => {
+  const ends = [];
+  for (let ti = 0; ti < twigs.length; ti++) for (let u = 0.6; u < twigs[ti].pts.length - 1; u += 0.5) { const [x, y] = twigPoint(ti, u); if (x > 2 && x < W - 2 && y > 2 && y < H - 2) ends.push([ti, u]); }
+  let k = 0;
+  while (liveStrands().length < MAX_STRANDS && k < 400) {
+    const a = ends[(k * 7) % ends.length], b = ends[(k * 13 + 5) % ends.length]; k++;
+    if (a[0] === b[0]) continue;
+    const s = strandBetween(twigParticle(a[0], a[1]), twigParticle(b[0], b[1]), slackOf(4));
+    s.hue = noteFor(s) / (NOTES - 1);
+  }
+  rebuildParts();
+  const live = liveStrands();
+  for (let i = 0; i < MAX_DROPS; i++) { const s = live[i % live.length]; addDrop(s, (Math.random() * (s.pts.length - 1)) | 0, Math.random(), 1 + Math.random() * 3); }
+  return { strands: liveStrands().length, particles: parts.length };
+};
+
+// The app's iframe can report a 0x0 window when this script first runs, so wait for a real size.
+function boot() {
+  if (window.innerWidth < 200 || window.innerHeight < 200) { requestAnimationFrame(boot); return; }
+  makeSprites();
+  stars = Array.from({ length: 130 }, (_, i) => ({ x: (Math.sin(i * 91.7) * 0.5 + 0.5), y: (Math.sin(i * 37.3) * 0.5 + 0.5) * 0.7, s: 1 + (i % 3 === 0 ? 1 : 0), b: 0.3 + (i % 5) * 0.12, f: 0.6 + (i % 7) * 0.3, p: i }));
+  fit();
+  fireflies = Array.from({ length: 16 }, (_, i) => ({ x: Math.random() * W, y: H * (0.3 + Math.random() * 0.6), vx: 0, vy: 0, a: Math.random() * TAU, seed: i * 1.7, f: 0.8 + Math.random() * 1.2 }));
+  resetWeb();
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+window.addEventListener('resize', () => { if (window.innerWidth >= 200 && window.innerHeight >= 200 && W) fit(); });
+boot();
+})();
+</script>
+</body>
+</html>
