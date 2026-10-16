@@ -197,6 +197,7 @@ const faceStyles = PALETTE.map(c => {
 // ===========================================================================
 let doms = [];
 let nextId = 1;
+let nextLine = 1;
 let now = 0;
 let gap = GAP_START;
 let lastDir = 0;
@@ -235,19 +236,35 @@ function setFacing(d, phi) {
   d.phi = phi; d.fx = Math.cos(phi); d.fy = Math.sin(phi); d.ux = -d.fy; d.uy = d.fx;
 }
 
-function tooClose(x, y, ignore) {
+// Where a line crosses another (or itself), a domino squeezed in beside one
+// of the other line's dominoes stands in the space that domino needs to fall
+// into, and both runs jam there. So a new domino may not stand beside a
+// domino that is not one of its own line's neighbours: within a domino's
+// width to one side of it, and closer than this in front or behind.
+const BESIDE = TH + 6;
+// The domino that blocked the last refused placement, if any.
+let blocker = null;
+function tooClose(x, y, phi, line, seq, nb) {
+  const nfx = Math.cos(phi), nfy = Math.sin(phi);
+  blocker = null;
   for (const o of doms) {
-    if (o === ignore) continue;
     const dx = o.x - x, dy = o.y - y;
-    if (dx * dx + dy * dy < 11 * 11) return true;
+    if (dx * dx + dy * dy < 11 * 11) { blocker = o; return true; }
+    if (o === nb || dx * dx + dy * dy > 40 * 40 || (o.line === line && Math.abs(o.seq - seq) <= 2)) continue;
+    const so = Math.abs(dx * o.fx + dy * o.fy), lo = Math.abs(dx * o.ux + dy * o.uy);
+    const sn = Math.abs(dx * nfx + dy * nfy), ln = Math.abs(-dx * nfy + dy * nfx);
+    if ((so < BESIDE && lo < WD) || (sn < BESIDE && ln < WD)) { blocker = o; return true; }
   }
   return false;
 }
 
 // Adds a domino, dropping in from above. Returns it, or null when blocked.
-function addDomino(x, y, phi, col, delay) {
+// `line` and `seq` say which line it belongs to and where along it; `nb` is
+// a crossing domino it follows, which counts as its neighbour.
+function addDomino(x, y, phi, col, delay, line, seq, nb) {
+  blocker = null;
   if (x < 6 || y < 6 || x > W - 6 || y > H + HD * K - 6) return null;
-  if (tooClose(x, y, null)) return null;
+  if (tooClose(x, y, phi, line, seq, nb)) return null;
   if (doms.length >= MAX_DOMINOES) {
     const old = doms.shift();
     if (old.inFloor) floorDirty = true;
@@ -255,6 +272,7 @@ function addDomino(x, y, phi, col, delay) {
     puff(old.x, old.y - HD * K * 0.5, 4, 'rgba(255,240,220,');
   }
   const d = makeDomino(x, y, phi, col);
+  d.line = line; d.seq = seq;
   d.appearAt = now + (delay || 0);
   d.drop = 30; d.dropV = 0;
   doms.push(d);
@@ -298,6 +316,7 @@ function integrate(d, dt) {
       d.th *= Math.exp(-13 * dt); d.om = 0;
       if (Math.abs(d.th) < 0.004) {
         d.th = 0; d.restoreAt = null; d.fallAt = null; d.landed = false;
+        if (d.phi0 !== undefined) { setFacing(d, d.phi0); d.phi0 = undefined; }
         d.dropV = 120; // a little hop as it lands on its feet
       }
     }
@@ -362,6 +381,16 @@ function contacts(i) {
         const gapNow = s - TH + zc * Math.tan(tj);
         const overlap = reach - gapNow;
         if (overlap <= 0) continue;
+        if (ac < 0.6 && Math.abs(e.th) < THC && e.restoreAt === null) {
+          // A domino can only rock along its own line, so one hit on its side
+          // would just stop the run. Where two lines cross, a real one gets
+          // knocked round. Turn it toward the push, a little each step.
+          const want = c >= 0 ? Math.atan2(dY, dX) : Math.atan2(-dY, -dX);
+          const turn = Math.atan2(Math.sin(want - e.phi), Math.cos(want - e.phi));
+          if (e.phi0 === undefined) e.phi0 = e.phi;  // standing it up turns it back
+          setFacing(e, e.phi + clamp(turn, -0.2, 0.2));
+          if (e.sleep) wake(e);
+        }
         const cpl = Math.max(ac, 0.15), sc = c >= 0 ? 1 : -1;
         const inv = 1 / (1 + cpl * cpl);
         // Push apart (position), then exchange speed (impulse), 10% bounce.
@@ -545,6 +574,7 @@ function nextColour() { const c = colourCursor % PALETTE.length; colourCursor++;
 // Places dominoes on a list of points, each facing along the path.
 function placeSequence(pts, anchor, colFn, stagger) {
   const placed = [];
+  const line = anchor ? anchor.line : nextLine++, seq0 = anchor ? anchor.seq + 1 : 0;
   for (let k = 0; k < pts.length; k++) {
     const p = pts[k];
     const prev = k > 0 ? pts[k - 1] : (anchor ? { x: anchor.x, y: anchor.y } : null);
@@ -553,7 +583,7 @@ function placeSequence(pts, anchor, colFn, stagger) {
     if (prev) { const l = Math.hypot(p.x - prev.x, p.y - prev.y) || 1; dx += (p.x - prev.x) / l; dy += (p.y - prev.y) / l; }
     if (next) { const l = Math.hypot(next.x - p.x, next.y - p.y) || 1; dx += (next.x - p.x) / l; dy += (next.y - p.y) / l; }
     const phi = (dx || dy) ? Math.atan2(dy, dx) : lastDir;
-    const d = addDomino(p.x, p.y, phi, colFn(k), (stagger || 0) * k);
+    const d = addDomino(p.x, p.y, phi, colFn(k), (stagger || 0) * k, line, seq0 + k);
     if (d) placed.push(d);
   }
   return placed;
@@ -648,12 +678,26 @@ function pick(px, py, maxR) {
   return best;
 }
 
+// A crossing domino faces halfway between its own line and the crossing line
+// (the average of the way in and the way out), so its fall knocks on the
+// next domino of both lines, whichever line reaches it first.
+function faceCrossing(j, inx, iny, outx, outy) {
+  if (!j.lf) j.lf = [j.fx, j.fy];   // its own line's direction, kept if crossed again
+  let bx = inx + outx, by = iny + outy;
+  const bl = Math.hypot(bx, by);
+  if (bl < 1e-6) { bx = inx; by = iny; } else { bx /= bl; by /= bl; }
+  const s = j.lf[0] * bx + j.lf[1] * by >= 0 ? 1 : -1;
+  const hx = j.lf[0] + s * bx, hy = j.lf[1] + s * by;
+  if (hx || hy) setFacing(j, Math.atan2(hy, hx));
+}
+
 function startStroke(p) {
   const anchor = pick(p.x, p.y, PICK_R);
   stroke = {
     ax: anchor ? anchor.x : p.x, ay: anchor ? anchor.y : p.y,
     anchor, first: null, prev: anchor, prevPrev: null, count: 0, dx: 0, dy: 0,
     col: nextColour(), sx: p.x, sy: p.y,
+    line: anchor ? anchor.line : nextLine++, seq0: anchor ? anchor.seq + 1 : 0,
   };
   if (anchor) hint('Branching off! Draw where the new line should go.');
 }
@@ -665,7 +709,7 @@ function extendStroke(p) {
     const dx = p.x - stroke.sx, dy = p.y - stroke.sy;
     if (Math.hypot(dx, dy) < 8) return;
     const phi = Math.atan2(dy, dx);
-    const d = addDomino(stroke.sx, stroke.sy, phi, stroke.col, 0);
+    const d = addDomino(stroke.sx, stroke.sy, phi, stroke.col, 0, stroke.line, stroke.seq0);
     stroke.first = d || { x: stroke.sx, y: stroke.sy };
     stroke.dx = Math.cos(phi); stroke.dy = Math.sin(phi);
     stroke.prev = d; stroke.ax = stroke.sx; stroke.ay = stroke.sy;
@@ -700,11 +744,15 @@ function extendStroke(p) {
     }
     const nx = stroke.ax + ux * step, ny = stroke.ay + uy * step;
     const phi = Math.atan2(uy, ux);
-    const d = addDomino(nx, ny, phi, stroke.col, 0);
+    const d = addDomino(nx, ny, phi, stroke.col, 0, stroke.line, stroke.seq0 + stroke.count, stroke.prev === stroke.junction ? stroke.junction : null);
     if (d) {
       // Smooth the curve: the previous domino faces between its two neighbours.
       const pv = stroke.prev;
-      if (pv && pv !== stroke.anchor) {
+      if (pv && pv === stroke.junction) {
+        // Now the line's way out of the crossing is known: aim the crossing domino by it.
+        const ox = d.x - pv.x, oy = d.y - pv.y, ol = Math.hypot(ox, oy) || 1;
+        faceCrossing(pv, stroke.jin[0], stroke.jin[1], ox / ol, oy / ol);
+      } else if (pv && pv !== stroke.anchor) {
         if (stroke.prevPrev) {
           const ix = pv.x - stroke.prevPrev.x, iy = pv.y - stroke.prevPrev.y, il = Math.hypot(ix, iy) || 1;
           setFacing(pv, Math.atan2(iy / il + uy, ix / il + ux));
@@ -713,6 +761,22 @@ function extendStroke(p) {
       stroke.prevPrev = pv; stroke.prev = d; stroke.count++;
       lastDir = phi;
       sfx.place();
+    } else if (blocker && blocker !== stroke.prev && blocker !== stroke.anchor && blocker.restoreAt === null && Math.abs(blocker.th) < THC &&
+               (blocker.line !== stroke.line || Math.abs(blocker.seq - (stroke.seq0 + stroke.count)) > 2)) {
+      // Crossing another line: its domino here becomes the crossing domino,
+      // shared by both lines. Carry on one gap beyond it.
+      const pj = stroke.prev;
+      if (pj && pj === stroke.junction) {
+        const ox = blocker.x - pj.x, oy = blocker.y - pj.y, ol = Math.hypot(ox, oy) || 1;
+        faceCrossing(pj, stroke.jin[0], stroke.jin[1], ox / ol, oy / ol);
+      }
+      faceCrossing(blocker, ux, uy, ux, uy);
+      stroke.junction = blocker; stroke.jin = [ux, uy];
+      stroke.prevPrev = null; stroke.prev = blocker;
+      stroke.ax = blocker.x; stroke.ay = blocker.y;
+      stroke.dx = ux; stroke.dy = uy;
+      if (limited) break;
+      continue;
     }
     stroke.ax = nx; stroke.ay = ny;
     stroke.dx = ux; stroke.dy = uy;
@@ -723,7 +787,7 @@ function extendStroke(p) {
 function endStroke(p) {
   if (!stroke) return;
   if (stroke.count === 0 && !stroke.anchor) {
-    if (addDomino(stroke.sx, stroke.sy, lastDir, stroke.col, 0)) sfx.place();
+    if (addDomino(stroke.sx, stroke.sy, lastDir, stroke.col, 0, stroke.line, stroke.seq0)) sfx.place();
   }
   if (stroke.count > 0) { introDom = null; hint('Right-click the first domino to knock them down.'); }
   stroke = null;
