@@ -56,7 +56,8 @@
   <div class="row"><span>Last run</span><span class="v" id="runVal">-</span></div>
   <div class="row"><span>Sound</span><span class="v" id="sndVal">off</span></div>
   <div class="keys">Keys: S spiral &middot; O ring &middot; U stand up</div>
-  <div class="keys" style="margin-top:0">R start again &middot; H hide this &middot; M sound</div>
+  <div class="keys" style="margin-top:0">R start again &middot; C clear all</div>
+  <div class="keys" style="margin-top:0">H hide this &middot; M sound</div>
   <div class="keys">Start a drag on a domino to make a branch.</div>
   <div class="hint" id="hint">Right-click the glowing domino!</div>
 </div>
@@ -873,6 +874,7 @@ canvas.addEventListener('wheel', e => {
 window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (k === 'r') resetGame();
+  else if (k === 'c') clearTable();
   else if (k === 'u') standUp();
   else if (k === 's' && pointer.inside) stampSpiral(pointer.x, pointer.y);
   else if (k === 'o' && pointer.inside) stampRing(pointer.x, pointer.y);
@@ -908,13 +910,26 @@ function standUp() {
   sfx.stand();
 }
 
-function resetGame() {
+function emptyTable() {
   doms = []; particles = []; rings = []; banners = []; pendingSparkles = [];
-  floorDirty = true;
+  floorDirty = true; introDom = null;
   cascade = null; lastRun = 0; trauma = 0; stroke = null;
-  gap = GAP_START; lastDir = 0; colourCursor = 0; now = 0;
+  lastDir = 0; colourCursor = 0;
+}
+
+function resetGame() {
+  emptyTable();
+  gap = GAP_START; now = 0;
   buildStarter();
   hint('Right-click the glowing domino!');
+}
+
+// Clear all: an empty table to build on. Keeps the gap the player chose.
+function clearTable() {
+  if (!doms.length) return;
+  emptyTable();
+  ensureAudio(); sfx.tick();
+  hint('All clear! Left drag to draw a new path.');
 }
 
 // ===========================================================================
@@ -1279,6 +1294,7 @@ window.GAME = {
       return { id: d.id, x: d.x, y: d.y, phi: d.phi, theta: d.th, omega: d.om, screenX: (d.x + t.x) / 2, screenY: (d.y + t.y) / 2, visible: now >= d.appearAt };
     });
   },
+  clear: () => clearTable(),
   maxDominoes: MAX_DOMINOES,
   tippingAngle: THC,
 };
