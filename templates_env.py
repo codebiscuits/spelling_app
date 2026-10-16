@@ -58,6 +58,7 @@ MINI_GAMES = [
     {"file": "magnet_lab.html",    "name": "Magnet Lab",    "description": "Drop bar magnets and watch a field of compass needles swing", "tier": "reward", "release_order": 17},
     {"file": "domino_run.html",    "name": "Domino Run",    "description": "Draw a path of dominoes and watch them topple", "tier": "reward", "release_order": 18},
     {"file": "spider_web.html",    "name": "Spider Web",    "description": "Spin a wobbly web, pluck its strands and catch dew drops", "tier": "reward", "release_order": 19},
+    {"file": "balloon_bunches.html", "name": "Balloon Bunches", "description": "Blow up balloons, tie them together and pop them", "tier": "reward", "release_order": 20},
 ]
 
 REWARD_GAMES = sorted(
