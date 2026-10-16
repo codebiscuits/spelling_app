@@ -63,7 +63,12 @@
   <div class="games-grid">
     {% for game in my_games %}
     <div class="game-card">
+      {% set thumb = game_thumb(game.file) %}
+      {% if thumb %}
+      <img src="{{ thumb }}" alt="{{ game.name }}" class="game-thumb">
+      {% else %}
       <div class="game-thumb game-reward-thumb">🎮</div>
+      {% endif %}
       <span class="game-name">{{ game.name }}</span>
     </div>
     {% endfor %}

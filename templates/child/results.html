@@ -65,11 +65,11 @@
       <form method="post" action="/child/games/{{ game.file }}" class="game-choice-form">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="game-card game-choice">
-          {% if game.tier == 'reward' %}
-          <div class="game-thumb game-reward-thumb">🎮</div>
+          {% set thumb = game_thumb(game.file) %}
+          {% if thumb %}
+          <img src="{{ thumb }}" alt="{{ game.name }}" class="game-thumb">
           {% else %}
-          <img src="/static/img/game-thumbs/{{ game.file | replace('.html', '.png') }}"
-               alt="{{ game.name }}" class="game-thumb">
+          <div class="game-thumb game-reward-thumb">🎮</div>
           {% endif %}
           <span class="game-name">{{ game.name }}</span>
         </button>
@@ -92,11 +92,11 @@
         <form method="post" action="/child/games/{{ game.file }}" class="game-choice-form">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="game-card game-choice">
-            {% if game.tier == 'reward' %}
-            <div class="game-thumb game-reward-thumb">🎮</div>
+            {% set thumb = game_thumb(game.file) %}
+            {% if thumb %}
+            <img src="{{ thumb }}" alt="{{ game.name }}" class="game-thumb">
             {% else %}
-            <img src="/static/img/game-thumbs/{{ game.file | replace('.html', '.png') }}"
-                 alt="{{ game.name }}" class="game-thumb">
+            <div class="game-thumb game-reward-thumb">🎮</div>
             {% endif %}
             <span class="game-name">{{ game.name }}</span>
           </button>

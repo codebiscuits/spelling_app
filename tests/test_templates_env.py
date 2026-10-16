@@ -5,6 +5,7 @@ from templates_env import (
     MINI_GAMES,
     current_palette,
     game_path,
+    game_thumb,
     static_version,
 )
 
@@ -28,6 +29,22 @@ def test_every_mini_game_file_exists():
         assert os.path.isfile(path)
         assert game["name"]
         assert game["description"]
+
+
+def test_every_mini_game_has_a_thumbnail():
+    # The picker shows a placeholder without one. Make it with
+    # scripts/capture_thumbnails.py when adding a game.
+    missing = [g["file"] for g in MINI_GAMES if game_thumb(g["file"]) is None]
+    assert not missing, f"No thumbnail for {missing}: run scripts/capture_thumbnails.py"
+
+
+def test_game_thumb_is_a_versioned_static_url():
+    url = game_thumb("domino_run.html")
+    assert url.startswith("/static/img/game-thumbs/domino_run.png?v=")
+
+
+def test_game_thumb_returns_none_for_a_game_with_no_png():
+    assert game_thumb("no_such_game.html") is None
 
 
 def test_game_path_returns_none_for_a_file_that_is_not_there():

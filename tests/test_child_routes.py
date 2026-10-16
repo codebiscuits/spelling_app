@@ -144,6 +144,27 @@ def test_results_shows_recent_games_and_hides_stale_games_under_all_games(child_
     assert stale_game["name"] in all_games
 
 
+def test_unlocked_reward_games_show_their_thumbnails(child_client):
+    """Reward games used to show a 🎮 placeholder in the picker and on the
+    My Games shelf. They show their own picture now."""
+    from datetime import datetime, timezone
+    from templates_env import REWARD_GAMES
+
+    game = REWARD_GAMES[-1]
+    with app_db() as db:
+        db.execute(
+            "INSERT INTO user_game_unlocks (user_id, game_file, earned_at, source) VALUES (?,?,?,?)",
+            (child_client.child_id, game["file"], datetime.now(timezone.utc).isoformat(), "admin"),
+        )
+    thumb = f'<img src="/static/img/game-thumbs/{game["file"].replace(".html", ".png")}?v='
+
+    dashboard = child_client.get("/child/dashboard")
+    assert thumb in dashboard.text
+    results = earn_game_credit(child_client)
+    assert thumb in results.text
+    assert "🎮" not in results.text
+
+
 def test_starting_a_game_requires_a_csrf_protected_post(child_client):
     results = earn_game_credit(child_client)
 

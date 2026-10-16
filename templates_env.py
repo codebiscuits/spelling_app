@@ -87,6 +87,19 @@ def game_path(filename: str) -> str | None:
     return None
 
 
+def game_thumb(filename: str) -> str | None:
+    """URL of a game's picker thumbnail, or None if it has no PNG yet.
+
+    The version query makes browsers fetch a recaptured thumbnail. A page
+    shows a placeholder for None, so a new game never shows a broken image.
+    Thumbnails are made by scripts/capture_thumbnails.py.
+    """
+    path = os.path.join("img", "game-thumbs", filename.replace(".html", ".png"))
+    if not os.path.isfile(os.path.join("static", path)):
+        return None
+    return f"/static/{path}?v={static_version(path)}"
+
+
 def current_palette():
     return PALETTES[datetime.today().weekday()]
 
@@ -111,5 +124,6 @@ def trophy_uid() -> int:
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["current_palette"] = current_palette
 templates.env.globals["static_version"] = static_version
+templates.env.globals["game_thumb"] = game_thumb
 templates.env.globals["trophy_uid"] = trophy_uid
 templates.env.globals["reward_game_count"] = len(REWARD_GAMES)
