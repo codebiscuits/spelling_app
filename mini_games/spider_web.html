@@ -57,7 +57,7 @@
   <div class="row"><span class="k">Wheel</span><span class="d">tighter, looser silk</span></div>
   <div class="rule"></div>
   <div class="row"><span>Strands</span><span class="v" id="strandVal">0 / 60</span></div>
-  <div class="row"><span>New silk</span><span class="v" id="tenVal">-</span></div>
+  <div class="row"><span>Silk</span><span class="v" id="tenVal">-</span></div>
   <div class="row"><span>Dew drops</span><span class="v" id="dewVal">0</span></div>
   <div class="row"><span>Wind</span><span class="v" id="windVal">-</span></div>
   <div class="row"><span>Breeze</span><span class="v" id="breezeVal">on</span></div>
@@ -122,6 +122,7 @@ let partsDirty = true;
 let drops = [];
 let sparks = [], notes = [], rings = [], lights = [], fireflies = [], stars = [];
 let tension = DEFAULT_TENSION;
+let slackNow = slackOf(DEFAULT_TENSION);  // eases toward slackOf(tension), for the whole web
 let breezeOn = true;
 let spin = null;            // the strand being spun: { s, E, start, freeStart, sx, sy, dist }
 let prevButtons = 0;
@@ -136,7 +137,7 @@ let serial = 0;
 let spider = null;
 let msAvg = 0, msWorst = 0;
 
-function slackOf(t) { return 1.30 - 0.035 * t; }   // 0: very loose (1.30), 10: tight (0.95)
+function slackOf(t) { return 1.40 - 0.045 * t; }   // 0: very loose (1.40), 10: tight (0.95)
 function tensionWord(t) { return t >= 8 ? 'tight' : t >= 5 ? 'springy' : t >= 2 ? 'loose' : 'floppy'; }
 
 // ===========================================================================
@@ -213,7 +214,8 @@ function strandLength(s) { let L = 0; for (let i = 0; i < s.rest.length; i++) L 
 function noteFor(s) {
   const L = clamp(strandLength(s), 50, 1000);
   const n = (Math.log(L) - Math.log(50)) / (Math.log(1000) - Math.log(50));
-  return Math.round((1 - n) * (NOTES - 1));          // shorter is higher
+  // Shorter is higher, and tighter silk sings higher too, like a tuned string.
+  return clamp(Math.round((1 - n) * (NOTES - 1) + (tension - DEFAULT_TENSION) * 0.5), 0, NOTES - 1);
 }
 
 let stampSerial = 0;
@@ -401,7 +403,7 @@ function endSpin(x, y) {
       keep.push(end);
       s.pts = keep;
     }
-    const total = straight * slackOf(tension);
+    const total = straight * slackNow;
     s.rest = new Array(s.pts.length - 1).fill(Math.max(1, total / (s.pts.length - 1)));
     s.vib = 1; s.hue = noteFor(s) / (NOTES - 1);
     burst(end.x, end.y, 10, '210,235,255', 80);
@@ -727,6 +729,20 @@ function windAt(x, y, out) {
 }
 const tmpW = { x: 0, y: 0 };
 
+// The wheel tightens or loosens every strand, not just new ones, so the web
+// visibly pulls straight or sags. The change eases in, so silk never jerks.
+function easeTension(dt) {
+  const want = slackOf(tension);
+  if (slackNow === want) return;
+  const next = Math.abs(want - slackNow) < 1e-4 ? want : lerp(slackNow, want, 1 - Math.exp(-6 * dt));
+  const r = next / slackNow;
+  for (const s of strands) {
+    if (s.falling || (spin && spin.s === s)) continue;
+    for (let i = 0; i < s.rest.length; i++) s.rest[i] *= r;
+  }
+  slackNow = next;
+}
+
 function update(dt) {
   simTime += dt;
   if (partsDirty) rebuildParts();
@@ -736,6 +752,7 @@ function update(dt) {
   wind.vx *= Math.exp(-5 * dt); wind.vy *= Math.exp(-5 * dt);
   gust *= Math.exp(-1.6 * dt);
   updateDrops(dt);
+  easeTension(dt);
 
   const dt2 = dt * dt;
   for (const p of parts) {
@@ -1188,8 +1205,8 @@ fx.addEventListener('wheel', e => {
   const up = delta < 0, old = tension;
   tension = clamp(tension + (up ? 1 : -1), 0, TENSION_STEPS);
   if (tension !== old) sfx.tick(up);
-  scrollLabel = { text: 'New silk: ' + tensionWord(tension) + ' ' + '●'.repeat(tension) + '○'.repeat(TENSION_STEPS - tension), life: 1.4 };
-  hint(up ? 'Tighter silk: new strands pull the web taut.' : 'Looser silk: new strands sag and flop.');
+  scrollLabel = { text: 'Silk: ' + tensionWord(tension) + ' ' + '●'.repeat(tension) + '○'.repeat(TENSION_STEPS - tension), life: 1.4 };
+  hint(up ? 'Tighter silk: the web pulls taut and sings higher.' : 'Looser silk: the web sags and sings lower.');
 }, { passive: false });
 
 window.addEventListener('keydown', e => {
@@ -1213,7 +1230,7 @@ ui.sound.addEventListener('click', toggleSound);
 // ===========================================================================
 function resetWeb() {
   strands = []; drops = []; sparks = []; notes = []; rings = []; lights = [];
-  spin = null; partsDirty = true; tension = DEFAULT_TENSION; breezeOn = true; gust = 0;
+  spin = null; partsDirty = true; tension = DEFAULT_TENSION; slackNow = slackOf(DEFAULT_TENSION); breezeOn = true; gust = 0;
   stats = { plucks: 0, snaps: 0, attaches: 0, drips: 0, formed: 0, placed: 0 };
   // A starter frame: three strands between twigs, so there is something to pluck at once.
   const A = twigParticle(0, 2.9), B = twigParticle(3, 2.6), C = twigParticle(7, 2.9), D = twigParticle(5, 2.7), E = twigParticle(2, 2.8);
