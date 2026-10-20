@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Balloon Bunches</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #8fd3ff;
+    font-family: ui-rounded, 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  }
+  canvas { position: fixed; inset: 0; display: block; }
+  #fx { cursor: crosshair; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    width: 286px; padding: 14px 16px 12px;
+    background: rgba(18, 24, 52, 0.66); border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #dfe6f5; font-size: 12.5px; line-height: 1.6;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    transition: opacity 0.25s;
+  }
+  #ui.hidden { opacity: 0; }
+  #ui h3 { color: #fff; font-size: 16px; letter-spacing: 0.4px; margin-bottom: 4px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 10px; }
+  #ui .k { color: #ffcf6b; font-weight: 700; white-space: nowrap; }
+  #ui .d { text-align: right; }
+  #ui .v { color: #a8e1ff; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  #ui .rule { height: 1px; background: rgba(255, 255, 255, 0.16); margin: 8px 0 7px; }
+  #ui .keys { color: #a3acc4; font-size: 11px; margin-top: 6px; line-height: 1.5; }
+  #ui .hint { color: #ffe08a; font-style: italic; font-size: 11.5px; margin-top: 6px; min-height: 18px; }
+  .pill {
+    position: fixed; z-index: 10; border-radius: 999px; cursor: pointer;
+    font: 700 13px ui-rounded, 'Trebuchet MS', sans-serif; letter-spacing: 0.3px;
+    color: #f2f5fb; background: rgba(18, 24, 52, 0.78); border: 1px solid rgba(255, 255, 255, 0.22);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .pill:hover { background: rgba(40, 52, 110, 0.92); border-color: rgba(255, 255, 255, 0.4); }
+  .pill:focus-visible { outline: 3px solid #ffcf6b; outline-offset: 2px; }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 26px; }
+  #soundBtn { bottom: 24px; right: 20px; padding: 10px 18px; font-size: 13px; }
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<canvas id="fx"></canvas>
+<div id="ui">
+  <h3>&#x1F388; Balloon Bunches</h3>
+  <div class="row"><span class="k">Move</span><span class="d">push the air</span></div>
+  <div class="row"><span class="k">Left hold</span><span class="d">blow up a balloon</span></div>
+  <div class="row"><span class="k">Left drag string</span><span class="d">tie it on</span></div>
+  <div class="row"><span class="k">Left drag</span><span class="d">carry a balloon or toy</span></div>
+  <div class="row"><span class="k">Right click</span><span class="d">pop! (or untie a knot)</span></div>
+  <div class="row"><span class="k">Wheel</span><span class="d">more or less helium</span></div>
+  <div class="rule"></div>
+  <div class="row"><span>Balloons</span><span class="v" id="countVal">0 / 40</span></div>
+  <div class="row"><span>Helium</span><span class="v" id="heVal">-</span></div>
+  <div class="row"><span>Biggest bunch</span><span class="v" id="bunchVal">0</span></div>
+  <div class="row"><span>Teddy</span><span class="v" id="teddyVal">on the grass</span></div>
+  <div class="row"><span>Basket</span><span class="v" id="basketVal">on the grass</span></div>
+  <div class="row"><span>Pops</span><span class="v" id="popVal">0</span></div>
+  <div class="row"><span>Frame time</span><span class="v" id="msVal">-</span></div>
+  <div class="keys">Keys: Space gust &middot; P party balloons &middot; H hide this &middot; R reset &middot; M sound</div>
+  <div class="hint" id="hint">Hold the left button to blow up a balloon.</div>
+</div>
+<button class="pill" id="soundBtn" type="button">&#x1F507; Sound off</button>
+<button class="pill" id="resetBtn" type="button">&#x21BA; New party</button>
+<script>
+(() => {
+'use strict';
+
+// ===========================================================================
+// Constants. Lengths are CSS pixels at a 1280 x 800 window (scaled by S),
+// times are seconds, masses are in arbitrary units.
+// ===========================================================================
+const STEP = 1 / 60;          // fixed physics step (HANDBOOK §2.1)
+const DT2 = STEP * STEP;
+const GRAV = 900;             // px/s²
+const ITER = 10;              // constraint passes per step
+const N = 14;                 // points in a balloon's skin
+const STR_SEGS = 14;          // segments in a string
+const MAX_BALLOONS = 40;      // designed maximum (HANDBOOK §7)
+const M_C = 8, M_R = 0.5, M_S = 0.08;   // centre, skin point, string point
+const DMP_B = 0.975, DMP_S = 0.985, DMP_O = 0.996;
+const LIFT_REF = 7000;        // lift of a reference balloon (radius 50) at normal helium
+const TEDDY_WEIGHT = 24000;   // about 4 medium balloons, or 2 big ones
+const BASKET_WEIGHT = 9000;   // about 2 medium balloons, or 1 big one
+const HELIUM = [-1.0, -0.6, -0.25, 0.25, 0.55, 0.8, 1.0, 1.25, 1.55, 1.9, 2.4];
+const HELIUM_DEFAULT = 6;
+const PENTA = [0, 2, 4, 7, 9];
+const WIND_R = 220;
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// A limited, cheerful palette (HANDBOOK §4.1): base, light, dark.
+const COLORS = [
+  ['#ff5a6e', '#ffb0b9', '#c22c45'],
+  ['#ffa53a', '#ffd9a3', '#cf6f0e'],
+  ['#ffd93d', '#fff3a8', '#c9a000'],
+  ['#4fca6a', '#b4f0bf', '#25913e'],
+  ['#45a5ff', '#b0dbff', '#1e66c2'],
+  ['#9f74ff', '#d9c7ff', '#6338d0'],
+  ['#ff73c3', '#ffc4e6', '#c63a8f'],
+];
+
+const bg = document.getElementById('bg'), bctx = bg.getContext('2d');
+const fx = document.getElementById('fx'), ctx = fx.getContext('2d');
+const ui = {
+  panel: document.getElementById('ui'), count: document.getElementById('countVal'), he: document.getElementById('heVal'),
+  bunch: document.getElementById('bunchVal'), teddy: document.getElementById('teddyVal'), basket: document.getElementById('basketVal'),
+  pops: document.getElementById('popVal'), ms: document.getElementById('msVal'), hint: document.getElementById('hint'),
+  sound: document.getElementById('soundBtn'),
+};
+function hint(s) { if (ui.hint.textContent !== s) ui.hint.textContent = s; }
+
+// ===========================================================================
+// State
+// ===========================================================================
+let W = 0, H = 0, dpr = 1, S = 1;
+let groundY = 0, topY = 0, ceilY = 0;
+let Rmin = 22, Rmax = 84, Rref = 50, segLen = 12;
+let balloons = [], strings = [], ties = [], objects = [];
+let post = null;              // { x, top, w, ring }
+let inflating = null;         // { x, y, r, over, col, dx, dy }
+let grab = null;              // { p, im, kind, b, s, o, ox, oy }
+let helium = HELIUM_DEFAULT, heliumNow = HELIUM[HELIUM_DEFAULT];
+let prevButtons = 0, rightLast = null;
+let pointer = { x: -1e4, y: -1e4, inside: false };
+let wind = { vx: 0, vy: 0, lastX: -1e4, lastY: -1e4, lastT: 0 };
+let gust = 0, gustDir = 1;
+let simTime = 0, hitStop = 0, trauma = 0;
+let confetti = [], sparks = [], popTexts = [], rings = [];
+let clouds = [];
+let scrollLabel = null;
+let tankNeedle = 0.6;
+let nextColor = 0, serial = 0;
+let stats = { inflated: 0, pops: 0, overPops: 0, ties: 0, unties: 0, liftoffs: 0 };
+let soundOn = false, audio = null, master = null, squeak = null;
+let msAvg = 0, msWorst = 0;
+let canopyImg = null, cloudImg = null, glowImg = null;
+
+function heliumWord(l) {
+  return l <= 2 ? 'water balloons' : l <= 4 ? 'floaty' : l <= 7 ? 'helium' : 'super helium';
+}
+
+// ===========================================================================
+// Points. Verlet with inverse masses (HANDBOOK §3.1). A point's owner says
+// what it belongs to, so a knot can find the body that carries its load.
+// ===========================================================================
+function mkPt(x, y, m, dmp) { return { x, y, px: x, py: y, im: m > 0 ? 1 / m : 0, ax: 0, ay: 0, dmp, kin: false, owner: null, tieCount: 0 }; }
+
+function integrate(p) {
+  if (p.kin) { p.px = p.x; p.py = p.y; return; }
+  let vx = (p.x - p.px) * p.dmp, vy = (p.y - p.py) * p.dmp;
+  const v2 = vx * vx + vy * vy;
+  if (v2 > 3600) { const k = 60 / Math.sqrt(v2); vx *= k; vy *= k; }
+  p.px = p.x; p.py = p.y;
+  p.x += vx + p.ax * DT2; p.y += vy + p.ay * DT2;
+}
+function dist(a, b, rest, stiff) {
+  const dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy), w = a.im + b.im;
+  if (d < 1e-6 || w === 0) return;
+  const k = (d - rest) / (d * w) * stiff;
+  a.x += dx * k * a.im; a.y += dy * k * a.im;
+  b.x -= dx * k * b.im; b.y -= dy * k * b.im;
+}
+// Inequality: only pulls when the two points are further apart than max.
+function tether(a, b, max) {
+  const dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+  if (d2 <= max * max) return;
+  dist(a, b, max, 1);
+}
+function join(a, b) {
+  const w = a.im + b.im; if (w === 0) return;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  a.x += dx * a.im / w; a.y += dy * a.im / w;
+  b.x -= dx * b.im / w; b.y -= dy * b.im / w;
+}
+
+// ===========================================================================
+// Balloons: a pressure soft body (HANDBOOK §3.1, Matyka) around a heavy
+// centre point. The centre carries the lift, so a tied string pulls on the
+// whole balloon at once and strings do not stretch under a heavy teddy.
+// ===========================================================================
+function makeBalloon(cx, cy, r, col, vx, vy, startScale) {
+  const C = mkPt(cx, cy, M_C, DMP_B);
+  const ring = [];
+  const s0 = startScale || 1;
+  for (let i = 0; i < N; i++) {
+    const a = Math.PI / 2 + i * TAU / N;     // index 0 is the knot, at the bottom
+    ring.push(mkPt(cx + Math.cos(a) * r * s0, cy + Math.sin(a) * r * s0, M_R, DMP_B));
+  }
+  const b = { id: ++serial, C, ring, r, A0: Math.PI * r * r, rEff: r, segRest: 2 * r * Math.sin(Math.PI / N), bendRest: 2 * r * Math.sin(2 * Math.PI / N), col, born: simTime, str: null, bumpT: 0, hue: col };
+  C.owner = { kind: 'ball', b };
+  for (const p of ring) p.owner = { kind: 'ball', b };
+  const knot = ring[0];
+  const pts = [knot];
+  for (let k = 1; k <= STR_SEGS; k++) {
+    const p = mkPt(knot.x + Math.sin(k * 0.7) * 2, knot.y + k * segLen, M_S, DMP_S);
+    p.owner = { kind: 'str', s: null, i: k };
+    pts.push(p);
+  }
+  const s = { id: b.id, pts, seg: segLen, balloon: b, deadT: 0, alpha: 1, col };
+  for (let k = 1; k < pts.length; k++) pts[k].owner.s = s;
+  b.str = s;
+  if (vx || vy) for (const p of [C, ...ring, ...pts.slice(1)]) { p.px = p.x - (vx || 0) * STEP; p.py = p.y - (vy || 0) * STEP; }
+  balloons.push(b); strings.push(s);
+  return b;
+}
+function pickColor() { const c = nextColor; nextColor = (nextColor + 1 + (Math.random() < 0.3 ? 1 : 0)) % COLORS.length; return c; }
+
+function stringTied(s) { for (let k = 1; k < s.pts.length; k++) if (s.pts[k].tieCount > 0) return true; return false; }
+function balloonTied(b) { return stringTied(b.str); }
+
+function popBalloon(b, cause) {
+  const i = balloons.indexOf(b);
+  if (i < 0) return;
+  balloons.splice(i, 1);
+  stats.pops++;
+  if (cause === 'over') stats.overPops++;
+  if (grab && grab.b === b) releaseGrab(false);
+  // The string drops: its head becomes a free point at the knot.
+  const s = b.str, knot = s.pts[0];
+  const head = mkPt(knot.x, knot.y, M_S, DMP_S);
+  head.px = knot.px; head.py = knot.py;
+  head.owner = { kind: 'str', s, i: 0 };
+  s.pts[0] = head; s.balloon = null; s.deadT = 0;
+  // Juice (HANDBOOK §5): confetti, rubber shreds, a blast of air, hit-stop, shake.
+  const cx = b.C.x, cy = b.C.y, r = b.rEff;
+  const n = Math.round(26 + r * 0.6);
+  for (let k = 0; k < n; k++) {
+    const a = Math.random() * TAU, d = Math.random() * r;
+    addConfetti(cx + Math.cos(a) * d, cy + Math.sin(a) * d, Math.cos(a) * (120 + Math.random() * 380), Math.sin(a) * (120 + Math.random() * 380) - 120,
+      k % 3 === 0 ? COLORS[b.col][0] : COLORS[(b.col + 1 + (k % 5)) % COLORS.length][k % 2], 3 + Math.random() * 4, false);
+  }
+  for (let k = 0; k < 5; k++) {
+    const a = Math.random() * TAU;
+    addConfetti(cx + Math.cos(a) * r * 0.7, cy + Math.sin(a) * r * 0.7, Math.cos(a) * 160, Math.sin(a) * 160 - 60, COLORS[b.col][2], 7 + Math.random() * 6, true);
+  }
+  for (let k = 0; k < 14; k++) spark(cx, cy, k % 2 ? '255,255,255' : '255,236,150', 260 + r * 3);
+  rings.push({ x: cx, y: cy, r: r * 0.8, grow: r * 5, life: 0.35, max: 0.35, color: '255,255,255' });
+  popTexts.push({ x: cx, y: cy, life: 0.7, max: 0.7, text: cause === 'over' ? 'BANG!' : 'POP!', rot: (Math.random() - 0.5) * 0.4, size: clamp(r * 0.55, 18, 44) * (cause === 'over' ? 1.25 : 1) });
+  for (const o of balloons) {
+    const dx = o.C.x - cx, dy = o.C.y - cy, d = Math.hypot(dx, dy) || 1, R = r * 3 + o.r;
+    if (d > R) continue;
+    const k = (1 - d / R) * 7;
+    for (const p of [o.C, ...o.ring]) { p.x += dx / d * k; p.y += dy / d * k; }
+  }
+  hitStop = Math.min(0.07, hitStop + 0.05);
+  if (!reducedMotion) trauma = Math.min(0.7, trauma + 0.16 + r / 450);
+  sfx.pop(r);
+}
+
+// ===========================================================================
+// Ground toys: rigid boxes made of four points plus a handle (HANDBOOK §3.8).
+// ===========================================================================
+function makeObject(kind, x) {
+  const w = (kind === 'teddy' ? 70 : 76) * S, h = (kind === 'teddy' ? 82 : 46) * S;
+  const hy = kind === 'teddy' ? 8 * S : 38 * S;    // handle above the top edge
+  const weight = kind === 'teddy' ? TEDDY_WEIGHT : BASKET_WEIGHT;
+  const m = weight / GRAV / 5;
+  const y0 = groundY - h;
+  const pts = [
+    mkPt(x - w / 2, y0, m, DMP_O), mkPt(x + w / 2, y0, m, DMP_O),
+    mkPt(x + w / 2, groundY, m, DMP_O), mkPt(x - w / 2, groundY, m, DMP_O),
+    mkPt(x, y0 - hy, m, DMP_O),
+  ];
+  const o = { kind, name: kind === 'teddy' ? 'Teddy' : 'Basket', pts, w, h, hy, rest: [], airborne: false, airT: 0, groundT: 0, blink: 2 + Math.random() * 3, home: x };
+  for (const p of pts) p.owner = { kind: 'obj', o };
+  for (let i = 0; i < 5; i++) for (let j = i + 1; j < 5; j++) o.rest.push([i, j, Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y)]);
+  objects.push(o);
+  return o;
+}
+function objHandle(o) { return o.pts[4]; }
+function objCentre(o) { const p = o.pts; return { x: (p[0].x + p[1].x + p[2].x + p[3].x) / 4, y: (p[0].y + p[1].y + p[2].y + p[3].y) / 4 }; }
+function insideObj(o, x, y, pad) {
+  const p = o.pts;
+  // Point in the convex quad, grown by pad.
+  for (let i = 0; i < 4; i++) {
+    const a = p[i], b = p[(i + 1) % 4];
+    const ex = b.x - a.x, ey = b.y - a.y, L = Math.hypot(ex, ey) || 1;
+    if ((ex * (y - a.y) - ey * (x - a.x)) / L < -pad) return false;
+  }
+  return true;
+}
+
+function makePost() {
+  const x = W * 0.86, h = 150 * S;
+  const ring = mkPt(x, groundY - h - 6 * S, 0, 1);
+  ring.owner = { kind: 'post' };
+  post = { x, top: groundY - h, w: 16 * S, ring };
+}
+
+// ===========================================================================
+// Ties: a knot holds two points together. Each tie also stops the two bodies
+// that carry the load from drifting further apart than their strings allow.
+// ===========================================================================
+let rootP = null, rootL = 0;
+function rootOf(p) {
+  const o = p.owner;
+  if (!o) { rootP = p; rootL = 0; return; }
+  if (o.kind === 'str') {
+    const s = o.s;
+    if (s.balloon) { rootP = s.balloon.C; rootL = s.balloon.r * 1.15 + o.i * s.seg * 1.02; }
+    else { rootP = s.pts[0]; rootL = o.i * s.seg * 1.02; }
+  } else if (o.kind === 'obj') { rootP = objHandle(o.o); rootL = 0; }
+  else { rootP = p; rootL = 0; }
+}
+function addTie(a, b) {
+  for (const t of ties) if ((t.a === a && t.b === b) || (t.a === b && t.b === a)) return false;
+  ties.push({ a, b, born: simTime });
+  a.tieCount++; b.tieCount++;
+  stats.ties++;
+  return true;
+}
+function removeTie(t) {
+  const i = ties.indexOf(t); if (i < 0) return;
+  ties.splice(i, 1);
+  t.a.tieCount--; t.b.tieCount--;
+}
+function removeString(s) {
+  const i = strings.indexOf(s); if (i < 0) return;
+  for (let k = ties.length - 1; k >= 0; k--) {
+    const t = ties[k];
+    if (s.pts.includes(t.a) || s.pts.includes(t.b)) removeTie(t);
+  }
+  if (grab && grab.s === s) releaseGrab(false);
+  strings.splice(i, 1);
+}
+
+// What a released string point could be tied to.
+function findTieTarget(x, y, s) {
+  let best = null, bd = 26;
+  for (const o of strings) {
+    if (o === s) continue;
+    for (let k = 1; k < o.pts.length; k++) {
+      const p = o.pts[k], d = Math.hypot(p.x - x, p.y - y);
+      if (d < bd) { bd = d; best = p; }
+    }
+  }
+  if (best) return best;
+  for (const o of objects) {
+    const h = objHandle(o);
+    if (Math.hypot(h.x - x, h.y - y) < 40 * S || insideObj(o, x, y, 10)) return h;
+  }
+  if (post && (Math.hypot(post.ring.x - x, post.ring.y - y) < 36 * S ||
+      (Math.abs(x - post.x) < post.w + 12 && y > post.top - 10 && y < groundY))) return post.ring;
+  return null;
+}
+
+// Union of balloons joined by ties, for the "biggest bunch" readout.
+function bunchSizes() {
+  const parent = new Map();
+  const find = k => { while (parent.get(k) !== k) { parent.set(k, parent.get(parent.get(k))); k = parent.get(k); } return k; };
+  const add = k => { if (!parent.has(k)) parent.set(k, k); };
+  const keyOf = p => { const o = p.owner; if (!o) return 'x'; if (o.kind === 'str') return 's' + o.s.id; if (o.kind === 'obj') return 'o' + o.o.kind; return 'post'; };
+  for (const s of strings) add('s' + s.id);
+  for (const t of ties) {
+    const a = keyOf(t.a), b = keyOf(t.b); add(a); add(b);
+    const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb);
+  }
+  const count = new Map();
+  for (const b of balloons) { if (!balloonTied(b)) continue; const r = find('s' + b.id); count.set(r, (count.get(r) || 0) + 1); }
+  let best = 0; for (const v of count.values()) best = Math.max(best, v);
+  return best;
+}
+
+// ===========================================================================
+// Sound (off by default, HANDBOOK §7). All synthesised with Web Audio.
+// ===========================================================================
+function ensureAudio() {
+  if (audio || !soundOn) return;
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+  if (audio) {
+    master = audio.createDynamicsCompressor();
+    master.threshold.value = -16; master.ratio.value = 8;
+    master.connect(audio.destination);
+  }
+}
+function noteFreq(i) { return 262 * 2 ** ((12 * Math.floor(i / 5) + PENTA[((i % 5) + 5) % 5]) / 12); }
+function tone(freq, dur, type, vol, slide, delay) {
+  if (!soundOn || !audio) return;
+  const t = audio.currentTime + (delay || 0), o = audio.createOscillator(), g = audio.createGain();
+  o.type = type || 'sine'; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol || 0.05, t + 0.006);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.02);
+}
+let noiseBuf = null;
+function noise(dur, freq, vol, type) {
+  if (!soundOn || !audio) return;
+  if (!noiseBuf) {
+    noiseBuf = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+    const d = noiseBuf.getChannelData(0); for (let k = 0; k < d.length; k++) d[k] = Math.random() * 2 - 1;
+  }
+  const t = audio.currentTime, src = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+  src.buffer = noiseBuf; f.type = type || 'highpass'; f.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  src.connect(f); f.connect(g); g.connect(master); src.start(t); src.stop(t + dur + 0.02);
+}
+let lastBoop = 0;
+const sfx = {
+  pop(r) { const k = clamp(50 * S / r, 0.6, 1.8); noise(0.16, 900 * k, 0.55); tone(150 * k, 0.14, 'sine', 0.22, 0.4); },
+  tie() { tone(noteFreq(5), 0.08, 'triangle', 0.06); tone(noteFreq(7), 0.1, 'triangle', 0.06, 1, 0.07); },
+  untie() { tone(noteFreq(7), 0.08, 'triangle', 0.06); tone(noteFreq(4), 0.12, 'triangle', 0.05, 1, 0.07); },
+  boop(r) { if (simTime - lastBoop < 0.09) return; lastBoop = simTime; tone(clamp(420 * 50 * S / r, 180, 900), 0.12, 'sine', 0.05, 0.7); },
+  liftoff() { for (let i = 0; i < 5; i++) tone(noteFreq(5 + i), 0.22, 'triangle', 0.06, 1, i * 0.08); },
+  tick(up) { tone(up ? 760 : 520, 0.03, 'sine', 0.03); },
+  whoosh() { noise(0.6, 600, 0.3, 'lowpass'); },
+  grab() { tone(noteFreq(3), 0.05, 'sine', 0.04); },
+};
+// The squeak of a balloon being blown up: a reedy note that rises with size.
+function squeakStart() {
+  if (!soundOn || !audio || squeak) return;
+  const o = audio.createOscillator(), f = audio.createBiquadFilter(), g = audio.createGain(), lfo = audio.createOscillator(), lg = audio.createGain();
+  o.type = 'sawtooth'; f.type = 'bandpass'; f.Q.value = 6; f.frequency.value = 900;
+  lfo.frequency.value = 17; lg.gain.value = 9; lfo.connect(lg); lg.connect(o.frequency);
+  g.gain.value = 0.0001;
+  o.connect(f); f.connect(g); g.connect(master); o.start(); lfo.start();
+  squeak = { o, f, g, lfo };
+}
+function squeakUpdate(r, over) {
+  if (!squeak) return;
+  const t = audio.currentTime, k = (r - Rmin) / (Rmax - Rmin);
+  squeak.o.frequency.setTargetAtTime(240 + k * 380 + over * 500, t, 0.05);
+  squeak.f.frequency.setTargetAtTime(800 + k * 900 + over * 900, t, 0.05);
+  const flutter = 0.5 + 0.5 * Math.sin(simTime * 23) * Math.sin(simTime * 7.1);
+  squeak.g.gain.setTargetAtTime(0.012 + 0.03 * flutter, t, 0.02);
+}
+function squeakStop() {
+  if (!squeak) return;
+  const t = audio.currentTime;
+  squeak.g.gain.setTargetAtTime(0.0001, t, 0.03);
+  squeak.o.stop(t + 0.2); squeak.lfo.stop(t + 0.2);
+  squeak = null;
+}
+function toggleSound() {
+  soundOn = !soundOn;
+  ui.sound.innerHTML = soundOn ? '&#x1F50A; Sound on' : '&#x1F507; Sound off';
+  if (soundOn) { ensureAudio(); if (audio && audio.state === 'suspended') audio.resume(); sfx.tie(); }
+  else squeakStop();
+}
+
+// ===========================================================================
+// Effects
+// ===========================================================================
+function addConfetti(x, y, vx, vy, color, size, shred) {
+  if (confetti.length > 700) confetti.shift();
+  confetti.push({ x, y, vx, vy, color, size, shred, a: Math.random() * TAU, va: (Math.random() - 0.5) * 18, life: 4 + Math.random() * 3, ph: Math.random() * TAU, landed: false });
+}
+function spark(x, y, color, speed) {
+  if (sparks.length > 400) sparks.shift();
+  const a = Math.random() * TAU, s = (0.3 + Math.random()) * (speed || 120);
+  sparks.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.3 + Math.random() * 0.4, max: 0.7, color, r: 1 + Math.random() * 2 });
+}
+function celebrate(x, y) {
+  for (let k = 0; k < 24; k++) spark(x, y, k % 2 ? '255,226,120' : '255,255,255', 220);
+  for (let k = 0; k < 20; k++) addConfetti(x, y, (Math.random() - 0.5) * 300, -120 - Math.random() * 260, COLORS[k % COLORS.length][0], 3 + Math.random() * 3, false);
+  rings.push({ x, y, r: 10, grow: 160, life: 0.5, max: 0.5, color: '255,230,140' });
+}
+
+// ===========================================================================
+// Simulation step
+// ===========================================================================
+function windAt(x, y) {
+  // Air pushed by the moving pointer, falling off with distance.
+  if (!pointer.inside) return 0;
+  const dx = x - pointer.x, dy = y - pointer.y, d2 = dx * dx + dy * dy;
+  if (d2 > WIND_R * WIND_R) return 0;
+  const f = 1 - Math.sqrt(d2) / WIND_R;
+  return f * f;
+}
+
+function update(dt) {
+  simTime += dt;
+  heliumNow = lerp(heliumNow, HELIUM[helium], 1 - Math.exp(-6 * dt));
+  wind.vx *= Math.exp(-5 * dt); wind.vy *= Math.exp(-5 * dt);
+  gust = Math.max(0, gust - dt * 0.8);
+
+  // Blowing up a balloon.
+  if (inflating) {
+    const f = inflating;
+    if (f.r < Rmax) f.r = Math.min(Rmax, f.r + 28 * S * dt * (1 + 0.4 * (f.r - Rmin) / (Rmax - Rmin)));
+    else {
+      f.over += dt;
+      if (f.over > 0.75) { overPop(); }
+    }
+    if (inflating) {
+      f.dx = lerp(f.dx, pointer.x, 1 - Math.exp(-18 * dt)); f.dy = lerp(f.dy, pointer.y, 1 - Math.exp(-18 * dt));
+      squeakUpdate(f.r, f.over);
+    }
+  }
+
+  // Forces.
+  const breeze = Math.sin(simTime * 0.37) * 18 + Math.sin(simTime * 0.13 + 1) * 12;
+  const gx = gust * gustDir * 900 * S, gy = -gust * 200;
+  const wvx = clamp(wind.vx, -1800, 1800), wvy = clamp(wind.vy, -1800, 1800);
+  for (const b of balloons) {
+    const lift = LIFT_REF * (b.r / Rref) * (b.r / Rref) * heliumNow;
+    const w = windAt(b.C.x, b.C.y) * 2.2;
+    const ax = breeze + wvx * w + gx, ay = wvy * w + gy;
+    b.C.ax = ax; b.C.ay = -0.8 * lift / M_C + ay;
+    const ra = -0.2 * lift / N / M_R;
+    for (const p of b.ring) { p.ax = ax; p.ay = ra + ay; }
+  }
+  for (const s of strings) {
+    for (let k = 1; k < s.pts.length; k++) {
+      const p = s.pts[k], w = windAt(p.x, p.y) * 1.4;
+      p.ax = breeze * 0.5 + wvx * w + gx * 0.5; p.ay = GRAV + wvy * w;
+    }
+    if (!s.balloon) { s.pts[0].ax = 0; s.pts[0].ay = GRAV; }
+  }
+  for (const o of objects) for (const p of o.pts) { p.ax = 0; p.ay = GRAV; }
+
+  // Integrate.
+  for (const b of balloons) { integrate(b.C); for (const p of b.ring) integrate(p); }
+  for (const s of strings) for (let k = s.balloon ? 1 : 0; k < s.pts.length; k++) integrate(s.pts[k]);
+  for (const o of objects) for (const p of o.pts) integrate(p);
+
+  // A held point follows the pointer, a little behind it.
+  if (grab) {
+    const p = grab.p, tx = pointer.x + grab.ox, ty = pointer.y + grab.oy;
+    let dx = (tx - p.x) * 0.6, dy = (ty - p.y) * 0.6;
+    const d = Math.hypot(dx, dy); if (d > 45) { dx *= 45 / d; dy *= 45 / d; }
+    p.x += dx; p.y += dy;
+  }
+
+  // Constraints (Gauss-Seidel relaxation).
+  for (let it = 0; it < ITER; it++) {
+    for (const b of balloons) solveBalloon(b);
+    for (const s of strings) {
+      const P = s.pts, L = s.seg;
+      for (let k = 1; k < P.length; k++) dist(P[k - 1], P[k], L, 1);
+      for (let k = 2; k < P.length; k++) tether(P[0], P[k], k * L * 1.01);
+    }
+    for (const t of ties) {
+      join(t.a, t.b);
+      rootOf(t.a); const pa = rootP, la = rootL;
+      rootOf(t.b);
+      if (pa !== rootP) tether(pa, rootP, la + rootL);
+    }
+    for (const o of objects) for (const r of o.rest) dist(o.pts[r[0]], o.pts[r[1]], r[2], 1);
+    collideBalloons();
+    collideObjects();
+    collideBalloonsWithObjects();
+    bounds(it === ITER - 1);
+  }
+
+  // Bumps on the canopy, and toys leaving the ground.
+  for (const b of balloons) {
+    b.bumpT -= dt;
+    const vy = b.C.y - b.C.py;
+    if (b.bumpT <= 0 && vy < -1.2 && b.C.y - b.rEff < ceilY + 4) { sfx.boop(b.r); b.bumpT = 0.5; for (let k = 0; k < 4; k++) spark(b.C.x, ceilY + 2, '255,255,255', 60); }
+  }
+  for (const o of objects) {
+    let grounded = false;
+    // A toy only counts as flying when it is clearly off the grass, not on a hop.
+    for (let i = 0; i < 4; i++) if (o.pts[i].y >= groundY - (o.airborne ? 1.5 : 12)) grounded = true;
+    const held = grab && grab.o === o;
+    if (!grounded) {
+      o.airT += dt; o.groundT = 0;
+      if (o.airT > 0.4 && !o.airborne) {
+        o.airborne = true;
+        if (!held) {
+          stats.liftoffs++;
+          const h = objHandle(o); celebrate(h.x, h.y);
+          sfx.liftoff();
+          hint(o.kind === 'teddy' ? 'Up, up and away! Teddy is flying!' : 'The basket is flying!');
+        }
+      }
+    } else { o.groundT += dt; o.airT = 0; if (o.groundT > 0.3) o.airborne = false; }
+    o.blink -= dt; if (o.blink < -0.14) o.blink = 2 + Math.random() * 4;
+  }
+
+  // Popped strings that nothing holds fade away once they have landed.
+  for (let i = strings.length - 1; i >= 0; i--) {
+    const s = strings[i];
+    if (s.balloon) continue;
+    s.deadT += dt;
+    if (s.deadT > 5 && !stringTied(s) && !(grab && grab.s === s)) { s.alpha -= dt * 0.8; if (s.alpha <= 0) removeString(s); }
+  }
+
+  // Effects.
+  for (const c of confetti) {
+    c.life -= dt;
+    if (c.landed) continue;
+    c.vx *= Math.exp(-2.2 * dt); c.vy = lerp(c.vy, c.shred ? 260 : 75, 1 - Math.exp(-2.5 * dt));
+    c.ph += dt * 6;
+    c.x += (c.vx + Math.sin(c.ph) * (c.shred ? 10 : 40)) * dt; c.y += c.vy * dt; c.a += c.va * dt;
+    if (c.y > groundY + 6 + (c.size % 5)) { c.y = groundY + 6 + (c.size % 5); c.landed = true; c.life = Math.min(c.life, 3); }
+  }
+  confetti = confetti.filter(c => c.life > 0);
+  for (const p of sparks) { p.life -= dt; p.vx *= 0.94; p.vy = p.vy * 0.94 + 80 * dt; p.x += p.vx * dt; p.y += p.vy * dt; }
+  sparks = sparks.filter(p => p.life > 0);
+  for (const r of rings) { r.life -= dt; r.r += r.grow * dt; }
+  rings = rings.filter(r => r.life > 0);
+  for (const t of popTexts) t.life -= dt;
+  popTexts = popTexts.filter(t => t.life > 0);
+  for (const c of clouds) { c.x += c.v * dt; if (c.x - c.w > W) c.x = -c.w; }
+  trauma = Math.max(0, trauma - dt * 1.6);
+  if (scrollLabel) { scrollLabel.life -= dt; if (scrollLabel.life <= 0) scrollLabel = null; }
+  tankNeedle = lerp(tankNeedle, helium / 10, 1 - Math.exp(-8 * dt));
+}
+
+function solveBalloon(b) {
+  const R = b.ring, C = b.C;
+  // Skin: neighbours keep their spacing.
+  for (let i = 0; i < N; i++) dist(R[i], R[(i + 1) % N], b.segRest, 1);
+  // A light bending constraint keeps the skin smooth when balloons crowd together.
+  for (let i = 0; i < N; i++) dist(R[i], R[(i + 2) % N], b.bendRest, 0.12);
+  // Pressure: push every skin point out along its normal by the area shortfall.
+  let A = 0, P = 0;
+  for (let i = 0; i < N; i++) {
+    const a = R[i], c = R[(i + 1) % N];
+    A += a.x * c.y - c.x * a.y;
+    P += Math.hypot(c.x - a.x, c.y - a.y);
+  }
+  A *= 0.5;
+  b.rEff = Math.sqrt(Math.max(A, 1) / Math.PI);
+  const push = (b.A0 - A) / (P || 1) * 0.3;
+  for (let i = 0; i < N; i++) {
+    const p = R[i], pr = R[(i + N - 1) % N], nx = R[(i + 1) % N];
+    const tx = nx.x - pr.x, ty = nx.y - pr.y, L = Math.hypot(tx, ty) || 1;
+    if (p.im) { p.x += ty / L * push; p.y -= tx / L * push; }
+  }
+  // Spokes hold the skin loosely around the heavy centre; the knot more firmly.
+  dist(C, R[0], b.r, 0.5);
+  for (let i = 1; i < N; i++) dist(C, R[i], b.r, 0.02);
+}
+
+function collideBalloons() {
+  const n = balloons.length;
+  for (let i = 0; i < n; i++) {
+    const A = balloons[i];
+    for (let j = i + 1; j < n; j++) {
+      const B = balloons[j];
+      const dx = B.C.x - A.C.x, dy = B.C.y - A.C.y, R = A.r + B.r + 2;
+      if (dx * dx + dy * dy > R * R) continue;
+      pushSkin(A, B); pushSkin(B, A);
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01, min = (A.rEff + B.rEff) * 0.82;
+      if (d < min) {
+        const w = A.C.im + B.C.im, k = (min - d) / d / w;
+        A.C.x -= dx * k * A.C.im; A.C.y -= dy * k * A.C.im;
+        B.C.x += dx * k * B.C.im; B.C.y += dy * k * B.C.im;
+      }
+    }
+  }
+}
+function pushSkin(A, B) {
+  const cx = B.C.x, cy = B.C.y, r = B.rEff * 0.98, r2 = r * r;
+  for (const p of A.ring) {
+    const dx = p.x - cx, dy = p.y - cy, d2 = dx * dx + dy * dy;
+    if (d2 >= r2 || !p.im) continue;
+    const d = Math.sqrt(d2) || 0.01, k = (r - d) * 0.5 / d;
+    p.x += dx * k; p.y += dy * k;
+  }
+}
+// Balloons bump off the toys, so a flying teddy hangs below his bunch, not inside it.
+function objRadius(o) { return o.kind === 'teddy' ? o.h * 0.5 : o.w * 0.55; }
+function collideBalloonsWithObjects() {
+  for (const o of objects) {
+    const c = objCentre(o), R = objRadius(o);
+    for (const b of balloons) {
+      const dx = b.C.x - c.x, dy = b.C.y - c.y, d2 = dx * dx + dy * dy, reach = R + b.r;
+      if (d2 > reach * reach) continue;
+      const r2 = R * R;
+      for (const p of b.ring) {
+        const ex = p.x - c.x, ey = p.y - c.y, e2 = ex * ex + ey * ey;
+        if (e2 >= r2 || !p.im) continue;
+        const e = Math.sqrt(e2) || 0.01, k = (R - e) / e;
+        p.x += ex * k; p.y += ey * k;
+      }
+      const d = Math.sqrt(d2) || 0.01, min = R + b.rEff * 0.75;
+      if (d < min) {
+        // Shared by mass: the light balloon moves most, the heavy toy a little.
+        let om = 0; for (const p of o.pts) om += p.im ? 1 / p.im : 0;
+        const bm = b.C.im ? 1 / b.C.im : 1e6, k = (min - d) / d, fb = om / (om + bm), fo = bm / (om + bm);
+        if (b.C.im) { b.C.x += dx * k * fb; b.C.y += dy * k * fb; }
+        for (const p of o.pts) if (p.im) { p.x -= dx * k * fo; p.y -= dy * k * fo; }
+      }
+    }
+  }
+}
+function collideObjects() {
+  for (let i = 0; i < objects.length; i++) for (let j = i + 1; j < objects.length; j++) {
+    const a = objCentre(objects[i]), b = objCentre(objects[j]);
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 0.01;
+    const min = (objects[i].w + objects[j].w) * 0.5;
+    if (d >= min) continue;
+    const k = (min - d) / d * 0.25;
+    for (const p of objects[i].pts) if (p.im) { p.x -= dx * k; p.y -= dy * k * 0.3; }
+    for (const p of objects[j].pts) if (p.im) { p.x += dx * k; p.y += dy * k * 0.3; }
+  }
+}
+
+function clampPt(p, fric) {
+  if (!p.im) return;
+  let hitY = false, hitX = false;
+  if (p.y < ceilY) { p.y = ceilY; hitY = true; }
+  if (p.y > groundY) { p.y = groundY; hitY = true; }
+  if (p.x < 2) { p.x = 2; hitX = true; }
+  if (p.x > W - 2) { p.x = W - 2; hitX = true; }
+  if (fric) {
+    if (hitY) p.px = p.x - (p.x - p.px) * fric;
+    if (hitX) p.py = p.y - (p.y - p.py) * fric;
+  }
+}
+function bounds(last) {
+  for (const b of balloons) { clampPt(b.C, last ? 0.9 : 0); for (const p of b.ring) clampPt(p, last ? 0.85 : 0); }
+  for (const s of strings) for (const p of s.pts) clampPt(p, last ? 0.6 : 0);
+  for (const o of objects) for (const p of o.pts) clampPt(p, last ? 0.5 : 0);
+}
+
+// ===========================================================================
+// Actions
+// ===========================================================================
+function startInflate(x, y) {
+  inflating = { x, y, dx: x, dy: y, r: Rmin, over: 0, col: pickColor() };
+  squeakStart();
+  hint('Keep holding to make it bigger. Not too big!');
+}
+function makeRoom() {
+  if (balloons.length < MAX_BALLOONS) return;
+  // The designed maximum: the oldest loose balloon pops to make room.
+  let victim = balloons.find(b => !balloonTied(b)) || balloons[0];
+  popBalloon(victim, 'room');
+  hint('So many balloons! The oldest one popped to make room.');
+}
+function finishInflate() {
+  const f = inflating; if (!f) return;
+  inflating = null; squeakStop();
+  makeRoom();
+  const vx = clamp(wind.vx * 0.3, -300, 300), vy = clamp(wind.vy * 0.3, -300, 300);
+  const b = makeBalloon(f.dx, f.dy - f.r, f.r, f.col, vx, vy, 0.86);   // starts squeezed, so it boings out
+  stats.inflated++;
+  for (let k = 0; k < 8; k++) spark(f.dx, f.dy, '255,255,255', 90);
+  sfx.tie();
+  hint(b.r > Rmax * 0.8 ? 'A big one! Big balloons lift more.' : balloons.length > 2 ? 'Drag a string onto another string, Teddy, the basket or the post to tie it.' : 'Up it goes! Blow up another one.');
+}
+function overPop() {
+  const f = inflating; inflating = null; squeakStop();
+  // A happy burst: a short-lived balloon at the cursor pops at once.
+  const b = makeBalloon(f.dx, f.dy - f.r, f.r, f.col, 0, 0, 1);
+  popBalloon(b, 'over');
+  for (let k = 0; k < 30; k++) spark(f.dx, f.dy - f.r, '255,' + (180 + (k * 7) % 70) + ',120', 360);
+  hint('BANG! Too much air. Let go sooner for a big balloon that stays.');
+}
+
+function balloonAt(x, y, pad) {
+  for (let i = balloons.length - 1; i >= 0; i--) {
+    const b = balloons[i];
+    if (Math.hypot(x - b.C.x, y - b.C.y) < b.rEff + (pad || 0)) return b;
+  }
+  return null;
+}
+// The loose end of a string is easy to catch; the middle only when the
+// pointer is right on it, so blowing up a balloon near a string still works.
+function stringPointAt(x, y) {
+  let best = null, bd = 1e9;
+  for (const s of strings) for (let k = 1; k < s.pts.length; k++) {
+    const end = k >= s.pts.length - 3, p = s.pts[k], d = Math.hypot(p.x - x, p.y - y);
+    const score = d - (end ? 12 : 0);    // a loose end wins over a string passing nearby
+    if (d < (end ? 22 : 12) && score < bd) { bd = score; best = { s, p }; }
+  }
+  return best;
+}
+function tieAt(x, y, maxD) {
+  let best = null, bd = maxD;
+  for (const t of ties) { const d = Math.hypot(t.a.x - x, t.a.y - y); if (d < bd) { bd = d; best = t; } }
+  return best;
+}
+function objectAt(x, y) {
+  for (const o of objects) if (insideObj(o, x, y, 6) || Math.hypot(objHandle(o).x - x, objHandle(o).y - y) < 22 * S) return o;
+  return null;
+}
+
+function startGrab(x, y) {
+  const sp = stringPointAt(x, y);
+  if (sp) { setGrab(sp.p, { kind: 'string', s: sp.s }); hint('Now let go on another string, Teddy, the basket or the post.'); return true; }
+  const o = objectAt(x, y);
+  if (o) { const h = objHandle(o); setGrab(h, { kind: 'object', o }, x - h.x, y - h.y); hint(o.kind === 'teddy' ? 'Wheee! Tie balloons to Teddy to make him fly.' : 'Tie balloons to the handle to lift the basket.'); return true; }
+  const b = balloonAt(x, y, 0);
+  if (b) { setGrab(b.C, { kind: 'balloon', b }, x - b.C.x, y - b.C.y); hint('Squishy! Let go and it floats away.'); return true; }
+  return false;
+}
+function setGrab(p, extra, ox, oy) {
+  grab = Object.assign({ p, im: p.im, ox: ox || 0, oy: oy || 0, b: null, s: null, o: null }, extra);
+  p.im = 0; p.kin = true;
+  fx.style.cursor = 'grabbing';
+  sfx.grab();
+}
+function releaseGrab(tryTie) {
+  const g = grab; if (!g) return;
+  grab = null;
+  g.p.im = g.im; g.p.kin = false;
+  fx.style.cursor = 'crosshair';
+  if (tryTie && g.kind === 'string') {
+    const target = findTieTarget(g.p.x, g.p.y, g.s);
+    if (target && addTie(g.p, target)) {
+      g.p.x = target.x; g.p.y = target.y; g.p.px = g.p.x; g.p.py = g.p.y;
+      for (let k = 0; k < 12; k++) spark(target.x, target.y, '255,240,170', 120);
+      rings.push({ x: target.x, y: target.y, r: 4, grow: 70, life: 0.35, max: 0.35, color: '255,255,255' });
+      sfx.tie();
+      const owner = target.owner;
+      hint(owner.kind === 'obj' ? (owner.o.kind === 'teddy' ? 'Tied to Teddy! Add more balloons to lift him.' : 'Tied to the basket! Will it fly?')
+        : owner.kind === 'post' ? 'Tied to the post. It bobs on its string.' : 'Tied together! That makes a bunch.');
+    }
+  }
+}
+
+function rightPress(x, y) {
+  const t = tieAt(x, y, 14);
+  if (t) {
+    removeTie(t); stats.unties++;
+    for (let k = 0; k < 8; k++) spark(t.a.x, t.a.y, '255,255,255', 90);
+    sfx.untie();
+    hint('Untied!');
+    return;
+  }
+  const b = balloonAt(x, y, 4);
+  if (b) { popBalloon(b, 'click'); hint(balloons.length ? 'POP! Right-drag across balloons to pop a row.' : 'All popped! Blow up some more.'); return; }
+  rings.push({ x, y, r: 4, grow: 90, life: 0.4, max: 0.4, color: '255,255,255' });
+  hint(balloons.length ? 'Right-click right on a balloon to pop it.' : 'Blow up a balloon first, then pop it.');
+}
+function popAlong(x0, y0, x1, y1) {
+  const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 8));
+  for (let i = 1; i <= n; i++) {
+    const b = balloonAt(lerp(x0, x1, i / n), lerp(y0, y1, i / n), 2);
+    if (b) popBalloon(b, 'drag');
+  }
+}
+
+function party() {
+  for (let i = 0; i < 8; i++) {
+    makeRoom();
+    const r = (26 + Math.random() * 22) * S, x = W * (0.12 + 0.76 * (i + Math.random() * 0.6) / 8);
+    makeBalloon(x, groundY - r - 10, r, pickColor(), (Math.random() - 0.5) * 60, -200 - Math.random() * 120, 0.9);
+    stats.inflated++;
+  }
+  hint('Party balloons!');
+}
+
+// ===========================================================================
+// Drawing
+// ===========================================================================
+function makeSprites() {
+  glowImg = document.createElement('canvas'); glowImg.width = glowImg.height = 64;
+  const g = glowImg.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.35, 'rgba(255,255,255,0.4)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  cloudImg = document.createElement('canvas'); cloudImg.width = 320; cloudImg.height = 140;
+  const c = cloudImg.getContext('2d');
+  const puffs = [[80, 90, 46], [130, 66, 58], [190, 74, 52], [240, 92, 40], [160, 100, 46], [105, 104, 36]];
+  c.fillStyle = 'rgba(255,255,255,0.92)';
+  for (const [x, y, r] of puffs) { c.beginPath(); c.arc(x, y, r, 0, TAU); c.fill(); }
+  c.globalCompositeOperation = 'source-atop';
+  const cg = c.createLinearGradient(0, 40, 0, 140); cg.addColorStop(0, 'rgba(255,255,255,0)'); cg.addColorStop(1, 'rgba(150,180,220,0.35)');
+  c.fillStyle = cg; c.fillRect(0, 0, 320, 140);
+}
+
+function buildCanopy() {
+  // A striped party awning along the top: the ceiling the balloons bump into.
+  const cw = Math.ceil(W), sw = 64 * S, depth = 12 * S, h = Math.ceil(topY + depth + 10);
+  canopyImg = document.createElement('canvas');
+  canopyImg.width = Math.round(cw * dpr); canopyImg.height = Math.round(h * dpr);
+  const c = canopyImg.getContext('2d');
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.fillStyle = 'rgba(40,40,80,0.18)';
+  c.fillRect(0, topY, cw, 6);
+  for (let i = 0, x = 0; x < cw; i++, x += sw) {
+    c.fillStyle = i % 2 ? '#fff6e8' : '#ff6f7f';
+    c.fillRect(x, 0, sw + 0.5, topY);
+    c.beginPath(); c.ellipse(x + sw / 2, topY, sw / 2, depth, 0, 0, Math.PI); c.fill();
+    c.fillStyle = 'rgba(0,0,0,0.07)';
+    c.beginPath(); c.ellipse(x + sw / 2, topY + 1, sw / 2 - 2, depth - 3, 0, 0.15 * Math.PI, 0.85 * Math.PI); c.fill();
+  }
+  const sh = c.createLinearGradient(0, 0, 0, topY);
+  sh.addColorStop(0, 'rgba(255,255,255,0.25)'); sh.addColorStop(0.6, 'rgba(255,255,255,0)'); sh.addColorStop(1, 'rgba(0,0,0,0.08)');
+  c.fillStyle = sh; c.fillRect(0, 0, cw, topY);
+  c.fillStyle = '#c94a63'; c.fillRect(0, topY - 3, cw, 3);
+}
+
+function drawBackground() {
+  const c = bctx;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const sky = c.createLinearGradient(0, 0, 0, groundY);
+  sky.addColorStop(0, '#7cc6f5'); sky.addColorStop(0.7, '#bfe6ff'); sky.addColorStop(1, '#e6f6ff');
+  c.fillStyle = sky; c.fillRect(0, 0, W, H);
+  const sun = c.createRadialGradient(W * 0.78, H * 0.2, 0, W * 0.78, H * 0.2, H * 0.45);
+  sun.addColorStop(0, 'rgba(255,248,210,0.9)'); sun.addColorStop(0.15, 'rgba(255,240,190,0.5)'); sun.addColorStop(1, 'rgba(255,240,190,0)');
+  c.fillStyle = sun; c.fillRect(0, 0, W, H);
+  // Two layers of soft hills.
+  const hills = (base, amp, f, ph, col) => {
+    c.fillStyle = col; c.beginPath(); c.moveTo(0, H);
+    for (let x = 0; x <= W + 10; x += 10) c.lineTo(x, base - amp * (0.6 * Math.sin(x * f + ph) + 0.4 * Math.sin(x * f * 2.3 + ph * 2)));
+    c.lineTo(W, H); c.closePath(); c.fill();
+  };
+  hills(groundY - 60 * S, 40 * S, 0.004, 1.2, '#b7e3b0');
+  hills(groundY - 22 * S, 26 * S, 0.007, 3.1, '#97d48c');
+  // Grass.
+  const gr = c.createLinearGradient(0, groundY, 0, H);
+  gr.addColorStop(0, '#78c964'); gr.addColorStop(1, '#4f9e45');
+  c.fillStyle = gr; c.fillRect(0, groundY, W, H - groundY);
+  c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(0, groundY, W, 2);
+  let seed = 7;
+  const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  c.strokeStyle = 'rgba(40,110,40,0.45)'; c.lineWidth = 1.4;
+  for (let i = 0; i < W / 9; i++) {
+    const x = rnd() * W, y = groundY + 4 + rnd() * (H - groundY - 6), h = 4 + rnd() * 7;
+    c.beginPath(); c.moveTo(x, y); c.quadraticCurveTo(x + 1, y - h * 0.6, x + 2 + rnd() * 2, y - h); c.stroke();
+  }
+  const flowers = ['#fff', '#ffe14d', '#ff9ac2', '#c6a8ff'];
+  for (let i = 0; i < W / 40; i++) {
+    const x = rnd() * W, y = groundY + 8 + rnd() * (H - groundY - 14), col = flowers[i % 4];
+    c.fillStyle = col;
+    for (let k = 0; k < 5; k++) { const a = k * TAU / 5; c.beginPath(); c.arc(x + Math.cos(a) * 2.6, y + Math.sin(a) * 2.6, 2, 0, TAU); c.fill(); }
+    c.fillStyle = '#ffb400'; c.beginPath(); c.arc(x, y, 1.6, 0, TAU); c.fill();
+  }
+}
+
+function smoothRing(ring) {
+  const n = ring.length;
+  let a = ring[n - 1], b = ring[0];
+  ctx.moveTo((a.x + b.x) / 2, (a.y + b.y) / 2);
+  for (let i = 0; i < n; i++) {
+    const p = ring[i], q = ring[(i + 1) % n];
+    ctx.quadraticCurveTo(p.x, p.y, (p.x + q.x) / 2, (p.y + q.y) / 2);
+  }
+  ctx.closePath();
+}
+function drawBalloonBody(cx, cy, r, col, pathFn, pale) {
+  const c = COLORS[col];
+  const g = ctx.createRadialGradient(cx - r * 0.38, cy - r * 0.42, r * 0.08, cx, cy, r * 1.25);
+  g.addColorStop(0, pale ? '#ffffff' : c[1]); g.addColorStop(0.45, c[0]); g.addColorStop(1, c[2]);
+  ctx.beginPath(); pathFn();
+  ctx.globalAlpha = 0.95; ctx.fillStyle = g; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(0,0,0,0.12)'; ctx.stroke();
+  // Glossy highlight and a small glint.
+  ctx.save();
+  ctx.translate(cx - r * 0.36, cy - r * 0.4); ctx.rotate(-0.6);
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.beginPath(); ctx.ellipse(0, 0, r * 0.13, r * 0.26, 0, 0, TAU); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.beginPath(); ctx.arc(cx - r * 0.12, cy - r * 0.62, Math.max(1.2, r * 0.05), 0, TAU); ctx.fill();
+}
+function drawKnot(x, y, ax, ay, col, s) {
+  // A little tied neck below the balloon, pointing away from its centre.
+  const L = Math.hypot(ax, ay) || 1, ux = ax / L, uy = ay / L;
+  ctx.fillStyle = COLORS[col][2];
+  ctx.beginPath();
+  ctx.moveTo(x - uy * 3.5 * s, y + ux * 3.5 * s);
+  ctx.lineTo(x + uy * 3.5 * s, y - ux * 3.5 * s);
+  ctx.lineTo(x + ux * 6 * s, y + uy * 6 * s);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawString(s) {
+  const P = s.pts;
+  ctx.globalAlpha = s.alpha;
+  ctx.beginPath(); ctx.moveTo(P[0].x, P[0].y);
+  for (let k = 1; k < P.length - 1; k++) ctx.quadraticCurveTo(P[k].x, P[k].y, (P[k].x + P[k + 1].x) / 2, (P[k].y + P[k + 1].y) / 2);
+  ctx.lineTo(P[P.length - 1].x, P[P.length - 1].y);
+  ctx.strokeStyle = 'rgba(60,60,90,0.35)'; ctx.lineWidth = 2.6; ctx.stroke();
+  ctx.strokeStyle = '#fbf7ff'; ctx.lineWidth = 1.5; ctx.stroke();
+  // A curl at the loose end, like curling ribbon.
+  const e = P[P.length - 1], f = P[P.length - 2];
+  if (!e.tieCount) {
+    ctx.strokeStyle = COLORS[s.col][1]; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(e.x + (e.x - f.x) * 0.2, e.y + 3, 3, 0, Math.PI * 1.6); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawBow(x, y, col) {
+  ctx.fillStyle = col;
+  ctx.beginPath(); ctx.ellipse(x - 4.5, y, 4.5, 3, 0.35, 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + 4.5, y, 4.5, 3, -0.35, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(x, y, 2.2, 0, TAU); ctx.fill();
+}
+
+function objFrame(o) {
+  const p = o.pts;
+  const ex = (p[1].x - p[0].x + p[2].x - p[3].x) / 2, ey = (p[1].y - p[0].y + p[2].y - p[3].y) / 2;
+  const c = objCentre(o);
+  return { x: c.x, y: c.y, a: Math.atan2(ey, ex) };
+}
+function drawTeddy(o) {
+  const f = objFrame(o), s = S;
+  ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.a); ctx.scale(s, s);
+  const fur = '#b5794a', dark = '#8a5530', light = '#ecc597';
+  const ell = (x, y, rx, ry, col, rot) => { ctx.fillStyle = col; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot || 0, 0, TAU); ctx.fill(); };
+  // Feet, body, arms.
+  ell(-18, 32, 15, 10, dark); ell(18, 32, 15, 10, dark);
+  ell(-18, 33, 8, 5, light); ell(18, 33, 8, 5, light);
+  ell(0, 14, 27, 24, fur);
+  ell(0, 18, 15, 13, light);
+  const wave = o.airborne ? Math.sin(simTime * 9) * 0.35 : 0;
+  ell(-27, 6, 9, 16, dark, 0.6 + wave); ell(27, 6, 9, 16, dark, -0.6 - wave);
+  // Head.
+  ell(-17, -36, 9, 9, fur); ell(17, -36, 9, 9, fur);
+  ell(-17, -36, 5, 5, light); ell(17, -36, 5, 5, light);
+  ell(0, -20, 23, 21, fur);
+  ell(0, -12, 11, 8.5, light);
+  ell(0, -15, 4.5, 3.2, '#3a2418');
+  // Eyes look toward the pointer; they blink now and then.
+  const lx = clamp((pointer.x - f.x) / 300, -1, 1) * 1.6, ly = clamp((pointer.y - f.y) / 300, -1, 1) * 1.4;
+  if (o.blink < 0) { ctx.strokeStyle = '#2a1a10'; ctx.lineWidth = 1.8; ctx.beginPath(); ctx.moveTo(-11, -24); ctx.lineTo(-5, -24); ctx.moveTo(5, -24); ctx.lineTo(11, -24); ctx.stroke(); }
+  else { ell(-8, -24, 3.6, 4, '#2a1a10'); ell(8, -24, 3.6, 4, '#2a1a10'); ell(-8 + lx, -25.5 + ly, 1.2, 1.2, '#fff'); ell(8 + lx, -25.5 + ly, 1.2, 1.2, '#fff'); }
+  ctx.strokeStyle = '#3a2418'; ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  if (o.airborne) { ctx.ellipse(0, -8, 3.5, 3, 0, 0, TAU); } else { ctx.arc(-3, -10, 3, 0.2, Math.PI - 0.6); ctx.moveTo(6, -9.5); ctx.arc(3, -10, 3, 0.6, Math.PI - 0.2); }
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(255,120,120,0.35)'; ctx.beginPath(); ctx.arc(-15, -14, 3.5, 0, TAU); ctx.arc(15, -14, 3.5, 0, TAU); ctx.fill();
+  ctx.restore();
+  const h = objHandle(o); drawBow(h.x, h.y, '#e9375a');
+}
+function drawBasket(o) {
+  const f = objFrame(o), s = S, w = 76, h = 46;
+  ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.a); ctx.scale(s, s);
+  // Flowers peeking out.
+  const fl = [[-20, -36, '#ff73c3'], [0, -44, '#ffd93d'], [20, -35, '#45a5ff'], [-9, -30, '#fff'], [11, -29, '#ff5a6e']];
+  for (const [x, y, c] of fl) {
+    ctx.strokeStyle = '#3f8f3a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x * 0.6, -h / 2 + 4); ctx.lineTo(x, y); ctx.stroke();
+    ctx.fillStyle = c; for (let k = 0; k < 5; k++) { const a = k * TAU / 5 + simTime * 0.3; ctx.beginPath(); ctx.arc(x + Math.cos(a) * 4, y + Math.sin(a) * 4, 3.2, 0, TAU); ctx.fill(); }
+    ctx.fillStyle = '#ffb400'; ctx.beginPath(); ctx.arc(x, y, 2.4, 0, TAU); ctx.fill();
+  }
+  // Handle arch.
+  ctx.strokeStyle = '#a0662f'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.ellipse(0, -h / 2, w * 0.42, o.hy / s, 0, Math.PI, TAU); ctx.stroke();
+  ctx.strokeStyle = '#d29a5a'; ctx.lineWidth = 2; ctx.stroke();
+  // Wicker body.
+  ctx.fillStyle = '#c98b46';
+  ctx.beginPath(); ctx.moveTo(-w / 2 - 3, -h / 2); ctx.lineTo(w / 2 + 3, -h / 2); ctx.lineTo(w / 2 - 6, h / 2); ctx.lineTo(-w / 2 + 6, h / 2); ctx.closePath(); ctx.fill();
+  ctx.save(); ctx.clip();
+  ctx.strokeStyle = 'rgba(110,60,20,0.45)'; ctx.lineWidth = 1.5;
+  for (let y = -h / 2 + 8; y < h / 2; y += 8) { ctx.beginPath(); ctx.moveTo(-w, y); ctx.lineTo(w, y); ctx.stroke(); }
+  for (let x = -w / 2; x < w / 2; x += 9) for (let y = -h / 2; y < h / 2; y += 16) { ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 4, y + 8); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = '#a0662f'; ctx.fillRect(-w / 2 - 4, -h / 2 - 3, w + 8, 6);
+  ctx.restore();
+}
+function drawPost() {
+  const x = post.x, w = post.w;
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.beginPath(); ctx.ellipse(x + 4, groundY + 3, w * 1.2, 4, 0, 0, TAU); ctx.fill();
+  const g = ctx.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+  g.addColorStop(0, '#9a6232'); g.addColorStop(0.5, '#c58a4e'); g.addColorStop(1, '#8a5428');
+  ctx.fillStyle = g; ctx.fillRect(x - w / 2, post.top, w, groundY - post.top + 2);
+  ctx.fillStyle = '#7a4a22'; ctx.beginPath(); ctx.moveTo(x - w / 2 - 1, post.top); ctx.lineTo(x, post.top - 6 * S); ctx.lineTo(x + w / 2 + 1, post.top); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#d8d8e4'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(post.ring.x, post.ring.y - 2, 5 * S, 0, TAU); ctx.stroke();
+}
+function drawTank() {
+  const x = W * 0.06, base = groundY, w = 34 * S, h = 84 * S;
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.beginPath(); ctx.ellipse(x + 3, base + 2, w * 0.7, 4, 0, 0, TAU); ctx.fill();
+  const g = ctx.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+  g.addColorStop(0, '#8fa3bf'); g.addColorStop(0.35, '#eef3fb'); g.addColorStop(1, '#7e90ab');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.moveTo(x - w / 2, base); ctx.lineTo(x - w / 2, base - h + w / 2); ctx.arc(x, base - h + w / 2, w / 2, Math.PI, 0); ctx.lineTo(x + w / 2, base); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ff6f7f'; ctx.fillRect(x - w / 2, base - h * 0.55, w, 12 * S);
+  ctx.fillStyle = '#fff'; ctx.font = `700 ${Math.round(10 * S)}px ui-rounded, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('He', x, base - h * 0.55 + 6 * S);
+  // The gauge on top shows the wheel's helium level.
+  const gx = x, gy = base - h - 10 * S, gr = 15 * S;
+  ctx.fillStyle = '#5b6b84'; ctx.fillRect(gx - 3, gy + gr - 2, 6, 10 * S);
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(gx, gy, gr, 0, TAU); ctx.fill();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = '#5b6b84'; ctx.stroke();
+  const a0 = Math.PI * 0.8, a1 = Math.PI * 2.2;
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#6fb6ff'; ctx.beginPath(); ctx.arc(gx, gy, gr - 4, a0, lerp(a0, a1, 0.25)); ctx.stroke();
+  ctx.strokeStyle = '#ffcf4a'; ctx.beginPath(); ctx.arc(gx, gy, gr - 4, lerp(a0, a1, 0.25), lerp(a0, a1, 0.7)); ctx.stroke();
+  ctx.strokeStyle = '#ff6f7f'; ctx.beginPath(); ctx.arc(gx, gy, gr - 4, lerp(a0, a1, 0.7), a1); ctx.stroke();
+  const na = lerp(a0, a1, tankNeedle);
+  ctx.strokeStyle = '#2a3346'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + Math.cos(na) * (gr - 3), gy + Math.sin(na) * (gr - 3)); ctx.stroke();
+  ctx.fillStyle = '#2a3346'; ctx.beginPath(); ctx.arc(gx, gy, 2.5, 0, TAU); ctx.fill();
+}
+function drawBunting() {
+  const y0 = topY + 12 * S, n = Math.ceil(W / (36 * S)), sp = W / n;
+  ctx.strokeStyle = 'rgba(90,60,60,0.5)'; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  const sag = i => y0 + Math.sin((i % 6) / 6 * Math.PI) * 10 * S;
+  for (let i = 0; i <= n; i++) { const x = i * sp; if (i === 0) ctx.moveTo(x, sag(i)); else ctx.lineTo(x, sag(i)); }
+  ctx.stroke();
+  for (let i = 0; i < n; i++) {
+    const x = (i + 0.5) * sp, y = (sag(i) + sag(i + 1)) / 2;
+    const flap = Math.sin(simTime * 2.2 + i * 0.9) * 0.12 + clamp(wind.vx / 4000, -0.3, 0.3) * windAt(x, y + 10) * 3;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(flap);
+    ctx.fillStyle = COLORS[i % COLORS.length][0];
+    ctx.beginPath(); ctx.moveTo(-sp * 0.36, 0); ctx.lineTo(sp * 0.36, 0); ctx.lineTo(0, 18 * S); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (trauma > 0) {
+    const t2 = trauma * trauma, t = simTime * 30;
+    ctx.translate(W / 2, H / 2);
+    ctx.rotate(t2 * 0.03 * Math.sin(t * 1.3));
+    ctx.translate(-W / 2 + t2 * 12 * Math.sin(t * 2.1), -H / 2 + t2 * 12 * Math.sin(t * 1.7 + 1));
+  }
+  // Clouds.
+  for (const c of clouds) ctx.drawImage(cloudImg, c.x, c.y, c.w, c.w * 0.44);
+  drawBunting();
+  // Soft shadows on the grass, fainter the higher a balloon is.
+  ctx.fillStyle = '#2d5a2a';
+  for (const b of balloons) {
+    const k = clamp(1 - (groundY - b.C.y) / H, 0, 1);
+    ctx.globalAlpha = 0.03 + 0.12 * k * k;
+    ctx.beginPath(); ctx.ellipse(b.C.x, groundY + 5, b.rEff * (0.5 + 0.5 * k), 4 + 3 * k, 0, 0, TAU); ctx.fill();
+  }
+  for (const o of objects) {
+    const c = objCentre(o), k = clamp(1 - (groundY - c.y - o.h / 2) / (H * 0.5), 0.2, 1);
+    ctx.globalAlpha = 0.25 * k;
+    ctx.beginPath(); ctx.ellipse(c.x, groundY + 4, o.w * 0.6 * k, 5, 0, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  drawTank();
+  drawPost();
+  for (const o of objects) o.kind === 'teddy' ? drawTeddy(o) : drawBasket(o);
+  for (const s of strings) drawString(s);
+  for (const t of ties) if (t.b.owner && t.b.owner.kind !== 'obj') drawBow(t.a.x, t.a.y, '#fff2c4');
+
+  // Balloons.
+  for (const b of balloons) {
+    drawBalloonBody(b.C.x, b.C.y, b.rEff, b.col, () => smoothRing(b.ring), false);
+    const k = b.ring[0];
+    drawKnot(k.x, k.y, k.x - b.C.x, k.y - b.C.y, b.col, S);
+  }
+  // The balloon being blown up, trembling when it is nearly too big.
+  if (inflating) {
+    const f = inflating, sh = f.over * 6 * (reducedMotion ? 0.3 : 1);
+    const jx = Math.sin(simTime * 61) * sh, jy = Math.cos(simTime * 47) * sh;
+    const r = f.r * (1 + Math.sin(simTime * 14) * 0.02), cx = f.dx + jx, cy = f.dy - r + jy;
+    const sq = 1 + 0.06 * Math.sin(simTime * 9);
+    drawBalloonBody(cx, cy, r, f.col, () => ctx.ellipse(cx, cy, r / Math.sqrt(sq), r * sq, 0, 0, TAU), f.over > 0.25 && Math.sin(simTime * 30) > 0);
+    drawKnot(f.dx + jx, f.dy + jy - 2, 0, 1, f.col, S);
+  }
+  // Confetti, then additive sparkles (HANDBOOK §4.2).
+  for (const c of confetti) {
+    ctx.globalAlpha = clamp(c.life, 0, 1);
+    ctx.fillStyle = c.color;
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.a);
+    if (c.shred) { ctx.beginPath(); ctx.ellipse(0, 0, c.size * 0.6, c.size * 0.3 * Math.abs(Math.cos(c.ph)) + 1, 0, 0, TAU); ctx.fill(); }
+    else ctx.fillRect(-c.size / 2, -c.size * 0.3 * Math.abs(Math.cos(c.ph)) - 0.5, c.size, c.size * 0.6 * Math.abs(Math.cos(c.ph)) + 1);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of sparks) {
+    const a = p.life / p.max, s = p.r * 7;
+    ctx.globalAlpha = a; ctx.drawImage(glowImg, p.x - s, p.y - s, s * 2, s * 2);
+  }
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  for (const r of rings) {
+    ctx.globalAlpha = r.life / r.max * 0.8; ctx.strokeStyle = `rgb(${r.color})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // Where a dragged string would tie.
+  if (grab && grab.kind === 'string') {
+    const t = findTieTarget(grab.p.x, grab.p.y, grab.s);
+    if (t) {
+      const pulse = 1 + 0.25 * Math.sin(simTime * 10);
+      ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.9;
+      ctx.drawImage(glowImg, t.x - 22 * pulse, t.y - 22 * pulse, 44 * pulse, 44 * pulse);
+      ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.arc(t.x, t.y, 14 * pulse, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  ctx.drawImage(canopyImg, 0, 0, canopyImg.width / dpr, canopyImg.height / dpr);
+  // POP! words.
+  for (const t of popTexts) {
+    const age = 1 - t.life / t.max, sc = age < 0.2 ? 0.4 + 3.6 * age : 1.12 - 0.12 * age;
+    ctx.save(); ctx.translate(t.x, t.y - age * 30); ctx.rotate(t.rot); ctx.scale(sc, sc);
+    ctx.globalAlpha = clamp(t.life / t.max * 2, 0, 1);
+    ctx.font = `900 ${Math.round(t.size)}px ui-rounded, 'Trebuchet MS', sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 6; ctx.strokeStyle = '#3a2350'; ctx.strokeText(t.text, 0, 0);
+    ctx.fillStyle = '#fff36b'; ctx.fillText(t.text, 0, 0);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+  if (scrollLabel && pointer.inside) {
+    ctx.globalAlpha = clamp(scrollLabel.life * 2, 0, 1);
+    ctx.font = '700 14px ui-rounded, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(scrollLabel.text).width, x = clamp(pointer.x + 18, 4, W - tw - 24), y = clamp(pointer.y - 22, 20, H - 20);
+    ctx.fillStyle = 'rgba(18,24,52,0.78)'; roundRect(x - 8, y - 13, tw + 16, 26, 13); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(scrollLabel.text, x, y);
+    ctx.globalAlpha = 1;
+  }
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+
+// ===========================================================================
+// Input (HANDBOOK §2.3). Every handler compares e.buttons with the last
+// value, because a second button pressed during a drag arrives as a move.
+// ===========================================================================
+function local(e) { const r = fx.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+fx.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('contextmenu', e => e.preventDefault());
+
+function onButtons(e) {
+  const p = local(e), nb = e.buttons, ob = prevButtons;
+  prevButtons = nb;
+  if ((nb & 1) && !(ob & 1)) { if (!startGrab(p.x, p.y)) startInflate(p.x, p.y); }
+  if (!(nb & 1) && (ob & 1)) { if (inflating) finishInflate(); if (grab) releaseGrab(true); }
+  if ((nb & 2) && !(ob & 2)) { rightPress(p.x, p.y); rightLast = { x: p.x, y: p.y }; }
+  if (!(nb & 2) && (ob & 2)) rightLast = null;
+}
+fx.addEventListener('pointerdown', e => {
+  ensureAudio();
+  try { fx.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
+  movePointer(e);
+  onButtons(e);
+});
+function movePointer(e) {
+  const p = local(e), now = performance.now() / 1000;
+  if (pointer.inside && wind.lastT) {
+    const dt = Math.max(0.008, now - wind.lastT);
+    const vx = clamp((p.x - wind.lastX) / dt, -2500, 2500), vy = clamp((p.y - wind.lastY) / dt, -2500, 2500);
+    wind.vx = lerp(wind.vx, vx, 0.5); wind.vy = lerp(wind.vy, vy, 0.5);
+  }
+  wind.lastX = p.x; wind.lastY = p.y; wind.lastT = now;
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+}
+window.addEventListener('pointermove', e => {
+  movePointer(e);
+  if (e.buttons !== prevButtons) onButtons(e);
+  if ((prevButtons & 2) && rightLast) { popAlong(rightLast.x, rightLast.y, pointer.x, pointer.y); rightLast = { x: pointer.x, y: pointer.y }; }
+  if (!prevButtons) fx.style.cursor = (stringPointAt(pointer.x, pointer.y) || objectAt(pointer.x, pointer.y) || balloonAt(pointer.x, pointer.y, 0)) ? 'grab' : 'crosshair';
+});
+window.addEventListener('pointerup', e => onButtons(e));
+fx.addEventListener('pointerleave', () => { pointer.inside = false; wind.lastT = 0; });
+window.addEventListener('blur', () => { if (inflating) finishInflate(); if (grab) releaseGrab(false); prevButtons = 0; rightLast = null; });
+
+fx.addEventListener('wheel', e => {
+  e.preventDefault();
+  // Browsers turn Shift + wheel into a sideways scroll, so read deltaX when deltaY is zero.
+  const delta = e.deltaY || e.deltaX;
+  if (!delta) return;
+  const up = delta < 0, old = helium;
+  helium = clamp(helium + (up ? 1 : -1), 0, HELIUM.length - 1);
+  if (helium !== old) sfx.tick(up);
+  scrollLabel = { text: 'Helium: ' + heliumWord(helium) + ' ' + '●'.repeat(helium) + '○'.repeat(10 - helium), life: 1.4 };
+  hint(helium <= 2 ? 'Water balloons! They sink to the grass.' : up ? 'More helium: everything floats up faster.' : 'Less helium: balloons float more slowly.');
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') resetParty();
+  else if (k === ' ') { e.preventDefault(); gust = 1; gustDir = Math.random() < 0.5 ? -1 : 1; sfx.whoosh(); hint('Whoosh! A gust of wind.'); }
+  else if (k === 'p') party();
+  else if (k === 'h') ui.panel.classList.toggle('hidden');
+  else if (k === 'm') toggleSound();
+});
+document.getElementById('resetBtn').addEventListener('click', () => { ensureAudio(); resetParty(); });
+ui.sound.addEventListener('click', toggleSound);
+
+// ===========================================================================
+// Reset, sizing, loop
+// ===========================================================================
+function resetParty() {
+  if (inflating) { inflating = null; squeakStop(); }
+  if (grab) releaseGrab(false);
+  balloons = []; strings = []; ties = []; objects = [];
+  confetti = []; sparks = []; popTexts = []; rings = [];
+  helium = HELIUM_DEFAULT; heliumNow = HELIUM[HELIUM_DEFAULT]; gust = 0; trauma = 0; hitStop = 0;
+  stats = { inflated: 0, pops: 0, overPops: 0, ties: 0, unties: 0, liftoffs: 0 };
+  nextColor = 0;
+  makePost();
+  makeObject('teddy', W * 0.3);
+  makeObject('basket', W * 0.58);
+  // A starter bunch tied to the post, so there is something to pop at once.
+  const starts = [[-0.9, 48, 0], [0.1, 54, 2], [1.0, 42, 4]];
+  for (const [dx, r, col] of starts) {
+    const rr = r * S, b = makeBalloon(post.x + dx * 46 * S, post.ring.y - STR_SEGS * segLen * 0.9 - rr, rr, col, 0, 0, 1);
+    const tail = b.str.pts[b.str.pts.length - 1];
+    tail.x = tail.px = post.ring.x; tail.y = tail.py = post.ring.y;
+    addTie(tail, post.ring);
+  }
+  stats.ties = 0;
+  nextColor = 5;
+  for (let i = 0; i < 180; i++) update(STEP);   // let the scene settle before it is seen
+  sparks = []; rings = []; simTime = 0;
+  hint('Hold the left button to blow up a balloon.');
+}
+
+function fit() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  S = clamp(Math.min(W / 1280, H / 800), 0.62, 1.3);
+  topY = Math.round(34 * S); ceilY = topY + 8 * S;
+  groundY = H - Math.max(64, H * 0.12);
+  Rmin = 22 * S; Rmax = 84 * S; Rref = 50 * S; segLen = 12 * S;
+  for (const c of [bg, fx]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); c.style.width = W + 'px'; c.style.height = H + 'px'; }
+  if (post) { post.x = W * 0.86; post.top = groundY - 150 * S; post.ring.x = post.ring.px = post.x; post.ring.y = post.ring.py = post.top - 6 * S; }
+  buildCanopy();
+  drawBackground();
+}
+
+let acc = 0, last = performance.now();
+function frame(t) {
+  const t0 = performance.now();
+  const el = Math.min((t - last) / 1000, 0.1);
+  last = t;
+  if (hitStop > 0) { hitStop -= el; }    // hit-stop: hold the world still for a moment (HANDBOOK §5)
+  else acc += el;
+  let steps = 0;
+  // At most 4 steps a frame: a slow machine runs in slow motion
+  // rather than piling up catch-up steps that make every frame slower.
+  while (acc >= STEP && steps < 4) { update(STEP); acc -= STEP; steps++; }
+  if (steps === 4) acc = 0;
+  draw();
+  const ms = performance.now() - t0;
+  msAvg = msAvg ? lerp(msAvg, ms, 0.05) : ms;
+  msWorst = Math.max(msWorst * 0.995, ms);
+  updatePanel();
+  publish();
+  requestAnimationFrame(frame);
+}
+
+let panelT = 0, bunchCache = 0;
+function updatePanel() {
+  ui.count.textContent = balloons.length + ' / ' + MAX_BALLOONS;
+  ui.he.textContent = heliumWord(helium) + ' (' + helium + ')';
+  if (++panelT % 10 === 0) bunchCache = bunchSizes();
+  ui.bunch.textContent = bunchCache;
+  const st = o => o ? (grab && grab.o === o ? 'carried' : o.airborne ? 'flying!' : 'on the grass') : '-';
+  ui.teddy.textContent = st(objects.find(o => o.kind === 'teddy'));
+  ui.basket.textContent = st(objects.find(o => o.kind === 'basket'));
+  ui.pops.textContent = stats.pops;
+  ui.ms.textContent = msAvg.toFixed(1) + ' ms';
+}
+
+// ===========================================================================
+// Test hook, read-only apart from the stress helper.
+// ===========================================================================
+window.GAME = {};
+function publish() {
+  const G = window.GAME;
+  G.count = balloons.length;
+  G.helium = helium; G.heliumNow = heliumNow;
+  G.inflating = inflating ? { r: inflating.r, over: inflating.over } : null;
+  G.grab = grab ? grab.kind : null;
+  G.ties = ties.length;
+  G.strings = strings.length;
+  G.frameMs = msAvg; G.worstMs = msWorst;
+  G.stats = Object.assign({}, stats);
+  G.soundOn = soundOn;
+  G.size = { W, H, groundY, ceilY, Rmin, Rmax };
+}
+window.GAME.balloons = () => balloons.map(b => ({
+  id: b.id, x: b.C.x, y: b.C.y, r: b.r, rEff: b.rEff, tied: balloonTied(b),
+  top: Math.min(...b.ring.map(p => p.y)), width: Math.max(...b.ring.map(p => p.x)) - Math.min(...b.ring.map(p => p.x)),
+  height: Math.max(...b.ring.map(p => p.y)) - Math.min(...b.ring.map(p => p.y)),
+  tail: { x: b.str.pts[STR_SEGS].x, y: b.str.pts[STR_SEGS].y },
+  mid: { x: b.str.pts[7].x, y: b.str.pts[7].y },
+}));
+window.GAME.objects = () => objects.map(o => { const c = objCentre(o), h = objHandle(o); return { kind: o.kind, x: c.x, y: c.y, bottom: Math.max(...o.pts.slice(0, 4).map(p => p.y)), airborne: o.airborne, handle: { x: h.x, y: h.y } }; });
+window.GAME.grabInfo = () => grab ? { kind: grab.kind, sid: grab.s ? grab.s.id : null, k: grab.s ? grab.s.pts.indexOf(grab.p) : null, tied: grab.p.tieCount } : null;
+window.GAME.post = () => ({ x: post.ring.x, y: post.ring.y });
+window.GAME.panel = () => Array.from(document.querySelectorAll('#ui .row')).map(r => r.textContent);
+window.GAME.bunch = () => bunchSizes();
+// Fill the party to its designed maximum, for the frame-time test.
+window.GAME.stress = () => {
+  const teddy = objects.find(o => o.kind === 'teddy'), basket = objects.find(o => o.kind === 'basket');
+  let k = 0;
+  while (balloons.length < MAX_BALLOONS) {
+    const r = (30 + (k * 37) % 50) * S, x = W * (0.08 + 0.84 * ((k * 0.618) % 1)), y = H * (0.25 + 0.4 * ((k * 0.377) % 1));
+    const b = makeBalloon(x, y, r, k % COLORS.length, 0, 0, 1);
+    const tail = b.str.pts[STR_SEGS];
+    if (k < 5) addTie(tail, objHandle(teddy)); else if (k < 8) addTie(tail, objHandle(basket));
+    k++;
+  }
+  return { balloons: balloons.length, ties: ties.length };
+};
+
+// The app's iframe can report a 0x0 window when this script first runs, so wait for a real size.
+function boot() {
+  if (window.innerWidth < 200 || window.innerHeight < 200) { requestAnimationFrame(boot); return; }
+  makeSprites();
+  fit();
+  clouds = Array.from({ length: 6 }, (_, i) => ({ x: (i / 6) * W * 1.2 - 100, y: H * (0.1 + (i * 0.37 % 1) * 0.35), w: (160 + (i * 53) % 140) * S, v: 6 + (i * 7) % 10 }));
+  resetParty();
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+window.addEventListener('resize', () => { if (window.innerWidth >= 200 && window.innerHeight >= 200 && W) fit(); });
+boot();
+})();
+</script>
+</body>
+</html>
