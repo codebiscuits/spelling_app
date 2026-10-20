@@ -9,8 +9,9 @@ The full version with explanations and references is `HANDBOOK.md`.
 1. **Mouse-first, and mouse-only by default.** Games are played on a desktop
    with a mouse — never a touch screen. Every game must give a distinct,
    satisfying job to each of the four mouse inputs:
-   - **movement** — steer, aim, stir, attract; the cursor must matter even
-     with no button held,
+   - **movement** — steer, aim, stir, attract, or point at where the
+     buttons act. If the game cannot be played without moving the mouse,
+     movement already has its job: do not invent an element just for it,
    - **left button** — the primary verb: spawn, grab, draw, pour,
    - **right button** — a second verb, not a context menu: explode, erase,
      repel, tear,

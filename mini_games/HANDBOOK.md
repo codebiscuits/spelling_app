@@ -44,12 +44,21 @@ checklist for new games and the bar existing ones are held to:
 1. **Mouse-first, and mouse-only by default.** These games are played on a
    desktop with a mouse — not on touch screens. Every game must give a
    distinct, satisfying job to each of the four mouse inputs:
-   - **movement** — steer, aim, stir, attract; the cursor should matter even
-     with no button held,
+   - **movement** — steer, aim, stir, attract, or point at where the
+     buttons act,
    - **left button** — the primary verb: spawn, grab, draw, pour,
    - **right button** — a second verb, not a context menu: explode, erase,
      repel, tear,
    - **scroll wheel** — a continuous parameter: size, count, zoom, symmetry.
+
+   **If the game cannot be played without moving the mouse, movement
+   already has its job.** Aiming where a beam goes, or where a click lands,
+   is the main job, not a missing one. Do not invent a game element only so
+   that movement has something of its own to do. Give movement an extra job
+   with no button held only when that makes the toy better.
+   *(Ross, 20 October 2026, after Bridge Builder's play-test: its breeze and
+   then its birds were added only to give movement a job, and both got in
+   the way.)*
 2. **Keyboard is optional seasoning.** Add keys only when they make the game
    more fun or interesting — when there are more parameters worth playing with
    than the mouse alone can carry (toggles, clear/reset, pause, mode cycling).
@@ -200,8 +209,9 @@ Details that matter:
   held, browsers turn the wheel into a sideways scroll**: `deltaY` is 0 and
   the value is in `deltaX`. Read `e.deltaY || e.deltaX`, or Shift + wheel
   does nothing.
-- Movement must matter even with no button held (§1): idle cursor motion
-  stirring the simulation is the hook that pulls a child in.
+- Movement already has a job when the buttons act where the cursor is
+  (§0.1). Where the toy is better for it, idle cursor motion stirring the
+  simulation is a lovely hook, but it is not required.
 
 ---
 
