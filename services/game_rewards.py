@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from templates_env import REWARD_GAMES
 
-BADGE_STEP = 3
+BADGE_STEP = 10
 
 
 def unlocked_files(user_id: int, db) -> set[str]:
@@ -23,7 +23,7 @@ def next_locked(user_id: int, db) -> dict | None:
 
 
 def badges_until_next(user_id: int, db) -> int:
-    """Badges needed to reach the next multiple of BADGE_STEP (1..3)."""
+    """Badges needed to reach the next multiple of BADGE_STEP (1..BADGE_STEP)."""
     count = db.execute(
         "SELECT COUNT(*) AS cnt FROM test_badges WHERE user_id=?", (user_id,)
     ).fetchone()["cnt"]

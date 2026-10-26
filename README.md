@@ -11,7 +11,7 @@ A web-based practice app for primary school children, with two subjects: spellin
 - **Per-word progression**: one new word is introduced at a time, in curriculum order, and mixed with the child's weakest and least recently practised words
 - **Times tables practice**: tables 2 to 12 as multiplication and division, opened in a fixed order, with clues (including a picture for division) after a wrong answer
 - **Badges, medals, and trophies**: a badge for a high score, a medal for every 10 items mastered, a trophy for mastering every word in a list or every question of a times table, kept in a trophy cabinet on the dashboard
-- **Mini game rewards**: a practice scoring 10/20 or higher earns one play of a mini game. Every third badge unlocks a new game
+- **Mini game rewards**: a practice scoring 10/20 or higher earns one play of a mini game. Every tenth badge unlocks a new game
 - **Recent games first**: the games a child played in the last 30 days are listed first
 - **Admin interface**: manage children and word lists, and see progress charts for each child in each subject
 - **UK National Curriculum word lists** — Years 1–2, 3–4, and 5–6 lists seeded automatically on first run
@@ -147,11 +147,11 @@ introduced, the weakest questions, and the questions practised longest ago. See
 
 | Award | Condition | Frequency |
 |---|---|---|
-| ⭐ Badge | Final score ≥ 16/20, in either subject | At most one per child per Europe/London day |
+| ⭐ Badge | Final score ≥ 16/20, in either subject | At most five per child per Europe/London day, one per practice |
 | 🏅 Medal | Ten more distinct items first mastered (10, 20, 30 ...) | An item counts once, ever |
 | 🏆 Trophy | Every word in a list, or every question of a times table (2 to 12), mastered at least once | Once per list or table, permanent. Unwon trophies show as grey outlines in the cabinet |
 
-Starting a new list or table shows a plain "You've started ..." message with no trophy. Only every third badge unlocks a reward game. Medals and trophies do not.
+Starting a new list or table shows a plain "You've started ..." message with no trophy. Only every tenth badge unlocks a reward game. Medals and trophies do not.
 
 ### Mini games
 
@@ -159,7 +159,7 @@ Starting a new list or table shows a plain "You've started ..." message with no 
 - Play time is 60 seconds at 10/20, plus 6 seconds per extra point, up to 120 seconds.
 - The games played in the last 30 days are listed first. The rest are under **All games**.
 - A game file is sent to a child only through a single-use launch link that lasts 5 minutes.
-- Classic games are always available. Reward games unlock with every third badge.
+- Classic games are always available. Reward games unlock with every tenth badge.
 
 ## Project structure
 
@@ -182,7 +182,7 @@ spelling_app/
 │   ├── arithmetic_facts.py       # Facts, families, table order, clues
 │   ├── arithmetic_progression.py # Per-question selection and table unlocking
 │   ├── gamification.py           # Badge, medal, and trophy rules
-│   ├── game_rewards.py           # Reward-game unlocks (every third badge)
+│   ├── game_rewards.py           # Reward-game unlocks (every tenth badge)
 │   ├── game_activity.py          # Game credits, plays, launch links, recent games
 │   └── progress_monitoring.py    # Read-only queries for the admin progress pages
 ├── seed/

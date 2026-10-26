@@ -312,7 +312,7 @@ def results(request: Request, user=Depends(require_child)):
         # newest first_mastered rows. Every trophy is checked each time.
         gamification["trophies"] = award_spelling_mastery_trophies(user_id, db)
 
-        # Only every third badge unlocks a game (medals and trophies do not)
+        # Only every tenth badge unlocks a game (medals and trophies do not)
         new_game = check_and_unlock(user_id, gamification, db)
 
         games = offer_games(user_id, session_id, session["score"], db)

@@ -106,11 +106,11 @@ Awards are calculated automatically after each practice, in either subject:
 
 | Award | Condition |
 |-------|-----------|
-| **Badge** ⭐ | Final score ≥ 16/20, at most one per child per Europe/London day |
+| **Badge** ⭐ | Final score ≥ 16/20, at most five per child per Europe/London day, one per practice |
 | **Medal** 🏅 | Every ten distinct items first mastered (words, or times-tables questions) |
 | **Trophy** 🏆 | Mastery: every word in a spelling list, or every question of a times table (2 to 12, one trophy each), mastered at least once. A trophy is permanent. The child sees them in the trophy cabinet on the dashboard |
 
-Starting a new list or table shows a plain "You've started ..." message, not a trophy. Only every third badge unlocks a reward game. Medals and trophies do not.
+Starting a new list or table shows a plain "You've started ..." message, not a trophy. Only every tenth badge unlocks a reward game. Medals and trophies do not.
 
 Games work like this:
 

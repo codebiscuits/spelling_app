@@ -1,5 +1,7 @@
 """End-to-end spelling-test flow through the HTTP layer (gTTS faked)."""
 
+from datetime import datetime, timezone
+
 from tests.conftest import (
     app_db,
     setup_practice_list,
@@ -265,7 +267,7 @@ def test_first_practice_earns_start_trophy_and_badge_but_no_medal_or_list_unlock
     resp = run_full_test(child_client, lambda w: w)
     assert "You&#39;ve started Start!" in resp.text or "You've started Start!" in resp.text
     assert "Trophy won" not in resp.text
-    assert "Badge earned for today!" in resp.text
+    assert "Badge earned!" in resp.text
     assert "Medal earned" not in resp.text
     assert "words mastered" not in resp.text
 
@@ -305,18 +307,28 @@ def test_failed_run_awards_nothing(child_client):
     assert count == 0
 
 
-def test_only_one_badge_per_day_but_every_practice_still_earns_game_time(child_client):
-    setup_practice_list(child_client.child_id, [f"word{c}" for c in "abcdefghij"])
-    first = run_full_test(child_client, lambda w: w)
-    assert "Badge earned for today!" in first.text
-    second = run_full_test(child_client, lambda w: w)
-    assert "Badge earned for today!" not in second.text
-    assert "Pick a game to play!" in second.text  # game time is unchanged
+def test_at_most_five_badges_per_day_but_every_practice_still_earns_game_time(child_client):
+    _, ids = setup_practice_list(child_client.child_id, [f"word{c}" for c in "abcdefghij"])
+    # Four badges already earned today, on earlier practices
+    now = datetime.now(timezone.utc).isoformat()
+    with app_db() as db:
+        for _ in range(4):
+            sid = db.execute(
+                "INSERT INTO test_sessions (timestamp, user_id, list_id, score, max_score) VALUES (?,?,NULL,18,20)",
+                (now, child_client.child_id),
+            ).lastrowid
+            db.execute("INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
+                       (child_client.child_id, sid, now))
+    fifth = run_full_test(child_client, lambda w: w)
+    assert "Badge earned!" in fifth.text
+    sixth = run_full_test(child_client, lambda w: w)
+    assert "Badge earned!" not in sixth.text
+    assert "Pick a game to play!" in sixth.text  # game time is unchanged
     with app_db() as db:
         count = db.execute(
             "SELECT COUNT(*) AS c FROM test_badges WHERE user_id=?", (child_client.child_id,)
         ).fetchone()["c"]
-    assert count == 1
+    assert count == 5
 
 
 def test_tenth_mastered_word_earns_a_medal_banner_and_no_game(child_client):

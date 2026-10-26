@@ -40,9 +40,9 @@ def test_run_out_date_follows_badge_pace(db):
     give_badges(db, uid, [1, 3, 5, 7, 9, 11, 13])        # 7 badges in 28 days = 0.25 a day
     f = child_forecast(user(db, uid), db, TODAY)
     assert f["games_left"] == 2
-    # 7 badges: 2 more to the next multiple of 3, then 3 for the last game.
-    assert f["badges_needed"] == 5
-    assert f["run_out"] == TODAY + timedelta(days=20)
+    # 7 badges: 3 more to the next multiple of 10, then 10 for the last game.
+    assert f["badges_needed"] == 13
+    assert f["run_out"] == TODAY + timedelta(days=52)
     assert f["pace_per_week"] == 1.8
     assert f["alert"] is False
 
@@ -50,9 +50,9 @@ def test_run_out_date_follows_badge_pace(db):
 def test_alerts_inside_the_seven_day_lead(db):
     uid = make_user(db, "Ollie")
     unlock(db, uid, TOTAL - 1)
-    give_badges(db, uid, list(range(1, 15)))             # 14 badges in 28 days = 0.5 a day
+    give_badges(db, uid, list(range(1, 20)))             # 19 badges in 28 days
     f = child_forecast(user(db, uid), db, TODAY)
-    assert f["badges_needed"] == 1                       # 14 badges: one more reaches 15
+    assert f["badges_needed"] == 1                       # 19 badges: one more reaches 20
     assert f["run_out"] == TODAY + timedelta(days=2)
     assert f["alert"] is True
 

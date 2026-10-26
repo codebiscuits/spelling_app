@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from services.gamification import (
+    BADGES_PER_DAY,
     award_session_badge,
     award_start_trophies,
     record_mastery_and_medals,
@@ -23,7 +24,13 @@ def new_session(db, uid, score):
     return make_session(db, uid, lid, score=score)
 
 
-# ── Badge: score >= 16, at most one per Europe/London day ──────────────────
+def fill_day(db, uid, when, n=BADGES_PER_DAY):
+    """Earn n badges at `when`, each on its own qualifying practice."""
+    for _ in range(n):
+        assert award_session_badge(uid, new_session(db, uid, 18), 18, db, now=when) is True
+
+
+# ── Badge: score >= 16, at most five per Europe/London day ─────────────────
 
 def test_badge_awarded_at_threshold(db):
     uid = make_user(db)
@@ -39,30 +46,43 @@ def test_badge_not_awarded_below_threshold(db):
     assert badge_count(db, uid) == 0
 
 
-def test_second_qualifying_practice_same_day_earns_no_second_badge(db):
+def test_five_qualifying_practices_in_a_day_each_earn_a_badge(db):
     uid = make_user(db)
-    first = new_session(db, uid, 18)
-    second = new_session(db, uid, 20)
-    assert award_session_badge(uid, first, 18, db, now=utc(2026, 3, 2, 8)) is True
-    assert award_session_badge(uid, second, 20, db, now=utc(2026, 3, 2, 17)) is False
+    fill_day(db, uid, utc(2026, 3, 2, 8))
+    assert badge_count(db, uid) == 5
+
+
+def test_sixth_qualifying_practice_same_day_earns_no_badge(db):
+    uid = make_user(db)
+    fill_day(db, uid, utc(2026, 3, 2, 8))
+    sixth = new_session(db, uid, 20)
+    assert award_session_badge(uid, sixth, 20, db, now=utc(2026, 3, 2, 17)) is False
+    assert badge_count(db, uid) == 5
+
+
+def test_a_practice_earns_at_most_one_badge(db):
+    uid = make_user(db)
+    sid = new_session(db, uid, 18)
+    assert award_session_badge(uid, sid, 18, db, now=utc(2026, 3, 2, 8)) is True
+    assert award_session_badge(uid, sid, 18, db, now=utc(2026, 3, 2, 8)) is False
     assert badge_count(db, uid) == 1
 
 
-def test_badge_is_earned_by_first_qualifying_practice_of_the_day(db):
+def test_low_scores_do_not_use_up_the_daily_limit(db):
     uid = make_user(db)
-    low = new_session(db, uid, 12)
+    for _ in range(BADGES_PER_DAY):
+        low = new_session(db, uid, 12)
+        assert award_session_badge(uid, low, 12, db, now=utc(2026, 3, 2, 8)) is False
     good = new_session(db, uid, 17)
-    assert award_session_badge(uid, low, 12, db, now=utc(2026, 3, 2, 8)) is False
     assert award_session_badge(uid, good, 17, db, now=utc(2026, 3, 2, 9)) is True
 
 
 def test_a_new_day_allows_a_new_badge(db):
     uid = make_user(db)
-    a = new_session(db, uid, 18)
+    fill_day(db, uid, utc(2026, 3, 2, 10))
     b = new_session(db, uid, 18)
-    assert award_session_badge(uid, a, 18, db, now=utc(2026, 3, 2, 10)) is True
     assert award_session_badge(uid, b, 18, db, now=utc(2026, 3, 3, 10)) is True
-    assert badge_count(db, uid) == 2
+    assert badge_count(db, uid) == 6
 
 
 def test_badges_are_counted_per_child(db):
@@ -77,41 +97,52 @@ def test_london_day_in_summer_differs_from_utc_day(db):
     """23:30 UTC on 1 June is 00:30 BST on 2 June: a new London day, even
     though the UTC date is the same as an earlier badge's."""
     uid = make_user(db)
-    a = new_session(db, uid, 18)
+    fill_day(db, uid, utc(2026, 6, 1, 12))
     b = new_session(db, uid, 18)
-    assert award_session_badge(uid, a, 18, db, now=utc(2026, 6, 1, 12)) is True
     assert award_session_badge(uid, b, 18, db, now=utc(2026, 6, 1, 23, 30)) is True
-    assert badge_count(db, uid) == 2
+    assert badge_count(db, uid) == 6
 
 
 def test_two_utc_days_can_be_one_london_day_in_summer(db):
     """22:30 UTC on 1 June is 23:30 BST; 00:10 UTC on 2 June is 01:10 BST.
     These are two London days. But 23:10 UTC and 23:50 UTC on 1 June are
-    00:10 and 00:50 BST on 2 June: one London day, so one badge."""
+    00:10 and 00:50 BST on 2 June: one London day, so they share one limit."""
     uid = make_user(db)
-    a = new_session(db, uid, 18)
+    fill_day(db, uid, utc(2026, 6, 1, 23, 10))
     b = new_session(db, uid, 18)
-    assert award_session_badge(uid, a, 18, db, now=utc(2026, 6, 1, 23, 10)) is True
     assert award_session_badge(uid, b, 18, db, now=utc(2026, 6, 1, 23, 50)) is False
 
 
 def test_winter_london_day_matches_utc_day(db):
     uid = make_user(db)
-    a = new_session(db, uid, 18)
+    fill_day(db, uid, utc(2026, 1, 10, 23, 30))
     b = new_session(db, uid, 18)
-    assert award_session_badge(uid, a, 18, db, now=utc(2026, 1, 10, 23, 30)) is True
     assert award_session_badge(uid, b, 18, db, now=utc(2026, 1, 11, 0, 30)) is True
 
 
-def test_old_badge_rows_count_as_that_days_badge(db):
+def insert_old_badges(db, uid, n, earned_at):
+    for _ in range(n):
+        old = new_session(db, uid, 18)
+        db.execute(
+            "INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
+            (uid, old, earned_at),
+        )
+
+
+def test_old_badge_rows_count_towards_that_days_limit(db):
     uid = make_user(db)
-    old = new_session(db, uid, 18)
-    db.execute(
-        "INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
-        (uid, old, "2026-03-02T07:00:00+00:00"),
-    )
+    insert_old_badges(db, uid, BADGES_PER_DAY, "2026-03-02T07:00:00+00:00")
     new = new_session(db, uid, 19)
     assert award_session_badge(uid, new, 19, db, now=utc(2026, 3, 2, 15)) is False
+
+
+def test_one_old_badge_today_still_leaves_room(db):
+    """A child who earned a badge under the old one-a-day rule can still
+    earn more that day."""
+    uid = make_user(db)
+    insert_old_badges(db, uid, 1, "2026-03-02T07:00:00+00:00")
+    new = new_session(db, uid, 19)
+    assert award_session_badge(uid, new, 19, db, now=utc(2026, 3, 2, 15)) is True
 
 
 # ── Medals: one per ten distinct words first mastered ──────────────────────

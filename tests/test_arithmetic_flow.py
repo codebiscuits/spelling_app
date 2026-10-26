@@ -1,4 +1,5 @@
 """End-to-end times-tables practice through the HTTP layer."""
+from datetime import datetime, timezone
 import html as html_lib
 import re
 
@@ -424,7 +425,7 @@ def test_results_show_badge_trophy_and_credit_but_no_answers(child_client):
     resp = finish(child_client)
     assert "Practice Complete" in resp.text
     assert "Times tables practice" in resp.text
-    assert "Badge earned for today!" in resp.text
+    assert "Badge earned!" in resp.text
     assert "You've started the 2 and 10 times tables!" in resp.text
     assert "Trophy" not in resp.text      # starting is not a trophy any more
     assert "/arithmetic/start" in resp.text
@@ -487,28 +488,43 @@ def count_badges():
         return db.execute("SELECT COUNT(*) AS c FROM test_badges").fetchone()["c"]
 
 
-def test_arithmetic_badge_blocks_a_later_spelling_badge_the_same_day(child_client):
+def give_badges_today(n):
+    """n badges already earned today, on earlier practices."""
+    now = datetime.now(timezone.utc).isoformat()
+    with app_db() as db:
+        child_id = db.execute("SELECT id FROM users WHERE is_admin=0").fetchone()["id"]
+        for _ in range(n):
+            sid = db.execute(
+                "INSERT INTO test_sessions (timestamp,user_id,list_id,score,max_score) VALUES (?,?,NULL,18,20)",
+                (now, child_id),
+            ).lastrowid
+            db.execute("INSERT INTO test_badges (user_id,session_id,earned_at) VALUES (?,?,?)",
+                       (child_id, sid, now))
+
+
+def test_spelling_and_arithmetic_badges_both_count_on_the_same_day(child_client):
     play(child_client, right)
     assert "Badge earned" in finish(child_client).text
     setup_practice_list(child_client.child_id, SPELLING_WORDS)
     resp = run_full_test(child_client, lambda w: w)
-    assert "Badge earned" not in resp.text
-    assert count_badges() == 1
+    assert "Badge earned" in resp.text
+    assert count_badges() == 2
 
 
-def test_spelling_badge_blocks_a_later_arithmetic_badge_the_same_day(child_client):
+def test_the_daily_limit_is_shared_across_subjects(child_client):
     setup_practice_list(child_client.child_id, SPELLING_WORDS)
-    assert "Badge earned" in run_full_test(child_client, lambda w: w).text
+    give_badges_today(4)
+    assert "Badge earned" in run_full_test(child_client, lambda w: w).text   # 5th today
     play(child_client, right)
     resp = finish(child_client)
     assert "Badge earned" not in resp.text
-    assert count_badges() == 1
+    assert count_badges() == 5
     assert session_row()["score"] == 20 and "Pick a game to play" in resp.text   # game time still earned
 
 
-def test_every_third_badge_across_subjects_unlocks_a_game(child_client):
+def test_every_tenth_badge_across_subjects_unlocks_a_game(child_client):
     with app_db() as db:
-        for day in (1, 2):
+        for day in range(1, 10):
             sid = db.execute(
                 "INSERT INTO test_sessions (timestamp,user_id,list_id,score,max_score) VALUES (?,?,NULL,18,20)",
                 (f"2025-01-0{day}T10:00:00+00:00", child_client.child_id),
@@ -517,7 +533,7 @@ def test_every_third_badge_across_subjects_unlocks_a_game(child_client):
                        (child_client.child_id, sid, f"2025-01-0{day}T10:00:00+00:00"))
     play(child_client, right)
     resp = finish(child_client)
-    assert count_badges() == 3
+    assert count_badges() == 10
     assert "A new game is ready!" in resp.text
 
 

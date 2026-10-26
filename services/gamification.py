@@ -1,7 +1,8 @@
 """Badges, medals and trophies for spelling and arithmetic.
 
-* Badge: final score >= 16/20, at most one per child per Europe/London
-  calendar day. The first qualifying practice of the day earns it.
+* Badge: final score >= 16/20, at most BADGES_PER_DAY (5) per child per
+  Europe/London calendar day, and at most one per practice. The first five
+  qualifying practices of the day earn one each.
 * Medal: one for each ten distinct words first mastered (a word counts
   once, ever). Backfilled medals are silent.
 * Start record: one per list, at the child's first ordinary first attempt at
@@ -12,12 +13,12 @@
   ``first_mastered`` row. Permanent: a later slip or a word added to the
   list later never removes it.
 
-A badge is one per child per London day across BOTH subjects: both read the
+The daily limit is shared across BOTH subjects: both read the
 same test_badges table, and arithmetic sessions live in test_sessions too.
 Arithmetic medals count distinct directions first secured; arithmetic
 start records are one per ladder rung (group_id = rung number).
 
-Only every third badge unlocks a game (see game_rewards.py).
+Every tenth badge unlocks a game (see game_rewards.py).
 """
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -28,6 +29,7 @@ from services.spelling_progression import SUBJECT, load_history, mastered_word_i
 
 LONDON = ZoneInfo("Europe/London")
 BADGE_SCORE = 16
+BADGES_PER_DAY = 5
 MEDAL_STEP = 10
 
 
@@ -41,8 +43,9 @@ def london_date(when: datetime | str):
 
 def award_session_badge(user_id: int, session_id: int, session_score: int, db,
                         now: datetime | None = None) -> bool:
-    """Award today's badge if the score qualifies and none was earned yet
-    on this London calendar day. Returns True when a badge was awarded."""
+    """Award a badge if the score qualifies, this practice has no badge yet,
+    and the child has earned fewer than BADGES_PER_DAY badges on this London
+    calendar day. Returns True when a badge was awarded."""
     if session_score < BADGE_SCORE:
         return False
     now = now or datetime.now(timezone.utc)
@@ -52,9 +55,14 @@ def award_session_badge(user_id: int, session_id: int, session_score: int, db,
     recent = db.execute(
         "SELECT earned_at, session_id FROM test_badges WHERE user_id=?", (user_id,)
     ).fetchall()
+    earned_today = 0
     for row in recent:
-        if row["session_id"] == session_id or london_date(row["earned_at"]) == today:
+        if row["session_id"] == session_id:
             return False
+        if london_date(row["earned_at"]) == today:
+            earned_today += 1
+    if earned_today >= BADGES_PER_DAY:
+        return False
     db.execute(
         "INSERT INTO test_badges (user_id, session_id, earned_at) VALUES (?,?,?)",
         (user_id, session_id, now.astimezone(timezone.utc).isoformat()),

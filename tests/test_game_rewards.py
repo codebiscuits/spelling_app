@@ -60,20 +60,20 @@ def start_game(client, filename, follow_redirects=True):
 
 # ── 1. Ladder ────────────────────────────────────────────────────────────────
 
-def test_third_badge_unlocks_first_game(db):
+def test_tenth_badge_unlocks_first_game(db):
     uid = make_user(db)
     lid = make_list(db)
-    give_badges(db, uid, lid, BADGE_STEP)  # 3rd badge already recorded
+    give_badges(db, uid, lid, BADGE_STEP)  # 10th badge already recorded
     result = check_and_unlock(uid, award(badge=True), db)
     assert result is not None
     assert result["file"] == REWARD_GAMES[0]["file"]
     assert unlocked_files(uid, db) == {REWARD_GAMES[0]["file"]}
 
 
-def test_sixth_badge_unlocks_second_game(db):
+def test_twentieth_badge_unlocks_second_game(db):
     uid = make_user(db)
     lid = make_list(db)
-    give_badges(db, uid, lid, 6)  # 6th badge already recorded
+    give_badges(db, uid, lid, 2 * BADGE_STEP)  # 20th badge already recorded
     db.execute(
         """INSERT INTO user_game_unlocks (user_id, game_file, earned_at, source)
            VALUES (?,?,?,?)""",
@@ -97,7 +97,7 @@ def test_trophy_no_longer_unlocks_a_game(db):
     assert unlocked_files(uid, db) == set()
 
 
-def test_medal_and_trophy_with_third_badge_still_unlock_only_via_the_badge(db):
+def test_medal_and_trophy_with_tenth_badge_still_unlock_only_via_the_badge(db):
     uid = make_user(db)
     lid = make_list(db)
     give_badges(db, uid, lid, BADGE_STEP)
@@ -108,18 +108,18 @@ def test_medal_and_trophy_with_third_badge_still_unlock_only_via_the_badge(db):
     assert source["source"] == "badge"
 
 
-def test_fourth_and_fifth_badges_unlock_nothing(db):
+def test_badges_between_steps_unlock_nothing(db):
     uid = make_user(db)
     lid = make_list(db)
     give_badges(db, uid, lid, BADGE_STEP)
     check_and_unlock(uid, award(badge=True), db)
-    for n in (4, 5):
+    for n in range(BADGE_STEP + 1, 2 * BADGE_STEP):
         give_badges(db, uid, lid, 1)
         assert check_and_unlock(uid, award(badge=True), db) is None, n
     assert len(unlocked_files(uid, db)) == 1
 
 
-def test_no_unlock_when_the_practice_earned_no_badge_even_at_a_multiple_of_three(db):
+def test_no_unlock_when_the_practice_earned_no_badge_even_at_a_multiple_of_the_step(db):
     uid = make_user(db)
     lid = make_list(db)
     give_badges(db, uid, lid, BADGE_STEP)
@@ -130,6 +130,15 @@ def test_badge_one_alone_unlocks_nothing(db):
     uid = make_user(db)
     lid = make_list(db)
     give_badges(db, uid, lid, 1)
+    assert check_and_unlock(uid, award(badge=True), db) is None
+    assert unlocked_files(uid, db) == set()
+
+
+def test_badge_nine_alone_unlocks_nothing(db):
+    """give_badges records the badges; check_and_unlock sees a count of 9."""
+    uid = make_user(db)
+    lid = make_list(db)
+    give_badges(db, uid, lid, BADGE_STEP - 1)
     assert check_and_unlock(uid, award(badge=True), db) is None
     assert unlocked_files(uid, db) == set()
 
@@ -329,7 +338,7 @@ def test_mystery_hint_correct_after_first_badge(child_client):
     setup_practice_list(child_id, PRACTICE_WORDS)
     resp = run_full_session(child_client)
     assert resp.status_code == 200
-    assert "2 more" in resp.text
+    assert "9 more" in resp.text
 
 
 def test_mystery_hint_correct_after_second_badge(child_client):
@@ -339,7 +348,7 @@ def test_mystery_hint_correct_after_second_badge(child_client):
         give_badges(db, child_id, list_id, 1)
     resp = run_full_session(child_client)
     assert resp.status_code == 200
-    assert "1 more" in resp.text
+    assert "8 more" in resp.text
 
 
 def test_recently_played_game_is_visible_when_unlocked_again(child_client):
@@ -348,7 +357,7 @@ def test_recently_played_game_is_visible_when_unlocked_again(child_client):
     game = REWARD_GAMES[0]
     list_id, _ = setup_practice_list(child_id, PRACTICE_WORDS)
     with app_db() as db:
-        give_badges(db, child_id, list_id, 2)
+        give_badges(db, child_id, list_id, BADGE_STEP - 1)
         # Simulate an admin re-locking then re-unlocking a recently played game.
         db.execute(
             "INSERT INTO user_game_plays (user_id, game_file, played_at) VALUES (?,?,?)",
@@ -370,7 +379,7 @@ def test_recently_played_game_is_visible_when_unlocked_again(child_client):
 def test_qualifying_multi_list_session_awards_exactly_one_badge(child_client):
     """Regression: the badge used to be inserted once per list touched by the
     session, so a 20/20 session drawing words from several lists inflated the
-    lifetime star count and fired the every-3-stars game unlock early."""
+    lifetime star count and fired the reward-game unlock early."""
     child_id = child_client.child_id
     setup_practice_list(child_id, ["apple", "banana", "carrot", "dolphin", "eagle"],
                         name="List A")

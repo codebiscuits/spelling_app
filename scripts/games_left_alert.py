@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from services.game_rewards import BADGE_STEP  # noqa: E402
 from services.games_left import LEAD_DAYS, PACE_WINDOW_DAYS, all_forecasts  # noqa: E402
 
 ORGANISER = "http://100.74.73.105:8888"
@@ -75,7 +76,7 @@ def organiser_task(first: dict, lines: list[str], now: datetime) -> dict:
         "notification_offsets": [offset],
         "notes": "\n".join([
             "Created by scripts/games_left_alert.py in the spelling_app repo.",
-            f"Pace is badges over the last {PACE_WINDOW_DAYS} days. One game unlocks every 3 badges.",
+            f"Pace is badges over the last {PACE_WINDOW_DAYS} days. One game unlocks every {BADGE_STEP} badges.",
             *lines,
             "Build new reward games and add them to MINI_GAMES in templates_env.py.",
         ]),
