@@ -1,0 +1,1800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bridge Builder</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: #8fcff0;
+    font-family: ui-rounded, 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  }
+  canvas { position: fixed; inset: 0; display: block; }
+  #fx { cursor: crosshair; }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    width: 278px; padding: 14px 16px 12px;
+    background: rgba(16, 24, 48, 0.68); border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #d3dbee; font-size: 12.5px; line-height: 1.5;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    transition: opacity 0.25s;
+  }
+  #ui.hidden { opacity: 0; }
+  #ui h3 { color: #fff; font-size: 16px; letter-spacing: 0.4px; margin-bottom: 4px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 10px; }
+  #ui .k { color: #ffc46b; font-weight: 700; white-space: nowrap; }
+  #ui .d { text-align: right; }
+  #ui .v { color: #9fe4ff; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  #ui .pair { display: grid; grid-template-columns: 1fr 1fr; column-gap: 16px; }
+  #ui .rule { height: 1px; background: rgba(255, 255, 255, 0.14); margin: 8px 0 7px; }
+  #ui .keys { color: #9aa5c2; font-size: 11px; margin-top: 6px; line-height: 1.5; }
+  #ui .hint { color: #ffd890; font-style: italic; font-size: 11.5px; margin-top: 6px; min-height: 34px; }
+  .pill {
+    position: fixed; z-index: 10; border-radius: 999px; cursor: pointer;
+    font: 700 13px ui-rounded, 'Trebuchet MS', sans-serif; letter-spacing: 0.3px;
+    color: #eef2fb; background: rgba(16, 24, 48, 0.80); border: 1px solid rgba(255, 255, 255, 0.22);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: background 0.2s, border-color 0.2s, transform 0.15s, opacity 0.2s;
+  }
+  .pill:hover { background: rgba(40, 60, 120, 0.92); border-color: rgba(255, 255, 255, 0.4); }
+  .pill:focus-visible { outline: 3px solid #ffc46b; outline-offset: 2px; }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 26px; }
+  #soundBtn { bottom: 24px; right: 20px; padding: 10px 18px; }
+  #modeBtn { bottom: 22px; right: 168px; padding: 12px 22px; font-size: 15px; }
+  #modeBtn.rope { background: rgba(150, 95, 40, 0.92); }
+  #goBtn {
+    bottom: 22px; left: 20px; padding: 14px 30px; font-size: 19px;
+    background: rgba(230, 70, 60, 0.92); border-color: rgba(255, 255, 255, 0.5);
+    box-shadow: 0 6px 18px rgba(120, 20, 10, 0.35);
+  }
+  #goBtn:hover { background: rgba(250, 90, 75, 0.96); }
+  #goBtn.stop { background: rgba(16, 24, 48, 0.85); box-shadow: none; }
+  #fixBtn { bottom: 26px; left: 176px; padding: 11px 20px; font-size: 14px; opacity: 0.55; }
+  #fixBtn.need { opacity: 1; background: rgba(40, 150, 110, 0.92); animation: pulse 1.1s ease-in-out infinite; }
+  #goBtn.wait { animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+  @media (prefers-reduced-motion: reduce) { #fixBtn.need, #goBtn.wait { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="bg"></canvas>
+<canvas id="fx"></canvas>
+<div id="ui">
+  <h3>&#x1F309; Bridge Builder</h3>
+  <div class="row"><span class="k">Move</span><span class="d">point at a beam to read it</span></div>
+  <div class="row"><span class="k">Left drag</span><span class="d">build a beam</span></div>
+  <div class="row"><span class="k">Right click</span><span class="d">remove a beam or joint</span></div>
+  <div class="row"><span class="k">Right drag</span><span class="d">rub out beams</span></div>
+  <div class="row"><span class="k">Wheel</span><span class="d">lorry load, lighter or heavier</span></div>
+  <div class="row"><span class="k">T or button</span><span class="d">build beams or ropes</span></div>
+  <div class="rule"></div>
+  <div class="pair">
+    <div class="row"><span>Load</span><span class="v" id="loadVal">-</span></div>
+    <div class="row"><span>Lorry</span><span class="v" id="lorryVal">-</span></div>
+    <div class="row"><span>Building</span><span class="v" id="modeVal">beams</span></div>
+    <div class="row"><span>Frame</span><span class="v" id="msVal">-</span></div>
+    <div class="row"><span>Beams</span><span class="v" id="beamVal">0</span></div>
+    <div class="row"><span>Snapped</span><span class="v" id="brokenVal">0</span></div>
+    <div class="row"><span>Strain</span><span class="v" id="strainVal">-</span></div>
+    <div class="row"><span>Trips</span><span class="v" id="tripVal">0</span></div>
+  </div>
+  <div class="keys">Keys: G go &middot; F fix &middot; T ropes &middot; C clear &middot; H hide &middot; R reset &middot; M sound</div>
+  <div class="hint" id="hint">Press Go and watch the lorry cross.</div>
+</div>
+<button class="pill" id="goBtn" type="button">&#x1F69A; Go!</button>
+<button class="pill" id="fixBtn" type="button">&#x1F527; Fix bridge</button>
+<button class="pill" id="modeBtn" type="button">&#x1FAB5; Beams</button>
+<button class="pill" id="soundBtn" type="button">&#x1F507; Sound off</button>
+<button class="pill" id="resetBtn" type="button">&#x21BA; Start again</button>
+<script>
+(() => {
+'use strict';
+
+// ===========================================================================
+// Constants. Lengths are CSS pixels, times are seconds.
+// ===========================================================================
+const STEP = 1 / 60;          // fixed physics step (HANDBOOK §2.1)
+const GRAV = 1400;            // px/s²
+const G_STEP = GRAV * STEP * STEP;
+const SUB = 8;                // substeps per step: small steps give true forces (XPBD)
+const H_SUB = STEP / SUB;
+const G_SUB = GRAV * H_SUB * H_SUB;
+let ITER = 4;                 // constraint passes per substep
+const DAMP = 0.995;           // per step, for the lorry when it is not substepped
+const DAMP_SUB = Math.pow(0.995, 1 / SUB);
+let COMPLIANCE = 2e-8;        // XPBD compliance per px of beam: a longer beam stretches more, as a real one does
+let ROPE_COMPLIANCE = 4e-8;   // per px of rope: ropes stretch a little more than beams
+const ROPE_DENS = 0.3;        // a rope weighs this fraction of a beam
+const SNAP_R = 24;            // a drag starts or ends on a joint this close (forgiving)
+const MIN_LEN = 16;
+const HOLD_T = 2.5;           // a new free joint is held in place this long, so you can build out from it
+const MAX_BEAMS = 160;        // designed maximum (HANDBOOK §7)
+// Strength. Every beam and rope has its own limits, set by its material and
+// length when it is built. Longer is weaker. A beam is twice as strong pushed
+// (compression) as pulled (tension). A rope pulls 1.5 times as hard as a beam
+// of the same length, and cannot push at all.
+const L_REF = 150;            // a beam this long (px, in a 652 px gap) has the reference strength
+let TENS0 = 100000;           // tension strength of a beam L_REF long (mass·px/s²)
+let LEN_EXP = 0.5;            // strength falls as (L_REF / length) ^ LEN_EXP
+const COMP_X = 2;             // compression strength = 2 x tension strength
+const ROPE_X = 1.5;           // rope tension strength = 1.5 x a beam's of the same length
+let DEPTH = 30;               // bending: a beam fails when bending moment / tension strength passes this (px)
+let BEAM_DENS = 0.002;        // mass per px of beam: light, so a well-placed support helps more than its weight hurts
+// Mass of one lorry point for each load, empty to seven crates. Each crate
+// adds more than the last, so the top load is 36 times the empty lorry.
+let LOAD_MASS = [1, 2, 3.5, 6, 10, 16, 24, 36];
+const LOADS = 8;              // load steps: 1 = empty, 8 = seven crates
+const DEFAULT_LOAD = 3;
+const WHEEL_R = 13;
+const HALF_BASE = 30;         // half the wheelbase
+const BODY_H = 34;
+const MAX_PARTS = 700;
+const MAX_DEBRIS = 90;
+const WATER_N = 96;
+const PENTA = [0, 2, 4, 7, 9];
+const N_BIRDS = 5;
+const SHY_R = 80;             // birds fly away from the mouse when it comes this close
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const easeOutBack = t => { const c = 1.7; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; };
+const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const bg = document.getElementById('bg'), bctx = bg.getContext('2d');
+const fx = document.getElementById('fx'), ctx = fx.getContext('2d');
+const ui = {
+  panel: document.getElementById('ui'), load: document.getElementById('loadVal'), lorry: document.getElementById('lorryVal'),
+  beams: document.getElementById('beamVal'), broken: document.getElementById('brokenVal'), strain: document.getElementById('strainVal'),
+  trips: document.getElementById('tripVal'), ms: document.getElementById('msVal'), hint: document.getElementById('hint'),
+  go: document.getElementById('goBtn'), fix: document.getElementById('fixBtn'), sound: document.getElementById('soundBtn'),
+  mode: document.getElementById('modeBtn'), modeVal: document.getElementById('modeVal'),
+};
+function hint(s) { if (ui.hint.textContent !== s) ui.hint.textContent = s; }
+
+// ===========================================================================
+// State
+// ===========================================================================
+let W = 0, H = 0, dpr = 1;
+let geo = null;               // layout: cliffs, island, posts, water level
+let joints = [], beams = [];
+let serial = 0;
+let lorry = null;
+let load = DEFAULT_LOAD;
+let driving = false;
+let parts = [], debris = [], floaters = [], clouds = [], tufts = [], ducks = [];
+let water = { h: new Float32Array(WATER_N), v: new Float32Array(WATER_N) };
+let draw = null;              // the beam being drawn: { from: joint|null, sx, sy }
+let erasing = null;           // { x, y } last point of a right drag
+let prevButtons = 0;
+let pointer = { x: -1e4, y: -1e4, inside: false, movedAt: 0 };
+let hitStop = 0, trauma = 0, simTime = 0;
+let fixAnim = 0;              // > 0 while joints spring back to where they were drawn
+let soundOn = false, audio = null, master = null;
+let scrollLabel = null;       // { text, life }
+let stats = { built: 0, removed: 0, snaps: 0, splashes: 0, trips: 0, fixes: 0, turns: 0, perched: 0 };
+let maxStrain = 0;
+let msAvg = 0, msWorst = 0;
+let topoDirty = true;
+let goAfterLanding = false;
+let buildRope = false;
+let noSnap = false;           // calibration only        // what a left drag builds: beams, or ropes
+let birds = [];
+
+// ===========================================================================
+// Layout. Everything is a fraction of the window, so the scene fits any size.
+// The controls pane sits over the sky at top-left; the road is below it.
+// ===========================================================================
+function layout() {
+  // The left cliff edge stays right of the controls pane (16 + 278 px wide),
+  // unless the window is so narrow that the gap would shrink below 38% of it.
+  const L = Math.round(Math.max(W * 0.24, Math.min(314, W * 0.31))), R = W - L;
+  // Low enough that the parked lorry (up to 78 px tall with three rows of crates) is clear of the controls pane.
+  const paneBottom = ui.panel.getBoundingClientRect().bottom || 0;
+  const road = Math.round(clamp(Math.max(H * 0.60, paneBottom + 84), 0, H * 0.72));
+  const g = {
+    L, R, road,
+    face: Math.round(H * 0.13),
+    fallX: Math.round(L + (R - L) * 0.80),   // a little waterfall down the back wall            // how far down the cliff the lower anchors are
+    waterY: Math.round(H * 0.89),
+    islandX: Math.round(W / 2), islandTop: Math.round(Math.min(Math.max(H * 0.80, road + H * 0.12), H * 0.89 - 30)), islandW: Math.round(Math.max(26, W * 0.035)),
+    postL: L - 10, postR: R + 10, postTop: Math.round(road - H * 0.27),
+    startL: Math.round(W * 0.10), startR: Math.round(W * 0.90),
+  };
+  g.scale = (R - L) / 652;                 // 1 in a 1280 px wide window
+  g.anchors = [
+    { id: 'AL', x: L, y: road }, { id: 'AR', x: R, y: road },
+    { id: 'BL', x: L, y: road + g.face }, { id: 'BR', x: R, y: road + g.face },
+    { id: 'M', x: g.islandX, y: g.islandTop },
+    { id: 'PL', x: g.postL, y: g.postTop }, { id: 'PR', x: g.postR, y: g.postTop },
+  ];
+  return g;
+}
+function anchorJoint(id) { return joints.find(j => j.anchor === id); }
+
+// Solid ground: two cliffs and the island, as boxes open to the bottom.
+function solids() {
+  return [
+    { x0: -1e5, x1: geo.L, y0: geo.road },
+    { x0: geo.R, x1: 1e5, y0: geo.road },
+    { x0: geo.islandX - geo.islandW, x1: geo.islandX + geo.islandW, y0: geo.islandTop },
+  ];
+}
+// Push a point of radius r out of the ground. Returns the push normal, or null.
+function pushOut(p, r, friction) {
+  let hit = null;
+  for (const s of solids()) {
+    if (p.x <= s.x0 - r || p.x >= s.x1 + r || p.y <= s.y0 - r) continue;
+    if (p.x < s.x0 || p.x > s.x1 || p.y < s.y0) {
+      // Centre outside the rock: push away from the nearest point, so the
+      // corners are round and a wheel rolls over a cliff edge.
+      const cx = clamp(p.x, s.x0, s.x1), cy = Math.max(p.y, s.y0);
+      const dx = p.x - cx, dy = p.y - cy, d = Math.hypot(dx, dy);
+      if (d >= r || d < 1e-6) continue;
+      const nx = dx / d, ny = dy / d;
+      p.x = cx + nx * r; p.y = cy + ny * r;
+      if (friction && ny < -0.5) p.px = lerp(p.px, p.x, friction);
+      if (!hit || ny < hit.ny) hit = { nx, ny };
+      continue;
+    }
+    const dl = s.x0 > -1e4 ? p.x - s.x0 : 1e9;
+    const dr = s.x1 < 1e4 ? s.x1 - p.x : 1e9;
+    const dt = p.y - s.y0;
+    if (dt <= dl && dt <= dr) {
+      p.y = s.y0 - r; hit = { nx: 0, ny: -1 };
+      if (friction) p.px = lerp(p.px, p.x, friction);
+    } else if (dl < dr) { p.x = s.x0 - r; if (!hit) hit = { nx: -1, ny: 0 }; }
+    else { p.x = s.x1 + r; if (!hit) hit = { nx: 1, ny: 0 }; }
+  }
+  return hit;
+}
+function waterSurface(x) {
+  if (x < geo.L || x > geo.R) return Infinity;
+  const f = (x - geo.L) / (geo.R - geo.L) * (WATER_N - 1);
+  const i = clamp(Math.floor(f), 0, WATER_N - 2), t = f - i;
+  return geo.waterY + lerp(water.h[i], water.h[i + 1], t);
+}
+function poke(x, amount) {
+  if (x < geo.L || x > geo.R) return;
+  const i = clamp(Math.round((x - geo.L) / (geo.R - geo.L) * (WATER_N - 1)), 1, WATER_N - 2);
+  water.v[i] += amount; water.v[i - 1] += amount * 0.5; water.v[i + 1] += amount * 0.5;
+}
+
+// ===========================================================================
+// Joints and beams (HANDBOOK §3.1: Verlet points and distance constraints)
+// ===========================================================================
+function makeJoint(x, y, anchor) {
+  const j = { id: ++serial, x, y, px: x, py: y, rx: x, ry: y, anchor: anchor || null, w: anchor ? 0 : 1, mass: 0, loose: false, fromX: x, fromY: y, born: simTime };
+  joints.push(j);
+  return j;
+}
+function makeBeam(a, b, delay, rope, rest) {
+  if (a === b || beams.length >= MAX_BEAMS) return null;
+  if (beams.some(e => (e.a === a && e.b === b) || (e.a === b && e.b === a))) return null;
+  rest = rest || Math.hypot(b.x - a.x, b.y - a.y);
+  if (rest < 4) return null;
+  const e = { id: ++serial, a, b, rest, rope: !!rope, broken: false, strain: 0, strainS: 0, everAnchored: false, born: simTime + (delay || 0), soak: 0, flash: 0, lam: 0, fsum: 0, bendSum: 0, force: 0, bend: 0, mode: '' };
+  setStrength(e);
+  beams.push(e);
+  topoDirty = true;
+  return e;
+}
+// Lengths are measured against the gap, so the game is as hard in a small
+// window as in a big one.
+function setStrength(e) {
+  const k = geo.scale;
+  const T = TENS0 * Math.pow(L_REF * k / e.rest, LEN_EXP);
+  e.T = e.rope ? T * ROPE_X : T;
+  e.C = e.rope ? 0 : T * COMP_X;
+  e.B = e.rope ? 0 : T * DEPTH * k;
+}
+// Split a beam where a new beam joins its middle: two beams and a new joint.
+function splitBeam(e, t) {
+  t = clamp(t, 0.08, 0.92);
+  const j = makeJoint(lerp(e.a.x, e.b.x, t), lerp(e.a.y, e.b.y, t));
+  j.px = lerp(e.a.px, e.b.px, t); j.py = lerp(e.a.py, e.b.py, t);
+  j.rx = lerp(e.a.rx, e.b.rx, t); j.ry = lerp(e.a.ry, e.b.ry, t);
+  beams = beams.filter(b => b !== e);
+  const e1 = makeBeam(e.a, j, 0, e.rope, e.rest * t), e2 = makeBeam(j, e.b, 0, e.rope, e.rest * (1 - t));
+  for (const n of [e1, e2]) if (n) { n.born = e.born; n.everAnchored = e.everAnchored; }
+  for (const b of birds) if (b.e === e) takeOff(b);
+  hold(j);
+  return j;
+}
+// The beam a drag lands on, away from its ends (a joint is used there instead).
+function beamSpot(x, y) {
+  const e = nearestBeam(x, y, 12);
+  if (!e) return null;
+  const s = segDist(x, y, e.a.x, e.a.y, e.b.x, e.b.y), L = Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y);
+  if (s.t * L < 16 || (1 - s.t) * L < 16) return null;
+  return { e, t: s.t, x: lerp(e.a.x, e.b.x, s.t), y: lerp(e.a.y, e.b.y, s.t) };
+}
+function liveBeams() { return beams.filter(e => !e.broken); }
+function brokenCount() { let n = 0; for (const e of beams) if (e.broken) n++; return n; }
+
+// Masses, and which joints still hang from an anchor. Run when the bridge changes.
+function rebuildTopology() {
+  topoDirty = false;
+  for (const j of joints) { j.mass = 0; j.adj = []; }
+  for (const e of beams) {
+    if (e.broken) continue;
+    const m = e.rest * BEAM_DENS * 0.5 * (e.rope ? ROPE_DENS : 1);
+    e.a.mass += m; e.b.mass += m;
+    e.a.adj.push(e.b); e.b.adj.push(e.a);
+  }
+  for (const j of joints) j.w = j.anchor || j.held ? 0 : 1 / Math.max(0.3, j.mass);
+  for (const j of joints) j.ropeOnly = !j.anchor && beams.every(e => e.broken || (e.a !== j && e.b !== j) || e.rope);
+  const seen = new Set(), q = joints.filter(j => j.anchor);
+  q.forEach(j => seen.add(j));
+  while (q.length) { const j = q.pop(); for (const k of j.adj) if (!seen.has(k)) { seen.add(k); q.push(k); } }
+  for (const j of joints) j.loose = !seen.has(j);
+  for (const e of beams) if (!e.broken && !e.a.loose && !e.b.loose) e.everAnchored = true;
+}
+// Joints with no beam at all (broken ones count) are tidied away.
+function dropOrphans() {
+  const used = new Set();
+  for (const e of beams) { used.add(e.a); used.add(e.b); }
+  joints = joints.filter(j => j.anchor || used.has(j));
+}
+function nearestJoint(x, y, r) {
+  let best = null, bd = r;
+  for (const j of joints) {
+    if (!j.anchor && !hasLiveBeam(j)) continue;
+    const d = Math.hypot(j.x - x, j.y - y);
+    if (d < bd) { bd = d; best = j; }
+  }
+  return best;
+}
+function hasLiveBeam(j) { for (const e of beams) if (!e.broken && (e.a === j || e.b === j)) return true; return false; }
+function segDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+  const t = clamp(((px - ax) * dx + (py - ay) * dy) / L2, 0, 1);
+  return { d: Math.hypot(px - ax - dx * t, py - ay - dy * t), t };
+}
+function nearestBeam(x, y, r) {
+  let best = null, bd = r;
+  for (const e of beams) {
+    if (e.broken) continue;
+    const s = segDist(x, y, e.a.x, e.a.y, e.b.x, e.b.y);
+    if (s.d < bd) { bd = s.d; best = e; }
+  }
+  return best;
+}
+function segsCross(a, b, c, d) {
+  const o = (p, q, r) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+}
+
+// A drag from (sx,sy) or joint `from`, to (ex,ey) or joint `to` makes one
+// beam or one rope: a single length of material, joined only at its ends.
+function buildLine(from, sx, sy, to, ex, ey, delayStep, rope) {
+  if (from && from.held) hold(from);
+  if (to && to.held) hold(to);
+  const a = from || placeJoint(sx, sy);
+  const b = to || placeJoint(ex, ey);
+  const made = makeBeam(a, b, 0, rope) ? 1 : 0;
+  dropOrphans();
+  return made;
+}
+// A new free joint. One placed inside the rock is moved to its surface.
+function placeJoint(x, y) {
+  const p = { x, y, px: x, py: y };
+  pushOut(p, 0, 0);
+  const j = makeJoint(p.x, p.y);
+  hold(j);
+  return j;
+}
+// Wet glue: hold a joint still for a moment while the next beam is built from it.
+function hold(j) {
+  if (j.anchor) return;
+  j.held = true; j.holdUntil = simTime + HOLD_T; j.px = j.x; j.py = j.y;
+  topoDirty = true;
+}
+
+function removeBeam(e, quiet) {
+  beams = beams.filter(b => b !== e);
+  topoDirty = true;
+  stats.removed++;
+  if (!quiet) puff((e.a.x + e.b.x) / 2, (e.a.y + e.b.y) / 2, 10);
+}
+function removeJoint(j) {
+  const mine = beams.filter(e => e.a === j || e.b === j);
+  for (const e of mine) removeBeam(e, true);
+  puff(j.x, j.y, 16);
+  if (!j.anchor) joints = joints.filter(k => k !== j);
+  dropOrphans();
+}
+
+// ===========================================================================
+// The starting bridge: three beams a child could draw. Two deck beams meet
+// above the island, and a prop holds up the middle. The truss is only for tests.
+// ===========================================================================
+function clearBridge() { beams = []; joints = joints.filter(j => j.anchor); debris = []; topoDirty = true; for (const b of birds) if (b.e) takeOff(b, true); }
+function shapeStarter() {
+  clearBridge();
+  const X = makeJoint(geo.islandX, geo.road);
+  makeBeam(anchorJoint('AL'), X, 0);
+  makeBeam(X, anchorJoint('AR'), 0.08);
+  makeBeam(anchorJoint('M'), X, 0.16);
+}
+function shapeTruss() {
+  clearBridge();
+  const n = 6, AL = anchorJoint('AL'), AR = anchorJoint('AR'), deck = [AL], drop = geo.face * 0.75, low = [];
+  for (let i = 1; i < n; i++) deck.push(makeJoint(lerp(AL.x, AR.x, i / n), geo.road));
+  deck.push(AR);
+  for (let i = 0; i < n; i++) low.push(makeJoint((deck[i].x + deck[i + 1].x) / 2, geo.road + drop));
+  for (let i = 0; i < n; i++) makeBeam(deck[i], deck[i + 1]);
+  for (let i = 0; i < n; i++) { makeBeam(deck[i], low[i]); makeBeam(low[i], deck[i + 1]); }
+  for (let i = 0; i < n - 1; i++) makeBeam(low[i], low[i + 1]);
+  makeBeam(anchorJoint('BL'), low[0]);
+  makeBeam(low[n - 1], anchorJoint('BR'));
+}
+
+// ===========================================================================
+// The lorry: four Verlet points in a rigid box (HANDBOOK §3.8). The bottom
+// two are the wheels; only the wheels press on the bridge.
+// ===========================================================================
+function makeLorry(x, dir) {
+  const yAx = geo.road - WHEEL_R;
+  const pts = [
+    { x: x - HALF_BASE, y: yAx }, { x: x + HALF_BASE, y: yAx },
+    { x: x - HALF_BASE, y: yAx - BODY_H }, { x: x + HALF_BASE, y: yAx - BODY_H },
+  ].map(p => Object.assign(p, { px: p.x, py: p.y, ground: null }));
+  const cons = [];
+  for (let i = 0; i < 4; i++) for (let k = i + 1; k < 4; k++) cons.push([i, k, Math.hypot(pts[k].x - pts[i].x, pts[k].y - pts[i].y)]);
+  const old = lorry;
+  lorry = {
+    pts, cons, dir: dir || 1, flip: dir || 1, state: 'drive', spin: 0, squash: 0, squashV: 0,
+    stuckT: 0, stuckX: x, side: x < geo.L ? 'L' : 'R', upsideT: 0,
+    hop: null, splashT: 0, crates: old ? old.crates : [], horn: 0, eyesX: 0, eyesY: 0, puffT: 0,
+  };
+  syncCrates(true);
+}
+function lorryCentre() {
+  const p = lorry.pts;
+  return { x: (p[0].x + p[1].x + p[2].x + p[3].x) / 4, y: (p[0].y + p[1].y + p[2].y + p[3].y) / 4 };
+}
+function lorryAngle() { const p = lorry.pts; return Math.atan2(p[1].y - p[0].y, p[1].x - p[0].x); }
+function lorryMassPt() { return LOAD_MASS[load - 1]; }
+function syncCrates(instant) {
+  const want = load - 1;
+  while (lorry.crates.length < want) lorry.crates.push({ s: instant ? 1 : 0, v: 0, hue: lorry.crates.length });
+  while (lorry.crates.length > want) lorry.crates.pop();
+}
+function lorrySpeed() { return 130 - load * 6; }   // px/s: a full lorry trundles a little slower
+
+// Wheel against one beam, one-sided: it presses only from above.
+function wheelOnBeam(p, r, wp, e) {
+  const a = e.a, b = e.b;
+  const dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy);
+  if (L < 1) return;
+  let nx = dy / L, ny = -dx / L;
+  if (ny > 0) { nx = -nx; ny = -ny; }
+  if (ny > -0.35) return;                     // near-vertical beams are posts and hangers: drive past them
+  const s = segDist(p.x, p.y, a.x, a.y, b.x, b.y);
+  if (s.d >= r) return;
+  const side = (p.x - a.x) * nx + (p.y - a.y) * ny;
+  if (side < -r * 0.25) return;               // below the beam: no contact
+  // Push straight out of the beam's surface.
+  const C = r - side;
+  if (C <= 0) return;
+  const t = s.t, wa = a.w, wb = b.w;
+  const den = wp + (1 - t) * (1 - t) * wa + t * t * wb;
+  if (den <= 0) return;
+  const lam = C / den;
+  p.x += nx * lam * wp; p.y += ny * lam * wp;
+  a.x -= nx * lam * wa * (1 - t); a.y -= ny * lam * wa * (1 - t);
+  b.x -= nx * lam * wb * t; b.y -= ny * lam * wb * t;
+  e.bendSum += lam * L * t * (1 - t);          // a load in the middle of a beam bends it
+  if (!p.ground || ny < p.ground.ny) p.ground = { nx, ny };
+  e.flash = 1;
+}
+
+function stepLorry() {
+  const L = lorry;
+  if (L.state === 'splash') {
+    L.splashT += STEP;
+    const c = lorryCentre(), sy = waterSurface(c.x);
+    const bob = Math.sin(L.splashT * 7) * 3;
+    for (const p of L.pts) { const dy = (Number.isFinite(sy) ? sy - 6 + bob : p.y) - c.y; p.y += dy * 0.12; p.py = p.y; p.px = p.x; }
+    if (L.splashT > 1.1) startHop();
+    return;
+  }
+  if (L.state === 'hop') {
+    const h = L.hop;
+    h.t += STEP / h.dur;
+    if (h.t >= 1) { land(); return; }
+    return;
+  }
+  for (const p of L.pts) {
+    const vx = (p.x - p.px) * DAMP, vy = (p.y - p.py) * DAMP;
+    p.px = p.x; p.py = p.y;
+    p.x += vx; p.y += vy + G_STEP;
+    p.ground = null;
+  }
+}
+
+function lorryContacts(wp) {
+  const L = lorry;
+  for (let i = 0; i < 4; i++) {
+    const p = L.pts[i], r = i < 2 ? WHEEL_R : 5;
+    const g = pushOut(p, r, 0);
+    if (g && (!p.ground || g.ny < p.ground.ny)) p.ground = g;
+    if (i < 2) for (const e of beams) {
+      if (e.broken || e.rope) continue;   // ropes are for hanging things from: the lorry drives past them
+      // quick reject on the bounding box
+      const minx = Math.min(e.a.x, e.b.x) - r, maxx = Math.max(e.a.x, e.b.x) + r;
+      if (p.x < minx || p.x > maxx) continue;
+      const miny = Math.min(e.a.y, e.b.y) - r, maxy = Math.max(e.a.y, e.b.y) + r;
+      if (p.y < miny || p.y > maxy) continue;
+      wheelOnBeam(p, r, wp, e);
+    }
+  }
+  for (const [i, k, rest] of L.cons) {
+    const a = L.pts[i], b = L.pts[k];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const f = (d - rest) / d * 0.5;
+    a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
+  }
+}
+
+// After the solve: the motor, turning round, crossings and splashes.
+// The motor: h is the length of one (sub)step, n the number of them in a step.
+function lorryMotor(h, n) {
+  const L = lorry;
+  const target = driving ? lorrySpeed() * h * L.dir : 0;
+  const k = 1 - Math.pow(1 - 0.22, 1 / n), brake = Math.pow(0.85, 1 / n);
+  for (let i = 0; i < 2; i++) {
+    const p = L.pts[i], g = p.ground;
+    if (!g) continue;
+    const tx = -g.ny, ty = g.nx;               // along the surface, pointing right
+    const vt = (p.x - p.px) * tx + (p.y - p.py) * ty;
+    const grip = -g.ny > 0.7 ? 1 : 0;         // too steep (over about 45 degrees): the wheels slip
+    const nv = driving && grip ? vt + (target - vt) * k : vt * (grip ? brake : 1);
+    p.px -= tx * (nv - vt); p.py -= ty * (nv - vt);
+  }
+}
+function lorryLogic() {
+  const L = lorry;
+  if (L.state !== 'drive') return;
+  const grounded = !!(L.pts[0].ground || L.pts[1].ground);
+  const c = lorryCentre();
+  const ang = lorryAngle();
+  // A spin of the wheels to draw (velocities are per substep)
+  const vx = ((L.pts[0].x - L.pts[0].px) + (L.pts[1].x - L.pts[1].px)) / 2 * SUB;
+  L.spin += vx / WHEEL_R;
+  // Turn round at the far ends of the cliffs.
+  if (driving && grounded && ((L.dir > 0 && c.x > geo.startR) || (L.dir < 0 && c.x < geo.startL))) turnRound();
+  // Arriving on the far side
+  if (c.x > geo.R + 40 && L.side === 'L' && grounded && c.y < geo.road) { L.side = 'R'; arrived(c); }
+  else if (c.x < geo.L - 40 && L.side === 'R' && grounded && c.y < geo.road) { L.side = 'L'; arrived(c); }
+  // Stuck: no progress for a while, so try the other way.
+  if (driving && grounded) {
+    L.stuckT += STEP;
+    if (Math.abs(c.x - L.stuckX) > 18) { L.stuckT = 0; L.stuckX = c.x; }
+    if (L.stuckT > 1.6) { turnRound(); L.stuckT = 0; L.stuckX = c.x; }
+  } else { L.stuckT = 0; L.stuckX = c.x; }
+  // Upside down on dry land: hop back onto the wheels.
+  if (Math.cos(ang) < -0.2 && c.y < geo.waterY - 20) { L.upsideT += STEP; if (L.upsideT > 1.2) { L.upsideT = 0; startHop(); } } else L.upsideT = 0;
+  // Into the river
+  if (c.y > waterSurface(c.x) - 8) splash(c);
+  // Lost off the screen somehow: hop home.
+  if (c.y > H + 60 || c.x < -100 || c.x > W + 100) startHop();
+  // Exhaust puffs while driving
+  if (driving && grounded && (L.puffT -= STEP) <= 0) {
+    L.puffT = 0.28 + Math.random() * 0.2;
+    const back = { x: c.x - Math.cos(ang) * 44 * L.dir, y: c.y - Math.sin(ang) * 44 * L.dir + 6 };
+    spawn('smoke', back.x, back.y, -L.dir * 20 + (Math.random() - 0.5) * 10, -18 - Math.random() * 10, 0.9);
+  }
+}
+function turnRound() {
+  lorry.dir *= -1; stats.turns++;
+  lorry.horn = 0.5;
+  sfx.horn();
+}
+function arrived(c) {
+  stats.trips++;
+  for (let i = 0; i < 26; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.2, v = 160 + Math.random() * 220;
+    spawn('confetti', c.x, c.y - 30, Math.cos(a) * v, Math.sin(a) * v, 1.6 + Math.random() * 0.8);
+  }
+  spawn('ring', c.x, c.y - 20, 0, 0, 0.6);
+  sfx.cheer();
+  hint(stats.trips === 1 ? 'Made it across! Scroll to load more crates.' : 'Across again! Try a heavier load, or a new bridge.');
+}
+function splash(c) {
+  const L = lorry;
+  L.state = 'splash'; L.splashT = 0;
+  stats.splashes++;
+  const was = driving;
+  setDriving(false);
+  goAfterLanding = false;
+  poke(c.x, 26 + load * 3);
+  for (let i = 0; i < 40; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.8, v = 150 + Math.random() * 320;
+    spawn('drop', c.x + (Math.random() - 0.5) * 50, waterSurface(c.x), Math.cos(a) * v, Math.sin(a) * v, 1.2);
+  }
+  spawn('ring', c.x, geo.waterY, 0, 0, 0.8);
+  addTrauma(0.35);
+  sfx.splash();
+  hint(was ? 'SPLASH! The lorry is fine. Fix the bridge, then press Go.' : 'Splash! Fix the bridge, then press Go.');
+}
+// A cheerful hop back to the cliff it set off from.
+function startHop() {
+  const L = lorry, c = lorryCentre();
+  const homeL = L.side === 'L';
+  const ex = homeL ? geo.startL + 40 : geo.startR - 40;
+  L.state = 'hop';
+  L.hop = { t: 0, dur: 1.15, sx: c.x, sy: c.y, ex, ey: geo.road - WHEEL_R - BODY_H / 2, a0: lorryAngle(), dir: homeL ? 1 : -1 };
+  L.dir = homeL ? 1 : -1;
+  sfx.boing();
+}
+function land() {
+  const h = lorry.hop, dir = h.dir;
+  makeLorry(h.ex, dir);
+  lorry.side = h.ex < W / 2 ? 'L' : 'R';
+  lorry.squashV = -9;
+  puff(h.ex, geo.road, 14);
+  for (let i = 0; i < 12; i++) spawn('star', h.ex + (Math.random() - 0.5) * 60, geo.road - 30, (Math.random() - 0.5) * 200, -100 - Math.random() * 150, 0.9);
+  sfx.land();
+  if (goAfterLanding) { goAfterLanding = false; setDriving(true); }
+  else if (!driving) ui.go.classList.add('wait');
+}
+function hopPose() {
+  const h = lorry.hop, t = h.t;
+  const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+  const peak = Math.min(h.sy, h.ey) - H * 0.28;
+  const x = lerp(h.sx, h.ex, e);
+  const y = (1 - t) * (1 - t) * h.sy + 2 * (1 - t) * t * (2 * peak - (h.sy + h.ey) / 2) + t * t * h.ey;
+  const turns = reducedMotion ? 0 : TAU * h.dir;
+  return { x, y, a: lerp(h.a0, 0, e) + turns * e };
+}
+function setDriving(on) {
+  driving = on;
+  ui.go.innerHTML = on ? '&#x270B; Stop' : '&#x1F69A; Go!';
+  ui.go.classList.toggle('stop', on);
+  if (on) ui.go.classList.remove('wait');
+}
+function pressGo() {
+  ensureAudio();
+  if (lorry.state === 'splash' || lorry.state === 'hop') { goAfterLanding = true; hint('Coming back, then off it goes.'); return; }
+  setDriving(!driving);
+  if (driving) { sfx.engine(); hint(liveBeams().length ? 'Off it goes! Watch the beams change colour as they strain.' : 'No bridge yet! Drag across the gap to build one.'); }
+}
+
+// ===========================================================================
+// Physics step
+// ===========================================================================
+function update() {
+  simTime += STEP;
+  if (topoDirty) rebuildTopology();
+  stepWater();
+  stepParticles();
+  stepDebris();
+  stepBirds();
+  for (const j of joints) if (j.held && simTime > j.holdUntil) { j.held = false; topoDirty = true; }
+  if (hitStop > 0) { hitStop -= STEP; return; }
+
+  // Joints spring back to their drawn places after Fix.
+  if (fixAnim > 0) {
+    fixAnim = Math.max(0, fixAnim - STEP / 0.65);
+    const e = easeOutBack(1 - fixAnim);
+    for (const j of joints) { if (j.anchor) continue; j.x = j.px = lerp(j.fromX, j.rx, e); j.y = j.py = lerp(j.fromY, j.ry, e); }
+    stepLorry();
+    if (lorry.state === 'drive') { for (let it = 0; it < 8; it++) lorryContactsTerrainOnly(); lorryMotor(STEP, 1); lorryLogic(); }
+    return;
+  }
+
+  const lorryOn = lorry.state === 'drive';
+  if (!lorryOn) stepLorry();
+  const wp = 1 / lorryMassPt();
+  for (const j of joints) j.sy = waterSurface(j.x);
+  for (const e of beams) { e.fsum = 0; e.bendSum = 0; }
+
+  // XPBD (Macklin et al.): each beam keeps a Lagrange multiplier, so the
+  // force it carries is known, not guessed from how far it has stretched.
+  for (let sub = 0; sub < SUB; sub++) {
+    for (const j of joints) {
+      if (j.anchor || j.held) continue;
+      const vx = (j.x - j.px) * DAMP_SUB, vy = (j.y - j.py) * DAMP_SUB;
+      j.px = j.x; j.py = j.y;
+      j.x += vx; j.y += vy + G_SUB * (1 + (j.extra || 0) / Math.max(0.3, j.mass));
+      // Floating: loose joints and broken bits bob in the river.
+      if (j.y > j.sy) {
+        const depth = j.y - j.sy;
+        j.y -= G_SUB * (1 + (j.extra || 0) / Math.max(0.3, j.mass)) + Math.min(depth, 6) * 0.01;
+        j.py = lerp(j.py, j.y, 0.02); j.px = lerp(j.px, j.x, 0.01);
+      }
+    }
+    if (lorryOn) {
+      for (const p of lorry.pts) {
+        const vx = (p.x - p.px) * DAMP_SUB, vy = (p.y - p.py) * DAMP_SUB;
+        p.px = p.x; p.py = p.y;
+        p.x += vx; p.y += vy + G_SUB;
+        p.ground = null;
+      }
+    }
+    for (const e of beams) e.lam = 0;
+    for (let it = 0; it < ITER; it++) {
+      for (const e of beams) {
+        if (e.broken) continue;
+        const a = e.a, b = e.b, ws2 = a.w + b.w;
+        if (ws2 === 0) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1e-6;
+        const C = d - e.rest;
+        if (e.rope && C < 0) { e.lam = 0; continue; }   // a rope goes slack: it cannot push
+        const at = (e.rope ? ROPE_COMPLIANCE : COMPLIANCE) * e.rest / (H_SUB * H_SUB);
+        let dl = (-C - at * e.lam) / (ws2 + at);
+        if (e.rope && e.lam + dl > 0) dl = -e.lam;      // and never pulls inwards
+        e.lam += dl;
+        const nx = dx / d, ny = dy / d;
+        a.x -= nx * dl * a.w; a.y -= ny * dl * a.w;
+        b.x += nx * dl * b.w; b.y += ny * dl * b.w;
+      }
+      if (lorryOn) lorryContacts(wp);
+    }
+    for (const j of joints) if (!j.anchor && !j.held) pushOut(j, 3, 0.15);
+    for (const e of beams) if (!e.broken) e.fsum += -e.lam / (H_SUB * H_SUB);   // + tension, - compression
+    if (lorryOn) lorryMotor(H_SUB, SUB);
+  }
+
+  // Force, smoothed so one bump does not snap a beam.
+  maxStrain = 0;
+  let snapped = null;
+  for (const e of beams) {
+    if (e.broken) continue;
+    e.force = e.fsum / SUB;
+    e.bend = e.bendSum / (SUB * H_SUB * H_SUB);
+    // How hard each beam is working, as a fraction of its own limits.
+    const uPull = e.force > 0 ? e.force / e.T : 0;
+    const uPush = e.force < 0 && !e.rope ? -e.force / e.C : 0;
+    const uBend = e.rope ? 0 : e.bend / e.B;
+    e.mode = uBend > uPull + uPush ? 'bend' : e.force > 0 ? 'pull' : e.force < 0 ? 'push' : '';
+    e.uPull = uPull; e.uPush = uPush; e.uBend = uBend;
+    e.strainS += (uPull + uPush + uBend - e.strainS) * 0.3;
+    e.flash *= 0.9;
+    if (!e.a.loose || !e.b.loose) maxStrain = Math.max(maxStrain, e.strainS);
+    if (e.strainS > 1 && simTime > e.born + 0.4 && (!snapped || e.strainS > snapped.strainS)) snapped = e;
+  }
+  if (snapped && !noSnap) snapBeam(snapped);
+
+  for (const j of joints) {
+    if (j.anchor) continue;
+    if (j.y > j.sy && j.y - j.py > 2) poke(j.x, (j.y - j.py) * 3);
+    j.x = clamp(j.x, 4, W - 4);
+  }
+  // Beams drawn in mid-air that were never joined to an anchor sink away after a while.
+  let gone = false;
+  for (const e of beams) {
+    if (e.everAnchored || e.broken) continue;
+    if (e.a.y > waterSurface(e.a.x) - 12 || e.b.y > waterSurface(e.b.x) - 12) {   // in the river (the other end may rest on the rock)
+      e.soak += STEP;
+      if (e.soak > 4) { e.dead = true; gone = true; for (let i = 0; i < 6; i++) spawn('bubble', lerp(e.a.x, e.b.x, Math.random()), geo.waterY, 0, -30, 1.2); }
+    }
+  }
+  if (gone) { beams = beams.filter(e => !e.dead); topoDirty = true; dropOrphans(); }
+
+  lorryLogic();
+}
+function lorryContactsTerrainOnly() {
+  for (let i = 0; i < 4; i++) { const p = lorry.pts[i]; const g = pushOut(p, i < 2 ? WHEEL_R : 5, 0); if (g) p.ground = g; }
+  for (const [i, k, rest] of lorry.cons) {
+    const a = lorry.pts[i], b = lorry.pts[k];
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const f = (d - rest) / d * 0.5;
+    a.x += dx * f; a.y += dy * f; b.x -= dx * f; b.y -= dy * f;
+  }
+}
+
+// ===========================================================================
+// Birds: ambient life. They wander the sky, land on a beam, a post or the
+// grass for a while, and fly on. They weigh nothing, and they fly away from
+// the mouse, so they never get in the way of building.
+// ===========================================================================
+function makeBirds() {
+  birds = Array.from({ length: N_BIRDS }, (_, i) => ({
+    x: W * (0.35 + 0.08 * i), y: H * (0.12 + 0.05 * (i % 3)), vx: 0, vy: 0, i,
+    state: 'fly', e: null, t: 0, spot: null, timer: 2 + Math.random() * 6,
+    tx: W * Math.random(), ty: H * 0.2, flap: Math.random() * TAU, face: 1, bob: Math.random() * TAU, hue: i % 3,
+  }));
+}
+function perchPoint(b) {
+  if (b.spot) return b.spot;
+  const e = b.e, x = lerp(e.a.x, e.b.x, b.t), y = lerp(e.a.y, e.b.y, b.t);
+  return { x, y: y - (e.rope ? 7 : 10) };
+}
+function takeOff(b, quiet) {
+  if (b.state === 'fly') return;
+  b.state = 'fly'; b.e = null; b.spot = null; b.timer = 4 + Math.random() * 6;
+  b.vy = -160 - Math.random() * 80; b.vx = (Math.random() - 0.5) * 160;
+  b.tx = W * (0.1 + 0.8 * Math.random()); b.ty = H * (0.08 + 0.25 * Math.random());
+  if (!quiet) { for (let k = 0; k < 2; k++) spawn('feather', b.x, b.y, (Math.random() - 0.5) * 60, -20, 1.2); }
+}
+// Somewhere to sit: a beam, the top of a post, the island, or the grass.
+function pickPerch(b) {
+  const live = beams.filter(e => !e.broken && simTime > e.born + 0.5);
+  for (let tries = 0; tries < 6; tries++) {
+    let cand;
+    const r = Math.random();
+    if (r < 0.45 && live.length) { const e = live[(Math.random() * live.length) | 0]; cand = { e, t: 0.15 + 0.7 * Math.random(), spot: null }; }
+    else if (r < 0.6) { const a = anchorJoint(Math.random() < 0.5 ? 'PL' : 'PR'); cand = { spot: { x: a.x, y: a.y - 12 } }; }
+    else if (r < 0.7) cand = { spot: { x: geo.islandX + (Math.random() - 0.5) * geo.islandW, y: geo.islandTop - 9 } };
+    else { const left = Math.random() < 0.5, x = left ? 20 + Math.random() * (geo.L - 40) : geo.R + 20 + Math.random() * (W - geo.R - 40); cand = { spot: { x, y: geo.road - 13 } }; }
+    const p = cand.spot || { x: lerp(cand.e.a.x, cand.e.b.x, cand.t), y: lerp(cand.e.a.y, cand.e.b.y, cand.t) };
+    const lc = lorry && lorry.state === 'drive' ? lorryCentre() : null;
+    if (pointer.inside && Math.hypot(p.x - pointer.x, p.y - pointer.y) < SHY_R * 1.6) continue;
+    if (lc && Math.hypot(p.x - lc.x, p.y - lc.y) < 120) continue;
+    if (birds.some(o => o !== b && o.state !== 'fly' && Math.hypot(perchPoint(o).x - p.x, perchPoint(o).y - p.y) < 18)) continue;
+    return cand;
+  }
+  return null;
+}
+function stepBirds() {
+  if (!birds.length) return;
+  const lc = lorry && lorry.state === 'drive' ? lorryCentre() : null;
+  for (const b of birds) {
+    b.flap += STEP * (b.state === 'perch' ? 0 : 18);
+    b.bob += STEP * 3;
+    b.timer -= STEP;
+    const nearMouse = pointer.inside && Math.hypot(pointer.x - b.x, pointer.y - b.y) < SHY_R;
+    if (b.state !== 'fly') {
+      if (b.e && (b.e.broken || !beams.includes(b.e))) { takeOff(b); continue; }
+      const p = perchPoint(b);
+      if (nearMouse || (lc && Math.hypot(lc.x - p.x, lc.y - p.y) < 75) || (b.state === 'perch' && b.timer <= 0)) {
+        takeOff(b); if (nearMouse) sfx.flutter(); continue;
+      }
+      if (b.state === 'landing') {
+        const dx = p.x - b.x, dy = p.y - b.y, d = Math.hypot(dx, dy);
+        const sp = Math.min(d, 300 * STEP);
+        b.x += dx / (d || 1) * sp; b.y += dy / (d || 1) * sp; b.face = dx >= 0 ? 1 : -1;
+        if (d < 2) { b.state = 'perch'; b.timer = 3 + Math.random() * 6; sfx.chirp(b.i); }
+      } else { b.x = p.x; b.y = p.y; if (Math.random() < 0.004) b.face = -b.face; }
+      continue;
+    }
+    // Flying: drift between waypoints in the sky, and away from the mouse.
+    if (Math.hypot(b.tx - b.x, b.ty - b.y) < 40) { b.tx = W * (0.05 + 0.9 * Math.random()); b.ty = H * (0.06 + 0.3 * Math.random()); }
+    b.vx += (b.tx - b.x) * 1.2 * STEP; b.vy += (b.ty - b.y) * 1.2 * STEP;
+    if (pointer.inside) {
+      const dx = b.x - pointer.x, dy = b.y - pointer.y, d = Math.hypot(dx, dy);
+      if (d < SHY_R * 1.5) { const f = (1 - d / (SHY_R * 1.5)) * 2200 * STEP; b.vx += dx / (d || 1) * f; b.vy += dy / (d || 1) * f; }
+    }
+    b.vx *= Math.exp(-1.2 * STEP); b.vy *= Math.exp(-1.2 * STEP);
+    const v = Math.hypot(b.vx, b.vy); if (v > 320) { b.vx *= 320 / v; b.vy *= 320 / v; }
+    b.vy += Math.sin(simTime * 2 + b.i) * 6 * STEP;
+    b.x += b.vx * STEP; b.y += b.vy * STEP;
+    b.x = clamp(b.x, -30, W + 30);
+    if (b.y > geo.waterY - 14) { b.y = geo.waterY - 14; b.vy = Math.min(b.vy, 0); }   // birds skim the river, never dive in
+    if (Math.abs(b.vx) > 20) b.face = b.vx > 0 ? 1 : -1;
+    if (b.timer <= 0) {
+      const c = pickPerch(b);
+      if (c) { b.state = 'landing'; b.e = c.e || null; b.t = c.t || 0; b.spot = c.spot || null; }
+      else b.timer = 1 + Math.random() * 2;
+    }
+  }
+}
+function perchedCount() { let n = 0; for (const b of birds) if (b.state === 'perch') n++; return n; }
+function drawBirds() {
+  for (const b of birds) {
+    ctx.save(); ctx.translate(b.x, b.y); ctx.scale(b.face, 1);
+    const sitting = b.state === 'perch';
+    if (sitting) ctx.translate(0, Math.sin(b.bob) * 0.6);
+    const body = ['#f4f1ea', '#e9e4da', '#f8f6f0'][b.hue], wing = ['#9aa3b5', '#b5a58f', '#8f9db0'][b.hue];
+    ctx.fillStyle = 'rgba(30,34,56,0.9)';
+    ctx.beginPath(); ctx.ellipse(0, 0, 8.6, 6.4, 0, 0, TAU); ctx.fill();
+    ctx.fillStyle = body; ctx.beginPath(); ctx.ellipse(0, 0, 7.4, 5.2, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(6, -4, 4.4, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ff9a3d'; ctx.beginPath(); ctx.moveTo(9.6, -4.6); ctx.lineTo(13.5, -3.4); ctx.lineTo(9.6, -2.4); ctx.fill();
+    ctx.fillStyle = '#2b2f45'; ctx.beginPath(); ctx.arc(7.4, -5, 1.1, 0, TAU); ctx.fill();
+    ctx.fillStyle = wing;
+    if (sitting) { ctx.beginPath(); ctx.ellipse(-2, 0, 5, 3, -0.2, 0, TAU); ctx.fill(); ctx.strokeStyle = '#ff9a3d'; ctx.lineWidth = 1.4; ctx.beginPath(); ctx.moveTo(-1, 5); ctx.lineTo(-1, 9); ctx.moveTo(2, 5); ctx.lineTo(2, 9); ctx.stroke(); }
+    else {
+      const w = Math.sin(b.flap) * 9;
+      ctx.beginPath(); ctx.moveTo(-4, -1); ctx.quadraticCurveTo(-2, -6 - w, 5, -1 - w * 0.6); ctx.lineTo(2, 1); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function snapBeam(e) {
+  e.broken = true;
+  topoDirty = true;
+  stats.snaps++;
+  const mx = (e.a.x + e.b.x) / 2, my = (e.a.y + e.b.y) / 2;
+  // Two broken halves tumble away as debris.
+  const va = { x: e.a.x - e.a.px, y: e.a.y - e.a.py }, vb = { x: e.b.x - e.b.px, y: e.b.y - e.b.py };
+  addDebris(e.a.x, e.a.y, mx, my, va, e);
+  addDebris(mx, my, e.b.x, e.b.y, vb, e);
+  for (let i = 0; i < 18; i++) {
+    const a = Math.random() * TAU, v = 80 + Math.random() * 260;
+    spawn('chip', mx, my, Math.cos(a) * v, Math.sin(a) * v - 80, 1 + Math.random() * 0.6);
+  }
+  for (let i = 0; i < 6; i++) spawn('dust', mx, my, (Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80, 0.8);
+  spawn('flashring', mx, my, 0, 0, 0.35);
+  hitStop = 0.06;
+  addTrauma(0.45);
+  sfx.crunch();
+  hint(stats.snaps === 1 ? 'Snap! Red beams are working hardest. Add triangles to share the load.' : 'Crunch! Press Fix to put it back, or build it stronger.');
+}
+function addDebris(ax, ay, bx, by, v, e) {
+  if (debris.length >= MAX_DEBRIS) debris.shift();
+  const kick = () => (Math.random() - 0.5) * 3;
+  debris.push({ ax, ay, apx: ax - v.x - kick(), apy: ay - v.y + 1, bx, by, bpx: bx - v.x - kick(), bpy: by - v.y + 1, len: Math.hypot(bx - ax, by - ay), life: 6, max: 6, beam: e });
+}
+function stepDebris() {
+  for (const d of debris) {
+    d.life -= STEP;
+    for (const k of ['a', 'b']) {
+      const x = d[k + 'x'], y = d[k + 'y'];
+      const vx = (x - d[k + 'px']) * 0.99, vy = (y - d[k + 'py']) * 0.99;
+      d[k + 'px'] = x; d[k + 'py'] = y;
+      d[k + 'x'] = x + vx; d[k + 'y'] = y + vy + G_STEP;
+      const p = { x: d[k + 'x'], y: d[k + 'y'], px: d[k + 'px'], py: d[k + 'py'] };
+      pushOut(p, 3, 0.5);
+      const sy = waterSurface(p.x);
+      if (p.y > sy) {
+        if (vy > 3) { poke(p.x, vy); spawn('drop', p.x, sy, (Math.random() - 0.5) * 80, -120 - Math.random() * 100, 0.7); }
+        p.y -= Math.min(p.y - sy, 6) * 0.1 + G_STEP; p.py = lerp(p.py, p.y, 0.15); p.px = lerp(p.px, p.x, 0.05);
+      }
+      d[k + 'x'] = p.x; d[k + 'y'] = p.y; d[k + 'px'] = p.px; d[k + 'py'] = p.py;
+    }
+    const dx = d.bx - d.ax, dy = d.by - d.ay, L = Math.hypot(dx, dy) || 1, f = (L - d.len) / L * 0.5;
+    d.ax += dx * f; d.ay += dy * f; d.bx -= dx * f; d.by -= dy * f;
+  }
+  debris = debris.filter(d => d.life > 0 && !(d.beam && !d.beam.broken));
+}
+function fixBridge() {
+  ensureAudio();
+  const n = brokenCount();
+  for (const e of beams) e.broken = false;
+  debris = [];
+  // Rest lengths become the drawn lengths, so the fixed bridge starts unstrained.
+  for (const j of joints) { j.fromX = j.x; j.fromY = j.y; }
+  for (const e of beams) { e.rest = Math.max(4, Math.hypot(e.b.rx - e.a.rx, e.b.ry - e.a.ry)); setStrength(e); e.strainS = 0; e.born = simTime; }
+  fixAnim = 1;
+  for (const j of joints) j.held = false;
+  topoDirty = true;
+  stats.fixes++;
+  for (const e of beams) if (Math.random() < 0.5) spawn('star', lerp(e.a.rx, e.b.rx, Math.random()), lerp(e.a.ry, e.b.ry, Math.random()), (Math.random() - 0.5) * 40, -40 - Math.random() * 40, 0.9);
+  sfx.fix();
+  hint(n ? 'Good as new! Make it stronger before the next trip?' : 'All straightened out.');
+}
+
+// ===========================================================================
+// Water (HANDBOOK §3.10: a 1D heightfield with a pull back to level)
+// ===========================================================================
+function stepWater() {
+  const h = water.h, v = water.v;
+  for (let i = 1; i < WATER_N - 1; i++) v[i] += ((h[i - 1] + h[i + 1]) * 0.5 - h[i]) * 0.3;
+  for (let i = 0; i < WATER_N; i++) { v[i] -= h[i] * 0.02; v[i] *= 0.985; h[i] = clamp(h[i] + v[i] * 0.25, -40, 40); }
+  h[0] = h[1]; h[WATER_N - 1] = h[WATER_N - 2];
+  // ambient lapping
+  if (Math.random() < 0.05) poke(lerp(geo.L, geo.R, Math.random()), (Math.random() - 0.5) * 3);
+}
+
+// ===========================================================================
+// Particles (pool, HANDBOOK §5, §6)
+// ===========================================================================
+const CONFETTI = ['#ff6b5a', '#ffd25e', '#5fd0b8', '#7aa8ff', '#ff9ad5', '#ffffff'];
+function spawn(kind, x, y, vx, vy, life) {
+  if (parts.length >= MAX_PARTS) parts.shift();
+  parts.push({ kind, x, y, vx, vy, life, max: life, a: Math.random() * TAU, va: (Math.random() - 0.5) * 14, c: CONFETTI[(Math.random() * CONFETTI.length) | 0], s: 0.6 + Math.random() * 0.8 });
+}
+function puff(x, y, n) { for (let i = 0; i < n; i++) { const a = Math.random() * TAU, v = 30 + Math.random() * 90; spawn('dust', x, y, Math.cos(a) * v, Math.sin(a) * v, 0.6 + Math.random() * 0.4); } }
+function stepParticles() {
+  for (const p of parts) {
+    p.life -= STEP;
+    p.x += p.vx * STEP; p.y += p.vy * STEP; p.a += p.va * STEP;
+    if (p.kind === 'chip' || p.kind === 'drop' || p.kind === 'confetti') {
+      p.vy += GRAV * (p.kind === 'confetti' ? 0.25 : 0.8) * STEP;
+      if (p.kind === 'confetti') { p.vx *= 0.97; p.vy = Math.min(p.vy, 90); }
+      if (p.kind === 'drop' && p.vy > 0 && p.y > waterSurface(p.x)) p.life = 0;
+    } else if (p.kind === 'smoke') { p.vx *= 0.97; p.vy *= 0.98; }
+    else if (p.kind === 'dust') { p.vx *= 0.92; p.vy *= 0.92; }
+    else if (p.kind === 'star') { p.vy += 120 * STEP; p.vx *= 0.97; }
+    else if (p.kind === 'feather') { p.vx *= 0.96; p.vy = Math.min(p.vy + 40 * STEP, 30); p.x += Math.sin(p.a * 2) * 0.6; }
+  }
+  parts = parts.filter(p => p.life > 0);
+}
+function addTrauma(t) { if (!reducedMotion) trauma = Math.min(1, trauma + t); }
+
+// ===========================================================================
+// Sound (off by default, HANDBOOK §7). Web Audio synthesis only.
+// ===========================================================================
+function ensureAudio() {
+  if (audio || !soundOn) return;
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+  if (audio) {
+    master = audio.createDynamicsCompressor();
+    master.threshold.value = -16; master.ratio.value = 6;
+    master.connect(audio.destination);
+  }
+}
+function noteFreq(i) { return 262 * 2 ** ((12 * Math.floor(i / 5) + PENTA[((i % 5) + 5) % 5]) / 12); }
+function tone(freq, dur, type, vol, slide, when) {
+  if (!soundOn || !audio) return;
+  const t = audio.currentTime + (when || 0), o = audio.createOscillator(), g = audio.createGain();
+  o.type = type || 'sine'; o.frequency.setValueAtTime(freq, t);
+  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, freq * slide), t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol || 0.05, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t + dur + 0.03);
+}
+function noise(dur, freq, vol, type, sweep) {
+  if (!soundOn || !audio) return;
+  const len = Math.floor(audio.sampleRate * dur), buf = audio.createBuffer(1, len, audio.sampleRate), d = buf.getChannelData(0);
+  for (let k = 0; k < len; k++) d[k] = (Math.random() * 2 - 1) * (1 - k / len) ** 2;
+  const src = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+  f.type = type || 'lowpass'; f.frequency.value = freq;
+  if (sweep) f.frequency.exponentialRampToValueAtTime(freq * sweep, audio.currentTime + dur);
+  g.gain.value = vol;
+  src.buffer = buf; src.connect(f); f.connect(g); g.connect(master); src.start();
+}
+let lastKnock = 0, lastFlutter = -1;
+const sfx = {
+  knock(i) { if (simTime - lastKnock < 0.04) return; lastKnock = simTime; tone(noteFreq(i % 10), 0.12, 'triangle', 0.07); noise(0.05, 1800, 0.12, 'bandpass'); },
+  crunch() { noise(0.35, 2400, 0.5, 'lowpass', 0.15); tone(120, 0.25, 'square', 0.05, 0.4); },
+  splash() { noise(0.9, 1600, 0.45, 'lowpass', 0.2); tone(300, 0.3, 'sine', 0.05, 0.5); },
+  boing() { tone(180, 0.5, 'sine', 0.09, 3.2); },
+  land() { tone(110, 0.12, 'sine', 0.1, 0.6); [0, 2, 4].forEach((n, i) => tone(noteFreq(n + 5), 0.18, 'triangle', 0.05, 1, 0.05 + i * 0.07)); },
+  horn() { tone(392, 0.11, 'square', 0.035); tone(392, 0.16, 'square', 0.035, 1, 0.15); },
+  cheer() { [0, 2, 4, 7, 9].forEach((n, i) => tone(noteFreq(n + 5), 0.22, 'triangle', 0.05, 1, i * 0.07)); },
+  fix() { [0, 1, 2, 3, 4, 5].forEach(i => tone(noteFreq(i + 6), 0.25, 'sine', 0.045, 1, i * 0.05)); },
+  rub() { noise(0.12, 900, 0.18, 'bandpass'); },
+  tick(up) { tone(up ? 700 : 480, 0.04, 'sine', 0.04); },
+  engine() { tone(70, 0.4, 'sawtooth', 0.04, 1.6); },
+  chirp(i) { tone(1900 + (i % 3) * 220, 0.06, 'sine', 0.03, 1.4); tone(2300 + (i % 3) * 220, 0.07, 'sine', 0.025, 1.3, 0.08); },
+  flutter() { if (simTime - lastFlutter < 0.25) return; lastFlutter = simTime; noise(0.25, 2600, 0.1, 'bandpass'); },
+};
+function toggleMode() {
+  ensureAudio();
+  buildRope = !buildRope;
+  ui.mode.innerHTML = buildRope ? '&#x1FAA2; Ropes' : '&#x1FAB5; Beams';
+  ui.mode.classList.toggle('rope', buildRope);
+  ui.modeVal.textContent = buildRope ? 'ropes' : 'beams';
+  sfx.tick(buildRope);
+  hint(buildRope ? 'Ropes only pull, and the lorry drives past them. Hang the deck from the tall posts.' : 'Beams push and pull. The lorry drives on them.');
+}
+function toggleSound() {
+  soundOn = !soundOn;
+  ui.sound.innerHTML = soundOn ? '&#x1F50A; Sound on' : '&#x1F507; Sound off';
+  if (soundOn) { ensureAudio(); if (audio && audio.state === 'suspended') audio.resume(); sfx.horn(); }
+}
+
+// ===========================================================================
+// Drawing
+// ===========================================================================
+const SKY = ['#7cc6ee', '#bfe6f7', '#fbe9cf'];
+function drawBackground() {
+  const c = bctx;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, SKY[0]); g.addColorStop(0.55, SKY[1]); g.addColorStop(1, SKY[2]);
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  // Sun
+  const sx = W * 0.82, sy = H * 0.16, sg = c.createRadialGradient(sx, sy, 0, sx, sy, H * 0.22);
+  sg.addColorStop(0, 'rgba(255,248,215,1)'); sg.addColorStop(0.18, 'rgba(255,236,170,0.95)'); sg.addColorStop(0.2, 'rgba(255,236,170,0.45)'); sg.addColorStop(1, 'rgba(255,236,170,0)');
+  c.fillStyle = sg; c.beginPath(); c.arc(sx, sy, H * 0.22, 0, TAU); c.fill();
+  // Far hills, two layers
+  const hill = (base, amp, f, ph, col) => {
+    c.fillStyle = col; c.beginPath(); c.moveTo(0, H);
+    for (let x = 0; x <= W; x += 8) c.lineTo(x, base - amp * (0.6 * Math.sin(x * f + ph) + 0.4 * Math.sin(x * f * 2.3 + ph * 1.7)));
+    c.lineTo(W, H); c.fill();
+  };
+  hill(geo.road - H * 0.04, H * 0.06, 0.006, 1.2, '#a9d7b6');
+  hill(geo.road + H * 0.06, H * 0.05, 0.009, 4.1, '#86c49a');
+  // Gorge back wall, darker, behind the river
+  c.fillStyle = '#7a5a46';
+  c.beginPath(); c.moveTo(geo.L, geo.road + 10);
+  for (let x = geo.L; x <= geo.R; x += 10) c.lineTo(x, geo.road + H * 0.10 + Math.sin(x * 0.03) * 8 + Math.sin(x * 0.011) * 14);
+  c.lineTo(geo.R, H); c.lineTo(geo.L, H); c.fill();
+  c.fillStyle = 'rgba(40,30,60,0.18)'; c.fillRect(geo.L, geo.road, geo.R - geo.L, H);
+  {
+    let sd = 11;
+    const rn = () => { sd = (sd * 9301 + 49297) % 233280; return sd / 233280; };
+    // rock blotches and ledges with ferns
+    for (let i = 0; i < 26; i++) {
+      const x = geo.L + rn() * (geo.R - geo.L), y = geo.road + H * 0.12 + rn() * (geo.waterY - geo.road - H * 0.12);
+      c.fillStyle = rn() < 0.5 ? 'rgba(60,40,30,0.25)' : 'rgba(150,110,80,0.18)';
+      c.beginPath(); c.ellipse(x, y, 14 + rn() * 26, 5 + rn() * 9, 0, 0, TAU); c.fill();
+    }
+    for (let i = 0; i < 7; i++) {
+      const x = geo.L + 30 + rn() * (geo.R - geo.L - 60), y = geo.road + H * 0.16 + rn() * (geo.waterY - geo.road - H * 0.24), w = 30 + rn() * 40;
+      c.fillStyle = 'rgba(70,45,30,0.5)'; c.fillRect(x - w / 2, y + 3, w, 4);
+      c.fillStyle = 'rgba(190,150,110,0.35)'; c.fillRect(x - w / 2, y, w, 3);
+      c.strokeStyle = '#5fae4a'; c.lineWidth = 2;
+      for (let k = 0; k < 4; k++) { const fx0 = x - w / 3 + k * w / 5; c.beginPath(); c.moveTo(fx0, y); c.quadraticCurveTo(fx0 + (rn() - 0.5) * 14, y - 10, fx0 + (rn() - 0.5) * 18, y - 14 - rn() * 6); c.stroke(); }
+    }
+    // vines hanging from both cliff tops into the gorge
+    for (const [x0, side] of [[geo.L + 6, 1], [geo.R - 6, -1]]) {
+      for (let v = 0; v < 3; v++) {
+        const x = x0 + side * (8 + v * 16), len = H * (0.10 + rn() * 0.12);
+        c.strokeStyle = '#4f9a3c'; c.lineWidth = 2.5; c.beginPath(); c.moveTo(x, geo.road + 6);
+        for (let y = 0; y <= len; y += 8) c.lineTo(x + Math.sin(y * 0.08 + v) * 4, geo.road + 6 + y);
+        c.stroke();
+        c.fillStyle = '#6cbf4b';
+        for (let y = 10; y < len; y += 14) { const lx = x + Math.sin(y * 0.08 + v) * 4; c.beginPath(); c.ellipse(lx + (y % 28 ? 4 : -4), geo.road + 6 + y, 4.5, 2.5, y % 28 ? 0.5 : -0.5, 0, TAU); c.fill(); }
+      }
+    }
+    // the rock lip the waterfall pours from
+    const fx0 = geo.fallX, top = geo.road + H * 0.10 + Math.sin(fx0 * 0.03) * 8 + Math.sin(fx0 * 0.011) * 14;
+    c.fillStyle = '#5c4334'; c.fillRect(fx0 - 22, top - 4, 44, 8);
+  }
+  // Cliffs
+  const cliff = (x0, x1, edge) => {
+    const rg = c.createLinearGradient(0, geo.road, 0, H);
+    rg.addColorStop(0, '#c48a5a'); rg.addColorStop(1, '#8e5b3a');
+    c.fillStyle = rg; c.fillRect(x0, geo.road, x1 - x0, H - geo.road);
+    // strata
+    c.strokeStyle = 'rgba(90,50,30,0.25)'; c.lineWidth = 3;
+    for (let k = 1; k < 7; k++) {
+      const y = geo.road + k * (H - geo.road) / 7;
+      c.beginPath(); c.moveTo(x0, y);
+      for (let x = x0; x <= x1; x += 12) c.lineTo(x, y + Math.sin(x * 0.05 + k) * 3);
+      c.stroke();
+    }
+    // a shadow on the face side
+    const fg = c.createLinearGradient(edge, 0, edge + (edge === x1 ? -40 : 40), 0);
+    fg.addColorStop(0, 'rgba(60,30,20,0.35)'); fg.addColorStop(1, 'rgba(60,30,20,0)');
+    c.fillStyle = fg; c.fillRect(Math.min(edge, edge + (edge === x1 ? -40 : 40)), geo.road, 40, H);
+    // grass
+    c.fillStyle = '#6cbf4b'; c.fillRect(x0, geo.road - 4, x1 - x0, 12);
+    c.fillStyle = '#58a83c'; c.fillRect(x0, geo.road + 6, x1 - x0, 4);
+    // a road on top
+    c.fillStyle = '#6b6f80'; c.fillRect(x0, geo.road - 3, x1 - x0, 5);
+    c.fillStyle = 'rgba(255,255,255,0.7)';
+    for (let x = x0 + 10; x < x1 - 10; x += 34) c.fillRect(x, geo.road - 1.5, 16, 2);
+  };
+  cliff(0, geo.L, geo.L);
+  cliff(geo.R, W, geo.R);
+  // Island rock
+  const ix = geo.islandX, iw = geo.islandW, it = geo.islandTop;
+  const ig = c.createLinearGradient(0, it, 0, H);
+  ig.addColorStop(0, '#9a8f86'); ig.addColorStop(1, '#5f5751');
+  c.fillStyle = ig;
+  c.beginPath(); c.moveTo(ix - iw - 14, H); c.lineTo(ix - iw, it + 12); c.quadraticCurveTo(ix - iw, it, ix - iw + 10, it);
+  c.lineTo(ix + iw - 10, it); c.quadraticCurveTo(ix + iw, it, ix + iw, it + 12); c.lineTo(ix + iw + 14, H); c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.18)'; c.fillRect(ix - iw + 6, it + 2, iw * 0.8, 3);
+  c.fillStyle = '#6cbf4b'; c.beginPath(); c.ellipse(ix - iw * 0.4, it + 1, iw * 0.45, 4, 0, 0, TAU); c.fill();
+  // Posts for rope bridges
+  for (const px of [geo.postL, geo.postR]) {
+    c.fillStyle = '#7b4f2e'; c.fillRect(px - 6, geo.postTop, 12, geo.road - geo.postTop);
+    c.fillStyle = 'rgba(255,255,255,0.15)'; c.fillRect(px - 4, geo.postTop, 3, geo.road - geo.postTop);
+    c.fillStyle = '#5b3a20'; c.fillRect(px - 10, geo.postTop - 6, 20, 10);
+    c.fillStyle = '#5b3a20'; c.fillRect(px - 14, geo.road - 8, 28, 8);
+  }
+  // Tufts and flowers on the cliff tops
+  let seed = 7;
+  const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  for (let i = 0; i < 40; i++) {
+    const left = i % 2 === 0, x = left ? rnd() * (geo.L - 10) : geo.R + 10 + rnd() * (W - geo.R - 10);
+    if (rnd() < 0.3) { c.fillStyle = ['#ffffff', '#ffd25e', '#ff9ad5'][(rnd() * 3) | 0]; c.beginPath(); c.arc(x, geo.road + 4 + rnd() * 3, 2.2, 0, TAU); c.fill(); }
+  }
+}
+
+const beamColour = s => {
+  // calm teal, then yellow, then red as a beam nears its limit
+  const t = clamp(s, 0, 1);
+  const A = [95, 205, 190], B = [255, 214, 90], C = [255, 78, 68];
+  const k = t < 0.55 ? t / 0.55 : (t - 0.55) / 0.45, P = t < 0.55 ? A : B, Q = t < 0.55 ? B : C;
+  return `rgb(${(P[0] + (Q[0] - P[0]) * k) | 0},${(P[1] + (Q[1] - P[1]) * k) | 0},${(P[2] + (Q[2] - P[2]) * k) | 0})`;
+};
+
+function drawScene() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  // Clouds
+  for (const cl of clouds) {
+    cl.x += cl.v * STEP; if (cl.x > W + 160) cl.x = -160;
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    for (const [ox, oy, r] of cl.blobs) { ctx.moveTo(cl.x + ox + r, cl.y + oy); ctx.arc(cl.x + ox, cl.y + oy, r, 0, TAU); }
+    ctx.fill();
+  }
+  drawFall();
+  drawWater(false);
+  // Debris
+  for (const d of debris) {
+    const a = Math.min(1, d.life / 1.2);
+    ctx.globalAlpha = a;
+    ctx.lineCap = 'round';
+    const rp = d.beam && d.beam.rope;
+    ctx.strokeStyle = '#2b2f45'; ctx.lineWidth = rp ? 4.5 : 8; ctx.beginPath(); ctx.moveTo(d.ax, d.ay); ctx.lineTo(d.bx, d.by); ctx.stroke();
+    ctx.strokeStyle = '#d9a066'; ctx.lineWidth = rp ? 2.5 : 5; ctx.beginPath(); ctx.moveTo(d.ax, d.ay); ctx.lineTo(d.bx, d.by); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  drawBridge();
+  drawLorry();
+  drawBirds();
+  drawWater(true);
+  drawParticles();
+  drawGhost();
+  if (scrollLabel) {
+    scrollLabel.life -= STEP;
+    if (scrollLabel.life <= 0) scrollLabel = null;
+    else {
+      const c = lorry.state === 'hop' ? hopPose() : lorryCentre();
+      ctx.globalAlpha = Math.min(1, scrollLabel.life * 2);
+      ctx.font = '700 15px ui-rounded, Trebuchet MS, sans-serif'; ctx.textAlign = 'center';
+      const tw = ctx.measureText(scrollLabel.text).width + 22, y = c.y - 82;
+      ctx.fillStyle = 'rgba(16,24,48,0.8)'; roundRect(c.x - tw / 2, y - 16, tw, 26, 13); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.fillText(scrollLabel.text, c.x, y + 2);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+
+function drawFall() {
+  const x = geo.fallX, top = geo.road + H * 0.10 + Math.sin(x * 0.03) * 8 + Math.sin(x * 0.011) * 14, bot = geo.waterY + 4, w = 26;
+  const g = ctx.createLinearGradient(0, top, 0, bot);
+  g.addColorStop(0, 'rgba(150,215,245,0.85)'); g.addColorStop(1, 'rgba(210,240,255,0.95)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.moveTo(x - w / 2, top); ctx.lineTo(x + w / 2, top); ctx.lineTo(x + w / 2 + 6, bot); ctx.lineTo(x - w / 2 - 6, bot); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 2;
+  for (let k = 0; k < 6; k++) {
+    const sx = x - w / 2 + 3 + k * (w - 6) / 5, ph = ((simTime * 1.4 + k * 0.37) % 1);
+    const y0 = lerp(top, bot, ph), y1 = Math.min(bot, y0 + 22);
+    ctx.beginPath(); ctx.moveTo(sx, y0); ctx.lineTo(sx + (k - 2.5) * 0.4, y1); ctx.stroke();
+  }
+  // mist where it lands
+  for (let k = 0; k < 5; k++) {
+    const r = 10 + ((simTime * 0.8 + k * 0.2) % 1) * 18;
+    ctx.globalAlpha = 0.35 * (1 - ((simTime * 0.8 + k * 0.2) % 1));
+    ctx.fillStyle = '#ffffff'; ctx.beginPath(); ctx.arc(x + (k - 2) * 9, bot - 4, r, 0, TAU); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  if (Math.random() < 0.3) poke(x + (Math.random() - 0.5) * 20, 0.8);
+}
+
+function drawWater(front) {
+  const L = geo.L, R = geo.R, n = WATER_N;
+  const xs = i => L + (R - L) * i / (n - 1);
+  if (!front) {
+    const g = ctx.createLinearGradient(0, geo.waterY - 10, 0, H);
+    g.addColorStop(0, '#4fb6e0'); g.addColorStop(1, '#1f6fa6');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(L, H);
+    for (let i = 0; i < n; i++) ctx.lineTo(xs(i), geo.waterY + water.h[i]);
+    ctx.lineTo(R, H); ctx.fill();
+    // Ducks bob on the surface
+    for (const d of ducks) {
+      d.x += d.v * STEP; if (d.x < L + 20 || d.x > R - 20) d.v *= -1;
+      d.x = clamp(d.x, L + 20, R - 20);
+      if (Math.abs(d.x - geo.islandX) < geo.islandW + 16) { d.v = Math.abs(d.v) * Math.sign(d.x - geo.islandX || 1); d.x = geo.islandX + Math.sign(d.x - geo.islandX || 1) * (geo.islandW + 17); }
+      const y = waterSurface(d.x), s = Math.sign(d.v) || 1;
+      ctx.save(); ctx.translate(d.x, y - 4); ctx.scale(s, 1); ctx.rotate(Math.sin(simTime * 2 + d.ph) * 0.08);
+      ctx.fillStyle = '#ffd84a'; ctx.beginPath(); ctx.ellipse(0, 0, 11, 7, 0, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(8, -8, 5.5, 0, TAU); ctx.fill();
+      ctx.fillStyle = '#ff8a3d'; ctx.beginPath(); ctx.moveTo(12, -9); ctx.lineTo(18, -7); ctx.lineTo(12, -6); ctx.fill();
+      ctx.fillStyle = '#2b2f45'; ctx.beginPath(); ctx.arc(9.5, -9.5, 1.3, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+  } else {
+    // a translucent front skin and a bright surface line
+    ctx.fillStyle = 'rgba(80,170,225,0.30)';
+    ctx.beginPath(); ctx.moveTo(L, H);
+    for (let i = 0; i < n; i++) ctx.lineTo(xs(i), geo.waterY + 5 + water.h[i]);
+    ctx.lineTo(R, H); ctx.fill();
+    ctx.strokeStyle = 'rgba(235,250,255,0.85)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) { const x = xs(i), y = geo.waterY + water.h[i]; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    // glints
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    for (let k = 0; k < 14; k++) {
+      const x = L + ((k * 97.3 + simTime * (14 + k)) % (R - L)), y = waterSurface(x) + 10 + (k % 4) * 9;
+      const a = 0.5 + 0.5 * Math.sin(simTime * 3 + k);
+      ctx.globalAlpha = a * 0.7; ctx.fillRect(x, y, 10 + (k % 3) * 6, 2);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawBridge() {
+  const hoverBeam = !draw && !erasing && pointer.inside ? nearestBeam(pointer.x, pointer.y, 10) : null;
+  const hoverJoint = pointer.inside && !erasing ? nearestJoint(pointer.x, pointer.y, SNAP_R) : null;
+  ctx.lineCap = 'round';
+  // Beams: dark outline, stress colour, a light centre line
+  for (const e of beams) {
+    if (e.broken) continue;
+    const grow = clamp((simTime - e.born + 0.25) / 0.25, 0, 1);
+    if (grow <= 0) continue;
+    const ax = e.a.x, ay = e.a.y, bx = lerp(e.a.x, e.b.x, grow), by = lerp(e.a.y, e.b.y, grow);
+    const s = e.strainS;
+    if (e.rope) {
+      // A rope: thin and twisted, tinted by strain. A slack rope hangs in a curve.
+      const d = Math.hypot(bx - ax, by - ay), len = e.rest * grow;
+      const sag = d < len ? Math.sqrt(3 * d * (len - d) / 8) : 0;
+      const cx = (ax + bx) / 2, cy = (ay + by) / 2 + sag * 2;
+      const path = () => { ctx.beginPath(); ctx.moveTo(ax, ay); ctx.quadraticCurveTo(cx, cy, bx, by); };
+      ctx.strokeStyle = e === hoverBeam ? '#ffffff' : 'rgba(60,40,25,0.9)'; ctx.lineWidth = 5; path(); ctx.stroke();
+      ctx.strokeStyle = s > 0.15 ? beamColour(s) : '#d9a35f'; ctx.lineWidth = 3; path(); ctx.stroke();
+      ctx.setLineDash([3, 4]); ctx.strokeStyle = 'rgba(90,55,25,0.55)'; ctx.lineWidth = 3; path(); ctx.stroke(); ctx.setLineDash([]);
+      continue;
+    }
+    const wob = s > 0.8 && !reducedMotion ? Math.sin(simTime * 40 + e.id) * 1.2 : 0;
+    ctx.strokeStyle = e === hoverBeam ? '#ffffff' : 'rgba(30,34,56,0.9)';
+    ctx.lineWidth = 10 + wob; ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.strokeStyle = beamColour(s); ctx.lineWidth = 6.5 + wob;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(ax, ay - 1.5); ctx.lineTo(bx, by - 1.5); ctx.stroke();
+  }
+  // Joints: bolts
+  for (const j of joints) {
+    if (j.anchor) continue;
+    if (!hasLiveBeam(j)) continue;
+    if (j.held) {
+      const left = clamp((j.holdUntil - simTime) / HOLD_T, 0, 1);
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(j.x, j.y, 10, -Math.PI / 2, -Math.PI / 2 + TAU * left); ctx.stroke();
+    }
+    if (j.ropeOnly) { ctx.fillStyle = '#7a5230'; ctx.beginPath(); ctx.arc(j.x, j.y, 3, 0, TAU); ctx.fill(); continue; }
+    ctx.fillStyle = '#2b2f45'; ctx.beginPath(); ctx.arc(j.x, j.y, 5.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = j === hoverJoint ? '#fff6c8' : '#dfe5f2'; ctx.beginPath(); ctx.arc(j.x, j.y, 3.6, 0, TAU); ctx.fill();
+  }
+  // Anchors: bolted plates with a gentle glow, brighter when you can build from them
+  for (const j of joints) {
+    if (!j.anchor) continue;
+    const near = j === hoverJoint || (draw && draw.snap === j);
+    const pulse = 0.5 + 0.5 * Math.sin(simTime * 2.4 + j.x * 0.01);
+    const gr = (near ? 26 : 16) + pulse * 4;
+    const g = ctx.createRadialGradient(j.x, j.y, 0, j.x, j.y, gr);
+    g.addColorStop(0, near ? 'rgba(255,240,150,0.85)' : 'rgba(255,240,170,0.45)'); g.addColorStop(1, 'rgba(255,240,170,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(j.x, j.y, gr, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#3a3f5c'; ctx.beginPath(); ctx.arc(j.x, j.y, 9, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ffcf4a'; ctx.beginPath(); ctx.arc(j.x, j.y, 6.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#3a3f5c'; ctx.beginPath(); ctx.arc(j.x, j.y, 2.4, 0, TAU); ctx.fill();
+  }
+}
+
+function drawGhost() {
+  if (draw) {
+    const f = draw.from || draw.fromSpot;
+    const s = f ? { x: f.x, y: f.y } : { x: draw.sx, y: draw.sy };
+    const e = draw.snap ? { x: draw.snap.x, y: draw.snap.y } : { x: pointer.x, y: pointer.y };
+    const full = beams.length >= MAX_BEAMS;
+    ctx.setLineDash([10, 8]); ctx.lineDashOffset = -simTime * 40;
+    ctx.strokeStyle = full ? 'rgba(255,100,90,0.9)' : 'rgba(255,255,255,0.95)'; ctx.lineWidth = buildRope ? 3 : 5;
+    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(e.x, e.y); ctx.stroke();
+    ctx.setLineDash([]);
+    if (buildRope) { ctx.strokeStyle = 'rgba(214,160,90,0.95)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(e.x, e.y); ctx.stroke(); }
+    ctx.fillStyle = '#fff';
+    for (const q of [s, e]) { ctx.beginPath(); ctx.arc(q.x, q.y, 5, 0, TAU); ctx.fill(); }
+    if (draw.snap && draw.snap.e) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(e.x, e.y, 11, 0, TAU); ctx.stroke(); }
+  } else if (erasing) {
+    ctx.strokeStyle = 'rgba(255,120,110,0.9)'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(pointer.x, pointer.y, 12, 0, TAU); ctx.stroke();
+  } else if (pointer.inside) {
+    const j = nearestJoint(pointer.x, pointer.y, SNAP_R);
+    if (j) { ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(j.x, j.y, 13 + Math.sin(simTime * 6) * 2, 0, TAU); ctx.stroke(); }
+    else { const e = nearestBeam(pointer.x, pointer.y, 10); if (e) drawReadout(e); }
+  }
+}
+// What the beam under the mouse is doing, as a share of what it can take.
+function readoutText(e) {
+  const pct = Math.round(e.strainS * 100) + '%';
+  if (e.rope) return e.force > 1 ? 'Rope pulling ' + pct : 'Rope slack';
+  if (e.strainS < 0.01) return 'Beam resting';
+  return 'Beam ' + (e.mode === 'bend' ? 'bending ' : e.mode === 'pull' ? 'pulling ' : 'pushing ') + pct;
+}
+function drawReadout(e) {
+  const text = readoutText(e);
+  ctx.font = '700 13px ui-rounded, Trebuchet MS, sans-serif'; ctx.textAlign = 'left';
+  const w = ctx.measureText(text).width + 32, x = clamp(pointer.x + 16, 4, W - w - 4), y = clamp(pointer.y - 34, 4, H - 30);
+  ctx.fillStyle = 'rgba(16,24,48,0.85)'; roundRect(x, y, w, 24, 12); ctx.fill();
+  ctx.fillStyle = beamColour(e.strainS); ctx.beginPath(); ctx.arc(x + 12, y + 12, 4.5, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.fillText(text, x + 22, y + 16.5);
+}
+
+const CRATE_COLS = ['#c98a4b', '#b8783e', '#d39a5b'];
+function drawLorry() {
+  const L = lorry;
+  let c, ang;
+  if (L.state === 'hop') { const p = hopPose(); c = { x: p.x, y: p.y }; ang = p.a; }
+  else { c = lorryCentre(); ang = lorryAngle(); }
+  // springs: turning flip and landing squash (HANDBOOK §3.2)
+  L.flip += (L.dir - L.flip) * (1 - Math.exp(-10 * STEP));
+  L.squashV += -L.squash * 260 * STEP; L.squashV *= Math.exp(-12 * STEP); L.squash += L.squashV * STEP;
+  for (const cr of L.crates) { cr.v += (1 - cr.s) * 300 * STEP; cr.v *= Math.exp(-14 * STEP); cr.s += cr.v * STEP; }
+  // eyes look at the pointer
+  const lx = pointer.inside ? clamp((pointer.x - c.x) / 200, -1, 1) : 0, ly = pointer.inside ? clamp((pointer.y - c.y) / 200, -1, 1) : 0;
+  L.eyesX += (lx - L.eyesX) * 0.2; L.eyesY += (ly - L.eyesY) * 0.2;
+  if (L.horn > 0) L.horn -= STEP;
+
+  ctx.save();
+  // centre of the box is BODY_H/2 above the axle line
+  ctx.translate(c.x, c.y); ctx.rotate(ang); ctx.translate(0, BODY_H / 2);
+  const sq = 1 + L.squash * 0.02;
+  ctx.scale(L.flip * (1 / sq), sq);
+  // shadow-ish outline colour
+  const ink = '#2b2f45';
+  // chassis
+  ctx.fillStyle = ink; roundRect(-44, -14, 88, 9, 3); ctx.fill();
+  // bed (rear, at -x)
+  ctx.fillStyle = '#ffd25e'; roundRect(-44, -26, 50, 14, 3); ctx.fill();
+  ctx.strokeStyle = ink; ctx.lineWidth = 2.2; ctx.stroke();
+  // crates
+  L.crates.forEach((cr, i) => {
+    const row = i < 3 ? 0 : i < 6 ? 1 : 2, col = row === 2 ? 1 : i % 3;
+    const x = -39 + col * 15, y = -26 - (row + 1) * 13;
+    ctx.save(); ctx.translate(x + 6.5, y + 6.5); ctx.scale(cr.s, cr.s);
+    ctx.fillStyle = CRATE_COLS[cr.hue % 3]; ctx.fillRect(-6.5, -6.5, 13, 13);
+    ctx.strokeStyle = ink; ctx.lineWidth = 1.6; ctx.strokeRect(-6.5, -6.5, 13, 13);
+    ctx.beginPath(); ctx.moveTo(-6.5, -6.5); ctx.lineTo(6.5, 6.5); ctx.stroke();
+    ctx.restore();
+  });
+  // cab (front, at +x)
+  ctx.fillStyle = '#ff6b5a';
+  ctx.beginPath(); ctx.moveTo(8, -12); ctx.lineTo(8, -46); ctx.quadraticCurveTo(8, -50, 13, -50); ctx.lineTo(30, -50);
+  ctx.quadraticCurveTo(40, -50, 42, -36); ctx.lineTo(46, -24); ctx.lineTo(46, -12); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = ink; ctx.lineWidth = 2.2; ctx.stroke();
+  // window and driver
+  ctx.fillStyle = '#cfefff'; ctx.beginPath(); ctx.moveTo(14, -44); ctx.lineTo(30, -44); ctx.quadraticCurveTo(36, -44, 38, -34); ctx.lineTo(39, -30); ctx.lineTo(14, -30); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#f5c9a0'; ctx.beginPath(); ctx.arc(24, -35, 6.5, 0, TAU); ctx.fill();
+  ctx.fillStyle = '#4a7bd8'; ctx.beginPath(); ctx.arc(24, -38, 6.8, Math.PI, TAU); ctx.fill();
+  const ex = L.eyesX * 1.6 * Math.sign(L.flip || 1), ey = L.eyesY * 1.4;
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(22, -35, 2.2, 0, TAU); ctx.arc(27, -35, 2.2, 0, TAU); ctx.fill();
+  ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(22 + ex, -35 + ey, 1.1, 0, TAU); ctx.arc(27 + ex, -35 + ey, 1.1, 0, TAU); ctx.fill();
+  // headlight and bumper
+  ctx.fillStyle = '#fff7c0'; ctx.beginPath(); ctx.arc(44, -20, 3, 0, TAU); ctx.fill();
+  if (driving) { ctx.fillStyle = 'rgba(255,245,180,0.25)'; ctx.beginPath(); ctx.moveTo(46, -20); ctx.lineTo(80, -30); ctx.lineTo(80, -8); ctx.closePath(); ctx.fill(); }
+  // horn notes
+  if (L.horn > 0) { ctx.fillStyle = `rgba(43,47,69,${Math.min(1, L.horn * 3)})`; ctx.font = '700 14px sans-serif'; ctx.fillText('♪', 40, -56 - (0.5 - L.horn) * 30); }
+  // wheels
+  for (const wx of [-HALF_BASE, HALF_BASE]) {
+    ctx.save(); ctx.translate(wx, 0); ctx.rotate(L.spin * Math.sign(L.flip || 1));
+    ctx.fillStyle = ink; ctx.beginPath(); ctx.arc(0, 0, WHEEL_R, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#c9cfdc'; ctx.beginPath(); ctx.arc(0, 0, 6, 0, TAU); ctx.fill();
+    ctx.strokeStyle = ink; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-5, 0); ctx.lineTo(5, 0); ctx.moveTo(0, -5); ctx.lineTo(0, 5); ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawParticles() {
+  for (const p of parts) {
+    const t = p.life / p.max;
+    if (p.kind === 'chip') {
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.globalAlpha = Math.min(1, t * 2);
+      ctx.fillStyle = '#e0aa6c'; ctx.fillRect(-4 * p.s, -1.5, 8 * p.s, 3); ctx.restore();
+    } else if (p.kind === 'confetti') {
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.globalAlpha = Math.min(1, t * 2);
+      ctx.fillStyle = p.c; ctx.fillRect(-4, -2, 8, 4 * Math.abs(Math.cos(p.a * 2))); ctx.restore();
+    } else if (p.kind === 'drop') {
+      ctx.globalAlpha = Math.min(1, t * 2); ctx.fillStyle = '#d8f3ff';
+      ctx.beginPath(); ctx.arc(p.x, p.y, 2.6 * p.s, 0, TAU); ctx.fill();
+    } else if (p.kind === 'dust' || p.kind === 'smoke') {
+      const r = (p.kind === 'smoke' ? 5 : 4) + (1 - t) * (p.kind === 'smoke' ? 12 : 10);
+      ctx.globalAlpha = t * (p.kind === 'smoke' ? 0.35 : 0.5); ctx.fillStyle = p.kind === 'smoke' ? '#e8ecf3' : '#f3e2c8';
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill();
+    } else if (p.kind === 'star') {
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a); ctx.globalAlpha = Math.min(1, t * 2);
+      ctx.fillStyle = '#fff3a0'; ctx.beginPath();
+      for (let k = 0; k < 10; k++) { const r = k % 2 ? 2.5 : 6, a = k * Math.PI / 5; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      ctx.fill(); ctx.restore();
+    } else if (p.kind === 'ring' || p.kind === 'flashring') {
+      ctx.globalAlpha = t; ctx.strokeStyle = p.kind === 'ring' ? '#ffffff' : '#fff1a8'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(p.x, p.y, (1 - t) * (p.kind === 'ring' ? 70 : 40) + 6, 0, TAU); ctx.stroke();
+    } else if (p.kind === 'feather') {
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(Math.sin(p.a) * 0.8); ctx.globalAlpha = Math.min(1, t * 2);
+      ctx.fillStyle = '#f4f1ea'; ctx.beginPath(); ctx.ellipse(0, 0, 4.5, 1.8, 0, 0, TAU); ctx.fill(); ctx.restore();
+    } else if (p.kind === 'bubble') {
+      ctx.globalAlpha = t; ctx.strokeStyle = '#e8f8ff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p.x + Math.sin(p.a * 3) * 3, p.y, 3, 0, TAU); ctx.stroke();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ===========================================================================
+// Input (HANDBOOK §2.3). Every handler compares e.buttons with the last
+// value, because a second button pressed during a drag arrives as a move.
+// ===========================================================================
+function local(e) { const r = fx.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+fx.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('contextmenu', e => e.preventDefault());
+
+function snapTarget(x, y, not) {
+  const j = nearestJoint(x, y, SNAP_R);
+  if (j) return j !== not ? j : null;
+  const sp = beamSpot(x, y);
+  if (sp && not && (sp.e.a === not || sp.e.b === not)) return null;   // along its own beam: no
+  return sp;
+}
+function startDraw(x, y) {
+  const t = snapTarget(x, y);
+  draw = { from: t && !t.e ? t : null, fromSpot: t && t.e ? t : null, sx: x, sy: y, snap: null };
+  if (beams.length >= MAX_BEAMS) hint('That is the most beams (' + MAX_BEAMS + '). Rub some out with the right button.');
+}
+function endDraw(x, y) {
+  const d = draw; draw = null;
+  if (!d) return;
+  const s = d.from || d.fromSpot || { x: d.sx, y: d.sy };
+  let toT = snapTarget(x, y, d.from);
+  const ex = toT ? toT.x : x, ey = toT ? toT.y : y;
+  if (Math.hypot(ex - s.x, ey - s.y) < MIN_LEN || (toT && toT === d.from)) {
+    if (!d.from && !d.fromSpot && !toT) hint('Drag to build a beam. Start on a yellow bolt.');
+    return;
+  }
+  // Joining the middle of a beam splits it there, with a new joint.
+  let from = d.from;
+  if (!from && d.fromSpot && beams.includes(d.fromSpot.e) && !d.fromSpot.e.broken) from = splitBeam(d.fromSpot.e, d.fromSpot.t);
+  if (toT && toT.e) toT = snapTarget(x, y, from);                     // the beam may just have been split
+  let to = toT && !toT.e ? toT : null;
+  if (toT && toT.e) to = splitBeam(toT.e, toT.t);
+  const made = buildLine(from, d.sx, d.sy, to, ex, ey, 0.04, buildRope);
+  if (made) {
+    stats.built += made;
+    sfx.knock(beams.length);
+    const mx = (s.x + ex) / 2, my = (s.y + ey) / 2;
+    puff(mx, my, 6);
+    if (!from && !to) hint((buildRope ? 'That rope' : 'That beam') + ' is not joined to anything, so it falls. Start on a yellow bolt.');
+    else if (!driving && lorry.state === 'drive') hint('Nice beam! Press Go when you are ready.');
+    else hint('Built! Triangles make bridges strong.');
+  }
+}
+function rightClick(x, y) {
+  const j = nearestJoint(x, y, 14);
+  if (j && (!j.anchor || hasLiveBeam(j))) { removeJoint(j); sfx.rub(); hint('Gone! Right-drag rubs out lots of beams.'); return; }
+  const e = nearestBeam(x, y, 12);
+  if (e) { removeBeam(e); dropOrphans(); sfx.rub(); hint('Beam removed.'); return; }
+  spawn('ring', x, y, 0, 0, 0.35);
+}
+function eraseAlong(a, b) {
+  let n = 0;
+  for (const e of beams.slice()) {
+    if (e.broken) continue;
+    if (segsCross(a, b, e.a, e.b) || segDist(b.x, b.y, e.a.x, e.a.y, e.b.x, e.b.y).d < 10) { removeBeam(e); n++; }
+  }
+  if (n) { dropOrphans(); sfx.rub(); }
+}
+
+function onButtons(e) {
+  const p = local(e), nb = e.buttons, ob = prevButtons;
+  prevButtons = nb;
+  if ((nb & 1) && !(ob & 1)) startDraw(p.x, p.y);
+  if (!(nb & 1) && (ob & 1)) endDraw(p.x, p.y);
+  if ((nb & 2) && !(ob & 2)) { rightClick(p.x, p.y); erasing = { x: p.x, y: p.y }; }
+  if (!(nb & 2) && (ob & 2)) erasing = null;
+}
+fx.addEventListener('pointerdown', e => {
+  ensureAudio();
+  try { fx.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
+  movePointer(e);
+  onButtons(e);
+});
+function movePointer(e) {
+  const p = local(e);
+  if (Math.hypot(p.x - pointer.x, p.y - pointer.y) > 2) pointer.movedAt = simTime;
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+}
+window.addEventListener('pointermove', e => {
+  movePointer(e);
+  if (e.buttons !== prevButtons) onButtons(e);
+  if (draw) draw.snap = snapTarget(pointer.x, pointer.y, draw.from);
+  if (erasing && Math.hypot(pointer.x - erasing.x, pointer.y - erasing.y) > 3) {
+    eraseAlong({ x: erasing.x, y: erasing.y }, { x: pointer.x, y: pointer.y });
+    erasing = { x: pointer.x, y: pointer.y };
+  }
+});
+window.addEventListener('pointerup', e => onButtons(e));
+fx.addEventListener('pointerleave', () => { pointer.inside = false; });
+window.addEventListener('blur', () => { draw = null; erasing = null; prevButtons = 0; });
+
+fx.addEventListener('wheel', e => {
+  e.preventDefault();
+  // Browsers turn Shift + wheel into a sideways scroll, so read deltaX when deltaY is zero.
+  const delta = e.deltaY || e.deltaX;
+  if (!delta) return;
+  const up = delta < 0, old = load;
+  load = clamp(load + (up ? 1 : -1), 1, LOADS);
+  if (load !== old) { sfx.tick(up); syncCrates(false); topoDirty = true; }
+  scrollLabel = { text: loadWord() + '  ' + '●'.repeat(load) + '○'.repeat(LOADS - load), life: 1.4 };
+  hint(up ? 'Heavier! More crates press harder on the bridge.' : 'Lighter. Fewer crates, an easier crossing.');
+}, { passive: false });
+function loadWord() { return load === 1 ? 'Empty' : (load - 1) + (load === 2 ? ' crate' : ' crates'); }
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') resetAll();
+  else if (k === 'g' || k === 'enter') { e.preventDefault(); pressGo(); }
+  else if (k === 'f') fixBridge();
+  else if (k === 't') toggleMode();
+  else if (k === 'c') { clearBridge(); sfx.rub(); hint('All clear. Drag across the gap to build.'); }
+  else if (k === 'h') ui.panel.classList.toggle('hidden');
+  else if (k === 'm') toggleSound();
+});
+document.getElementById('resetBtn').addEventListener('click', () => { ensureAudio(); resetAll(); });
+ui.go.addEventListener('click', pressGo);
+ui.fix.addEventListener('click', fixBridge);
+ui.mode.addEventListener('click', toggleMode);
+ui.sound.addEventListener('click', toggleSound);
+
+// ===========================================================================
+// Reset, sizing, loop
+// ===========================================================================
+function resetAll() {
+  joints = []; beams = []; debris = []; parts = [];
+  water.h.fill(0); water.v.fill(0);
+  for (const a of geo.anchors) makeJoint(a.x, a.y, a.id);
+  load = DEFAULT_LOAD;
+  lorry = null;
+  setDriving(false);                      // parked while the bridge settles
+  makeLorry(geo.startL + 40, 1);
+  shapeStarter();
+  rebuildTopology();
+  for (const e of beams) e.born = -1;
+  for (let i = 0; i < 90; i++) update();   // let the bridge settle before it is seen
+  for (const e of beams) e.born = simTime - 1;
+  parts = [];
+  stats = { built: 0, removed: 0, snaps: 0, splashes: 0, trips: 0, fixes: 0, turns: 0, perched: 0 };
+  if (buildRope) toggleMode();
+  makeBirds();
+  fixAnim = 0; hitStop = 0; trauma = 0; draw = null; erasing = null; goAfterLanding = false;
+  setDriving(true);
+  hint('Watch the lorry cross. Drag between bolts to build, or scroll for more crates.');
+}
+
+function fit() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const oW = W, oH = H;
+  W = window.innerWidth; H = window.innerHeight;
+  for (const c of [bg, fx]) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); c.style.width = W + 'px'; c.style.height = H + 'px'; }
+  geo = layout();
+  if (oW && joints.length) {
+    // Stretch the bridge with the window.
+    const sx = W / oW, sy = H / oH;
+    for (const j of joints) {
+      if (j.anchor) { const a = geo.anchors.find(q => q.id === j.anchor); j.x = j.px = j.rx = a.x; j.y = j.py = j.ry = a.y; continue; }
+      j.x *= sx; j.px *= sx; j.rx *= sx; j.y *= sy; j.py *= sy; j.ry *= sy;
+    }
+    for (const e of beams) { e.rest = Math.hypot(e.b.x - e.a.x, e.b.y - e.a.y); setStrength(e); }
+    debris = [];
+    if (lorry) makeLorry(lorry.side === 'L' ? geo.startL + 40 : geo.startR - 40, lorry.dir);
+  }
+  clouds = Array.from({ length: 5 }, (_, i) => ({
+    x: (i + 0.3) * W / 5, y: H * (0.08 + (i % 3) * 0.07), v: 6 + i * 2,
+    blobs: [[0, 0, 22], [22, -8, 26], [46, 0, 20], [24, 6, 20]].map(([x, y, r]) => [x * (0.8 + (i % 2) * 0.4), y, r * (0.8 + (i % 3) * 0.15)]),
+  }));
+  drawBackground();
+}
+
+let acc = 0, last = performance.now();
+function frame(t) {
+  const t0 = performance.now();
+  acc += Math.min((t - last) / 1000, 0.1);
+  last = t;
+  let steps = 0;
+  // At most 3 steps a frame: a slow machine runs in slow motion
+  // rather than piling up catch-up steps that make every frame slower.
+  while (acc >= STEP && steps < 3) { update(); acc -= STEP; steps++; }
+  if (steps === 3) acc = 0;
+  // Screen shake (HANDBOOK §5): trauma squared, smooth wobble, a little rotation.
+  trauma = Math.max(0, trauma - 1.4 * (t - (frame.lt || t)) / 1000); frame.lt = t;
+  const sh = trauma * trauma;
+  const tf = sh > 0.001 ? `translate(${(Math.sin(t * 0.047) * 9 * sh).toFixed(2)}px,${(Math.sin(t * 0.061 + 1) * 7 * sh).toFixed(2)}px) rotate(${(Math.sin(t * 0.033) * 0.9 * sh).toFixed(3)}deg)` : '';
+  if (bg.style.transform !== tf) { bg.style.transform = tf; fx.style.transform = tf; }
+  drawScene();
+  const ms = performance.now() - t0;
+  msAvg = msAvg ? lerp(msAvg, ms, 0.05) : ms;
+  msWorst = Math.max(msWorst * 0.995, ms);
+  updatePanel();
+  publish();
+  requestAnimationFrame(frame);
+}
+
+function updatePanel() {
+  ui.load.textContent = loadWord().replace('Empty', 'empty');
+  const st = lorry.state;
+  ui.lorry.textContent = st === 'splash' ? 'splash!' : st === 'hop' ? 'hopping' : driving ? (lorry.dir > 0 ? 'going \u2192' : '\u2190 going') : 'parked';
+  const b = brokenCount();
+  ui.beams.textContent = (beams.length - b) + ' / ' + MAX_BEAMS;
+  ui.broken.textContent = b;
+  ui.strain.textContent = Math.round(maxStrain * 100) + '%';
+  ui.trips.textContent = stats.trips;
+  ui.ms.textContent = msAvg.toFixed(1) + ' ms';
+  ui.fix.classList.toggle('need', b > 0);
+}
+
+// ===========================================================================
+// Test hook, read-only apart from the stress helper.
+// ===========================================================================
+window.GAME = {};
+function publish() {
+  const G = window.GAME;
+  G.beamCount = beams.length - brokenCount();
+  G.broken = brokenCount();
+  G.jointCount = joints.filter(j => !j.anchor).length;
+  G.load = load; G.driving = driving; G.soundOn = soundOn;
+  G.lorryState = lorry.state; G.lorryDir = lorry.dir;
+  const c = lorry.state === 'hop' ? hopPose() : lorryCentre();
+  G.lorry = { x: c.x, y: c.y, side: lorry.side, crates: lorry.crates.length };
+  G.maxStrain = maxStrain;
+  G.frameMs = msAvg; G.worstMs = msWorst;
+  G.stats = Object.assign({}, stats);
+  G.debris = debris.length;
+  G.fixing = fixAnim > 0;
+  G.perched = perchedCount();
+  G.buildRope = buildRope;
+  G.geo = { L: geo.L, R: geo.R, road: geo.road, face: geo.face, waterY: geo.waterY, anchors: geo.anchors.map(a => ({ id: a.id, x: a.x, y: a.y })) };
+}
+window.GAME.beams = () => beams.map(e => ({ id: e.id, broken: e.broken, strain: e.strainS, force: e.force || 0, bend: e.bend || 0, rope: !!e.rope, rest: e.rest, T: e.T, C: e.C, mode: e.mode, ax: e.a.x, ay: e.a.y, bx: e.b.x, by: e.b.y }));
+window.GAME.joints = () => joints.map(j => ({ x: j.x, y: j.y, anchor: j.anchor, loose: j.loose }));
+window.GAME.panel = () => Array.from(document.querySelectorAll('#ui .row')).map(r => r.textContent);
+window.GAME.shape = n => { (n === 1 ? shapeTruss : shapeStarter)(); topoDirty = true; };
+window.GAME.readout = () => { const e = !draw && pointer.inside && !nearestJoint(pointer.x, pointer.y, SNAP_R) ? nearestBeam(pointer.x, pointer.y, 10) : null; return e ? readoutText(e) : null; };
+window.GAME.birds = () => birds.map(b => ({ x: b.x, y: b.y, state: b.state, onBeam: !!b.e }));
+// Test helpers: run the simulation faster than real time, and set the load.
+window.GAME.step = n => { let peak = 0; for (let i = 0; i < n; i++) { update(); peak = Math.max(peak, maxStrain); } publish(); return peak; };
+window.GAME.setLoad = n => { load = clamp(n, 1, LOADS); syncCrates(true); };
+window.GAME.line = () => { clearBridge(); buildLine(anchorJoint('AL'), 0, 0, anchorJoint('AR'), 0, 0); topoDirty = true; };
+window.GAME.park = () => { makeLorry(geo.startL + 40, 1); setDriving(false); };
+window.GAME.go = () => setDriving(true);
+window.GAME.lorryPts = () => lorry.pts.map(p => ({ x: +p.x.toFixed(1), y: +p.y.toFixed(1), g: p.ground && [+p.ground.nx.toFixed(2), +p.ground.ny.toFixed(2)] }));
+// Calibration helper: the highest share of each limit (pull, push, bend)
+// reached while the lorry crosses, with snapping turned off.
+window.GAME.peaks = (ld) => {
+  noSnap = true;
+  GAME.setLoad(ld); GAME.park(); GAME.step(120);
+  const pk = { pull: 0, push: 0, bend: 0, total: 0 };
+  for (const e of beams) e.born = -9;
+  setDriving(true);
+  for (let t = 0; t < 900; t++) {
+    update();
+    for (const e of beams) if (!e.broken) { pk.pull = Math.max(pk.pull, e.uPull); pk.push = Math.max(pk.push, e.uPush); pk.bend = Math.max(pk.bend, e.uBend); pk.total = Math.max(pk.total, e.strainS); }
+    if (lorry.side === 'R') break;
+  }
+  pk.crossed = lorry.side === 'R';
+  noSnap = false;
+  return pk;
+};
+// Prop the middle of the deck from the island bolt, splitting the deck beam if needed.
+window.GAME.props = () => {
+  let j = joints.find(q => !q.anchor && Math.abs(q.x - geo.islandX) < 30 && Math.abs(q.y - geo.road) < 30);
+  if (!j) { const e = beams.find(b => !b.broken && !b.rope && Math.min(b.a.x, b.b.x) < geo.islandX && Math.max(b.a.x, b.b.x) > geo.islandX && Math.abs((b.a.y + b.b.y) / 2 - geo.road) < 40); if (e) { j = splitBeam(e, (geo.islandX - e.a.x) / (e.b.x - e.a.x)); j.held = false; } }
+  if (j) makeBeam(anchorJoint('M'), j);
+  topoDirty = true;
+};
+// Test helper: replace the starter's prop with ropes from the two tall posts.
+window.GAME.stays = () => { const X = joints.find(q => !q.anchor && Math.abs(q.x - geo.islandX) < 2); const pr = beams.find(e => e.a === anchorJoint('M') || e.b === anchorJoint('M')); if (pr) beams = beams.filter(e => e !== pr); makeBeam(anchorJoint('PL'), X, 0, true); makeBeam(anchorJoint('PR'), X, 0, true); topoDirty = true; };
+window.GAME.tune = o => { if (o.masses) LOAD_MASS = o.masses; if (o.tens) TENS0 = o.tens; if (o.exp !== undefined) LEN_EXP = o.exp; if (o.depth) DEPTH = o.depth; if (o.dens) { BEAM_DENS = o.dens; topoDirty = true; } for (const e of beams) setStrength(e); };
+// Fill the scene to its designed maximum, for the frame-time test: the truss
+// plus a dense lattice under it, up to MAX_BEAMS.
+window.GAME.stress = () => {
+  shapeTruss();
+  const cols = 12, rows = 5, x0 = geo.L + 20, x1 = geo.R - 20, y0 = geo.road + geo.face * 0.8;
+  const grid = [];
+  for (let r = 0; r < rows; r++) { grid.push([]); for (let c = 0; c <= cols; c++) grid[r].push(null); }
+  const J = (r, c) => grid[r][c] || (grid[r][c] = makeJoint(lerp(x0, x1, c / cols), y0 + r * Math.max(10, (geo.waterY - 20 - y0) / rows)));
+  for (let r = 0; r < rows && beams.length < MAX_BEAMS; r++) for (let c = 0; c < cols && beams.length < MAX_BEAMS; c++) {
+    makeBeam(J(r, c), J(r, c + 1));
+    if (r > 0) { makeBeam(J(r - 1, c), J(r, c)); makeBeam(J(r - 1, c), J(r, c + 1)); }
+  }
+  makeBeam(anchorJoint('BL'), J(0, 0)); makeBeam(J(0, cols), anchorJoint('BR'));
+  let k = 0;
+  while (beams.length < MAX_BEAMS && k < 400) { const a = J(rows - 1, k % cols), b = anchorJoint(k % 2 ? 'M' : 'BL'); makeBeam(a, b); k++; }
+  topoDirty = true;
+  load = LOADS; syncCrates(true);
+  return { beams: beams.length };
+};
+
+// The app's iframe can report a 0x0 window when this script first runs, so wait for a real size.
+function boot() {
+  if (window.innerWidth < 200 || window.innerHeight < 200) { requestAnimationFrame(boot); return; }
+  fit();
+  ducks = [{ x: geo.L + (geo.R - geo.L) * 0.25, v: 14, ph: 0 }, { x: geo.L + (geo.R - geo.L) * 0.78, v: -10, ph: 2 }];
+  resetAll();
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+window.addEventListener('resize', () => { if (window.innerWidth >= 200 && window.innerHeight >= 200 && W) fit(); });
+boot();
+})();
+</script>
+</body>
+</html>
