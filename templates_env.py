@@ -61,6 +61,7 @@ MINI_GAMES = [
     {"file": "balloon_bunches.html", "name": "Balloon Bunches", "description": "Blow up balloons, tie them together and pop them", "tier": "reward", "release_order": 20},
     {"file": "bridge_builder.html", "name": "Bridge Builder", "description": "Build bridges for a little lorry and watch them sag or snap", "tier": "reward", "release_order": 21},
     {"file": "slime_mould.html",   "name": "Slime Mould",   "description": "Feed a glowing slime mould and watch it grow veins", "tier": "reward", "release_order": 22},
+    {"file": "tree_grower.html",   "name": "Tree Grower",   "description": "Plant seeds and grow trees that reach for the sun", "tier": "reward", "release_order": 23},
 ]
 
 REWARD_GAMES = sorted(

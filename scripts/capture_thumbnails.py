@@ -122,6 +122,19 @@ def still(page):
     """No input: the game's opening scene is the picture."""
 
 
+def grow_orchard(page):
+    """Tree Grower opens on one seedling: plant two more seeds, grow them at
+    fast speed (the F key), and put the sun high on the right."""
+    w, h = VIEWPORT["width"], VIEWPORT["height"]
+    for fx in (0.2, 0.8):
+        page.mouse.move(w * fx, h * 0.3)
+        page.mouse.click(w * fx, h * 0.3)
+        page.wait_for_timeout(100)
+    page.keyboard.press("f")
+    page.mouse.move(w * 0.85, h * 0.15, steps=6)
+    page.wait_for_timeout(11000)
+
+
 # Reward games whose opening scene needs something other than a breeze.
 REWARD_STEPS = {
     "mandala.html": paint_loops,             # starts as an empty canvas
@@ -129,6 +142,7 @@ REWARD_STEPS = {
     "shadow_maze.html": plant_torches,       # dark apart from the lantern
     "topple_tower.html": still,             # mouse movement pushes the tower over
     "slime_mould.html": feed_slime,         # the veins take some seconds to form
+    "tree_grower.html": grow_orchard,       # starts as a single seedling
 }
 
 
