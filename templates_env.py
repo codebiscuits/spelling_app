@@ -59,6 +59,7 @@ MINI_GAMES = [
     {"file": "domino_run.html",    "name": "Domino Run",    "description": "Draw a path of dominoes and watch them topple", "tier": "reward", "release_order": 18},
     {"file": "spider_web.html",    "name": "Spider Web",    "description": "Spin a wobbly web, pluck its strands and catch dew drops", "tier": "reward", "release_order": 19},
     {"file": "balloon_bunches.html", "name": "Balloon Bunches", "description": "Blow up balloons, tie them together and pop them", "tier": "reward", "release_order": 20},
+    {"file": "slime_mould.html",   "name": "Slime Mould",   "description": "Feed a glowing slime mould and watch it grow veins", "tier": "reward", "release_order": 22},
     {"file": "tree_grower.html",   "name": "Tree Grower",   "description": "Plant seeds and grow trees that reach for the sun", "tier": "reward", "release_order": 23},
 ]
 
