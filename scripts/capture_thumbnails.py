@@ -107,6 +107,17 @@ def plant_torches(page):
     page.mouse.move(w / 2, h / 2, steps=8)
 
 
+def feed_slime(page):
+    """Slime Mould opens as a fine grain that takes some seconds to join up
+    into veins. Drop three pieces of food, then wait for the network."""
+    w, h = VIEWPORT["width"], VIEWPORT["height"]
+    for fx, fy in ((0.3, 0.35), (0.7, 0.4), (0.5, 0.72)):
+        page.mouse.click(w * fx, h * fy)
+        page.wait_for_timeout(100)
+    page.mouse.move(w * 0.9, h * 0.9)
+    page.wait_for_timeout(12000)
+
+
 def still(page):
     """No input: the game's opening scene is the picture."""
 
@@ -117,6 +128,7 @@ REWARD_STEPS = {
     "reaction_diffusion.html": paint_loops,  # starts with a few small spots
     "shadow_maze.html": plant_torches,       # dark apart from the lantern
     "topple_tower.html": still,             # mouse movement pushes the tower over
+    "slime_mould.html": feed_slime,         # the veins take some seconds to form
 }
 
 

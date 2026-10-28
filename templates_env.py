@@ -60,6 +60,7 @@ MINI_GAMES = [
     {"file": "spider_web.html",    "name": "Spider Web",    "description": "Spin a wobbly web, pluck its strands and catch dew drops", "tier": "reward", "release_order": 19},
     {"file": "balloon_bunches.html", "name": "Balloon Bunches", "description": "Blow up balloons, tie them together and pop them", "tier": "reward", "release_order": 20},
     {"file": "bridge_builder.html", "name": "Bridge Builder", "description": "Build bridges for a little lorry and watch them sag or snap", "tier": "reward", "release_order": 21},
+    {"file": "slime_mould.html",   "name": "Slime Mould",   "description": "Feed a glowing slime mould and watch it grow veins", "tier": "reward", "release_order": 22},
 ]
 
 REWARD_GAMES = sorted(

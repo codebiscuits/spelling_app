@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Slime Mould</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(ellipse at 50% 45%, #15122a 0%, #0c0b1c 55%, #06050e 100%);
+    font-family: ui-rounded, 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+  }
+  canvas { position: fixed; inset: 0; display: block; }
+  #fx { cursor: crosshair; }
+  #vignette { position: fixed; inset: 0; z-index: 1; pointer-events: none; display: none;
+    background: radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 45%, rgba(0,0,0,0.38) 100%); }
+  #ui {
+    position: fixed; top: 16px; left: 16px; z-index: 10; pointer-events: none;
+    width: 272px; padding: 14px 16px 12px;
+    background: rgba(8, 10, 24, 0.70); border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 14px; backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #c3cbe0; font-size: 12.5px; line-height: 1.6;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    transition: opacity 0.25s;
+  }
+  #ui.hidden { opacity: 0; }
+  #ui h3 { color: #fff; font-size: 16px; letter-spacing: 0.4px; margin-bottom: 4px; }
+  #ui .row { display: flex; justify-content: space-between; gap: 10px; }
+  #ui .k { color: #ffcf6b; font-weight: 700; white-space: nowrap; }
+  #ui .d { text-align: right; }
+  #ui .v { color: #9be8b0; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  #ui .rule { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 8px 0 7px; }
+  #ui .keys { color: #8a93ad; font-size: 11px; margin-top: 6px; line-height: 1.5; }
+  #ui .hint { color: #ffd08a; font-style: italic; font-size: 11.5px; margin-top: 6px; min-height: 18px; }
+  .pill {
+    position: fixed; z-index: 10; border-radius: 999px; cursor: pointer;
+    font: 700 13px ui-rounded, 'Trebuchet MS', sans-serif; letter-spacing: 0.3px;
+    color: #e6ebf7; background: rgba(8, 10, 24, 0.80); border: 1px solid rgba(255, 255, 255, 0.18);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .pill:hover { background: rgba(30, 40, 80, 0.92); border-color: rgba(255, 255, 255, 0.35); }
+  .pill:focus-visible { outline: 3px solid #ffcf6b; outline-offset: 2px; }
+  #resetBtn { bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 26px; }
+  #soundBtn { bottom: 24px; right: 20px; padding: 9px 16px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <h3>&#x1F9EB; Slime Mould</h3>
+  <div class="row"><span class="k">Move</span><span class="d">leave a scent trail</span></div>
+  <div class="row"><span class="k">Left click / drag</span><span class="d">drop food</span></div>
+  <div class="row"><span class="k">Right click / drag</span><span class="d">sprinkle salt</span></div>
+  <div class="row"><span class="k">Wheel</span><span class="d">sensor angle</span></div>
+  <div class="row"><span class="k">Shift + wheel</span><span class="d">sensor reach</span></div>
+  <div class="rule"></div>
+  <div class="row"><span>Slime cells</span><span class="v" id="agentVal">-</span></div>
+  <div class="row"><span>Food</span><span class="v" id="foodVal">0 / 20</span></div>
+  <div class="row"><span>Salt patches</span><span class="v" id="saltVal">0</span></div>
+  <div class="row"><span>Sensor angle</span><span class="v" id="angleVal">-</span></div>
+  <div class="row"><span>Sensor reach</span><span class="v" id="reachVal">-</span></div>
+  <div class="row"><span>Colours</span><span class="v" id="palVal">-</span></div>
+  <div class="row"><span>Drawing with</span><span class="v" id="rendVal">-</span></div>
+  <div class="row"><span>Frame time</span><span class="v" id="msVal">-</span></div>
+  <div class="keys">Keys: C colours &middot; F clear food &middot; Space freeze &middot; H hide this &middot; R reset &middot; M sound</div>
+  <div class="hint" id="hint">Wiggle the mouse. Then click to drop some food.</div>
+</div>
+<div id="vignette"></div>
+<button class="pill" id="soundBtn" type="button">Sound off</button>
+<button class="pill" id="resetBtn" type="button">&#x21BA; New dish</button>
+<script>
+(() => {
+'use strict';
+
+// ===========================================================================
+// The model: Jeff Jones (2010), "Characteristics of pattern formation and
+// evolution in approximations of Physarum transport networks". Each agent
+// senses the trail ahead-left, ahead and ahead-right, turns toward the
+// strongest, steps forward and deposits trail. The trail map diffuses and
+// decays. Lengths here are CSS pixels; each renderer converts to its grid.
+// ===========================================================================
+const STEP = 1 / 60;                 // fixed timestep, HANDBOOK §2.1
+const MAX_STEPS = 3;                 // per frame, so a slow machine slows down rather than spirals
+const SA_LIST = [5, 10, 15, 22.5, 30, 45, 60, 75, 90];   // sensor angle, degrees (wheel)
+const SA_DEFAULT = 3;
+const SD_LIST = [8, 12, 18, 26, 36, 50];                 // sensor reach, px (Shift + wheel)
+const SD_DEFAULT = 2;
+const ROTATE = 45 * Math.PI / 180;   // turn per step. Sensor angles above this break the veins up.
+const SPEED_PX = 2.0;                // px per step
+const SALT_WEIGHT = 60;              // how strongly salt outweighs trail when sensing
+const SALT_DECAY = 0.999;            // per step: a salt patch fades over about 25 s
+const SALT_LIFE = 25;
+const MAX_FOOD = 20;
+const FOOD_R = 14, FOOD_AMT = 3;     // a food piece's scent, px radius and strength per step
+const TRAIL_R = 10, TRAIL_AMT = 2.0; // the pointer's faint scent
+// The trail is capped. Without a cap every agent piles into one fat river;
+// with it a busy vein stops pulling harder, and the network stays open.
+const TRAIL_MAX = 12, GAIN = 0.16;
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+// Cosine palettes (Iñigo Quilez, HANDBOOK §4.1). t runs from faint trail to thick vein.
+const PALETTES = [
+  { name: 'golden', a: [0.72, 0.52, 0.22], b: [0.32, 0.36, 0.22], c: [0.50, 0.55, 0.50], d: [0.50, 0.53, 0.62] },
+  { name: 'glow worm', a: [0.35, 0.55, 0.45], b: [0.35, 0.45, 0.35], c: [0.60, 0.50, 0.55], d: [0.45, 0.50, 0.55] },
+  { name: 'ocean', a: [0.50, 0.50, 0.50], b: [0.50, 0.50, 0.50], c: [1.00, 0.70, 0.40], d: [0.00, 0.15, 0.20] },
+  { name: 'neon', a: [0.50, 0.50, 0.50], b: [0.50, 0.50, 0.50], c: [1.00, 1.00, 1.00], d: [0.00, 0.33, 0.67] },
+];
+const BG = [12, 11, 28];
+
+function buildLut(pal) {
+  const out = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const v = i / 255;
+    const t = 0.15 + 0.85 * v;
+    const bright = Math.pow(v, 0.9);
+    const hot = Math.pow(v, 8) * 0.45;
+    for (let k = 0; k < 3; k++) {
+      const p = clamp(pal.a[k] + pal.b[k] * Math.cos(TAU * (pal.c[k] * t + pal.d[k])), 0, 1);
+      const c = BG[k] / 255 + p * bright + hot * (k === 2 ? 0.8 : 1.0);
+      out[i * 4 + k] = clamp(Math.round(c * 255), 0, 255);
+    }
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+const ui = {
+  panel: document.getElementById('ui'), agents: document.getElementById('agentVal'), food: document.getElementById('foodVal'),
+  salt: document.getElementById('saltVal'), angle: document.getElementById('angleVal'), reach: document.getElementById('reachVal'),
+  pal: document.getElementById('palVal'), rend: document.getElementById('rendVal'), ms: document.getElementById('msVal'),
+  hint: document.getElementById('hint'), sound: document.getElementById('soundBtn'),
+};
+function hint(s) { if (ui.hint.textContent !== s) ui.hint.textContent = s; }
+
+// ===========================================================================
+// State
+// ===========================================================================
+let W = 0, H = 0, dpr = 1;
+let saIndex = SA_DEFAULT, sdIndex = SD_DEFAULT, palIndex = 0;
+let lut = buildLut(PALETTES[0]);
+let food = [];            // { x, y, s, v, age, dying, dieT, phase, shape }
+let salts = [];           // { x, y, age } only to count the live patches
+let pending = [];         // one-shot scent or salt blobs: { x, y, r, ar, ag }
+let sparks = [], rings = [], forks = [], motes = [];
+let pointer = { x: -1e4, y: -1e4, lx: -1e4, ly: -1e4, inside: false, speed: 0 };
+let prevButtons = 0, lastDrop = null;
+let soundOn = false, audio = null;
+let frozen = false, simTime = 0, stepCount = 0, frameMs = 0, msAvg = 0, rafAvg = 0;
+
+function params() {
+  return {
+    sa: SA_LIST[saIndex] * Math.PI / 180, sd: SD_LIST[sdIndex], ra: ROTATE, speed: SPEED_PX,
+    frame: stepCount, saltWeight: SALT_WEIGHT, saltDecay: SALT_DECAY,
+  };
+}
+
+// Most agents start scattered over the whole dish, so a fine grain coarsens
+// into a network that fills the screen. A third start in a disc facing its
+// centre: they rush inward and tear open, the classic Physarum opening.
+function seedAgent(out, i, stride, gw, gh) {
+  let x, y, ang;
+  if (Math.random() < 0.67) {
+    x = Math.random() * gw; y = Math.random() * gh; ang = Math.random() * TAU;
+  } else {
+    const r = Math.sqrt(Math.random()) * Math.min(gw, gh) * 0.3, a = Math.random() * TAU;
+    x = gw / 2 + Math.cos(a) * r; y = gh / 2 + Math.sin(a) * r; ang = a + Math.PI + (Math.random() - 0.5) * 0.3;
+  }
+  out[i * stride] = x; out[i * stride + 1] = y;
+  out[i * stride + 2] = (ang % TAU + TAU) % TAU;
+  if (stride > 3) out[i * stride + 3] = Math.random();
+}
+
+// ===========================================================================
+// WebGL2 renderer: agents live in a float texture and update in a fragment
+// shader; each agent deposits as a 1-pixel point (HANDBOOK §4.9).
+// ===========================================================================
+const FULL_VS = `#version 300 es
+void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+
+const AGENT_FS = `#version 300 es
+precision highp float; precision highp int; precision highp sampler2D;
+uniform sampler2D uAgents; uniform sampler2D uTrail;
+uniform vec2 uGrid; uniform float uSA, uSD, uRA, uSpeed, uSalt; uniform uint uFrame;
+out vec4 o;
+float sense(vec2 p) { vec4 t = texture(uTrail, p / uGrid); return t.r - uSalt * t.g; }
+void main() {
+  ivec2 id = ivec2(gl_FragCoord.xy);
+  vec4 a = texelFetch(uAgents, id, 0);
+  uint h = uint(id.x) * 1973u + uint(id.y) * 9277u + uFrame * 26699u;
+  h = (h ^ (h >> 16)) * 0x7feb352du; h = (h ^ (h >> 15)) * 0x846ca68bu; h ^= h >> 16;
+  float r = float(h) / 4294967295.0;
+  vec2 p = a.xy; float ang = a.z;
+  float F = sense(p + vec2(cos(ang), sin(ang)) * uSD);
+  float L = sense(p + vec2(cos(ang + uSA), sin(ang + uSA)) * uSD);
+  float R = sense(p + vec2(cos(ang - uSA), sin(ang - uSA)) * uSD);
+  if (F > L && F > R) { }
+  else if (F < L && F < R) ang += (r < 0.5 ? -uRA : uRA);
+  else if (L > R) ang += uRA * (0.6 + 0.4 * r);
+  else if (R > L) ang -= uRA * (0.6 + 0.4 * r);
+  if (texture(uTrail, p / uGrid).g > 0.35) ang += 3.14159 * (0.5 + r);
+  p += vec2(cos(ang), sin(ang)) * uSpeed;
+  p = mod(p, uGrid);
+  o = vec4(p, mod(ang, 6.2831853), a.w);
+}`;
+
+const DEPOSIT_VS = `#version 300 es
+precision highp float; precision highp sampler2D;
+uniform sampler2D uAgents; uniform int uAW; uniform vec2 uGrid;
+void main() {
+  vec4 a = texelFetch(uAgents, ivec2(gl_VertexID % uAW, gl_VertexID / uAW), 0);
+  gl_Position = vec4(a.xy / uGrid * 2.0 - 1.0, 0.0, 1.0); gl_PointSize = 1.0;
+}`;
+const DEPOSIT_FS = `#version 300 es
+precision highp float; uniform float uDep; out vec4 o;
+void main() { o = vec4(uDep, 0.0, 0.0, 0.0); }`;
+
+const DIFFUSE_FS = `#version 300 es
+precision highp float; precision highp sampler2D;
+uniform sampler2D uTrail; uniform float uDecay, uSaltDecay, uMax; out vec4 o;
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy), g = textureSize(uTrail, 0);
+  vec4 s = vec4(0.0);
+  for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++)
+    s += texelFetch(uTrail, (c + ivec2(dx, dy) + g) % g, 0);
+  s /= 9.0;
+  vec4 me = texelFetch(uTrail, c, 0);
+  float salt = mix(me.g, s.g, 0.15) * uSaltDecay;
+  float tr = s.r * uDecay * (1.0 - clamp(salt, 0.0, 1.0) * 0.25);
+  o = vec4(clamp(tr, 0.0, uMax), max(salt, 0.0), 0.0, 1.0);
+}`;
+
+const BLOB_VS = `#version 300 es
+precision highp float;
+in vec2 aCorner; in vec3 aBlob; in vec2 aAmt; uniform vec2 uGrid;
+out vec2 vUV; flat out vec2 vAmt;
+void main() { vUV = aCorner; vAmt = aAmt; vec2 p = aBlob.xy + aCorner * aBlob.z; gl_Position = vec4(p / uGrid * 2.0 - 1.0, 0.0, 1.0); }`;
+const BLOB_FS = `#version 300 es
+precision highp float; in vec2 vUV; flat in vec2 vAmt; out vec4 o;
+void main() { float d = dot(vUV, vUV); if (d > 1.0) discard; o = vec4(vAmt * exp(-d * 3.0), 0.0, 0.0); }`;
+
+const RENDER_FS = `#version 300 es
+precision highp float; precision highp sampler2D;
+uniform sampler2D uTrail; uniform sampler2D uLut; uniform vec2 uRes; uniform float uGain;
+out vec4 o;
+void main() {
+  vec2 uv = vec2(gl_FragCoord.x / uRes.x, 1.0 - gl_FragCoord.y / uRes.y);
+  vec4 t = texture(uTrail, uv);
+  float v = 1.0 - exp(-max(t.r, 0.0) * uGain);
+  vec3 col = texture(uLut, vec2(v * 0.996 + 0.002, 0.5)).rgb;
+  float s = clamp(t.g, 0.0, 1.5);
+  float grain = fract(sin(dot(floor(gl_FragCoord.xy / 2.0), vec2(12.9898, 78.233))) * 43758.5453);
+  col += vec3(0.70, 0.82, 1.0) * s * (0.14 + 0.45 * step(0.88, grain));
+  vec2 q = uv - 0.5;
+  col *= 1.0 - 0.7 * dot(q, q);
+  o = vec4(col, 1.0);
+}`;
+
+function makeWebGL2(canvas) {
+  const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, depth: false, stencil: false, preserveDrawingBuffer: false });
+  if (!gl) return null;
+  if (!gl.getExtension('EXT_color_buffer_float')) return null;
+  const S = 2, AW = 512, DEP = 1.0, DECAY = 0.94;
+
+  function shader(type, src) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  function program(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const u = {};
+    const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+    return { p, u };
+  }
+  const P = {
+    agent: program(FULL_VS, AGENT_FS), deposit: program(DEPOSIT_VS, DEPOSIT_FS),
+    diffuse: program(FULL_VS, DIFFUSE_FS), blob: program(BLOB_VS, BLOB_FS), render: program(FULL_VS, RENDER_FS),
+  };
+  const emptyVao = gl.createVertexArray();
+
+  // Blobs: one shared quad, one instance per blob (x, y, r, ar, ag).
+  const MAX_BLOBS = 128;
+  const blobData = new Float32Array(MAX_BLOBS * 5);
+  const blobVao = gl.createVertexArray();
+  gl.bindVertexArray(blobVao);
+  const quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1]), gl.STATIC_DRAW);
+  const locC = gl.getAttribLocation(P.blob.p, 'aCorner'), locB = gl.getAttribLocation(P.blob.p, 'aBlob'), locA = gl.getAttribLocation(P.blob.p, 'aAmt');
+  gl.enableVertexAttribArray(locC); gl.vertexAttribPointer(locC, 2, gl.FLOAT, false, 0, 0);
+  const inst = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, inst);
+  gl.bufferData(gl.ARRAY_BUFFER, blobData.byteLength, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(locB); gl.vertexAttribPointer(locB, 3, gl.FLOAT, false, 20, 0); gl.vertexAttribDivisor(locB, 1);
+  gl.enableVertexAttribArray(locA); gl.vertexAttribPointer(locA, 2, gl.FLOAT, false, 20, 12); gl.vertexAttribDivisor(locA, 1);
+  gl.bindVertexArray(null);
+
+  function texture(w, h, internal, format, type, filter, wrap, data) {
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, data || null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrap); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrap);
+    return t;
+  }
+  function framebuffer(t) {
+    const f = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('framebuffer incomplete');
+    return f;
+  }
+
+  let GW = 0, GH = 0, AH = 0, N = 0;
+  let agents = [], agentFb = [], trail = [], trailFb = [], cur = 0, tcur = 0;
+  const lutTex = texture(256, 1, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR, gl.CLAMP_TO_EDGE, lut);
+  const readBuf = new Float32Array(5 * 5 * 4);
+  const r = { name: 'WebGL2', lost: false, scale: S, agents: 0, maxSteps: MAX_STEPS };
+  canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); r.lost = true; }, false);
+
+  function release() {
+    for (const t of agents.concat(trail)) gl.deleteTexture(t);
+    for (const f of agentFb.concat(trailFb)) gl.deleteFramebuffer(f);
+    agents = []; agentFb = []; trail = []; trailFb = [];
+  }
+  r.resize = () => {
+    release();
+    GW = Math.ceil(W / S); GH = Math.ceil(H / S);
+    AH = clamp(Math.ceil(GW * GH * 0.5 / AW), 16, 512);
+    N = AW * AH; r.agents = N;
+    for (let i = 0; i < 2; i++) {
+      agents[i] = texture(AW, AH, gl.RGBA32F, gl.RGBA, gl.FLOAT, gl.NEAREST, gl.CLAMP_TO_EDGE);
+      agentFb[i] = framebuffer(agents[i]);
+      trail[i] = texture(GW, GH, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, gl.REPEAT);
+      trailFb[i] = framebuffer(trail[i]);
+    }
+    r.reseed();
+  };
+  r.reseed = () => {
+    const data = new Float32Array(N * 4);
+    for (let i = 0; i < N; i++) seedAgent(data, i, 4, GW, GH);
+    for (let i = 0; i < 2; i++) {
+      gl.bindTexture(gl.TEXTURE_2D, agents[i]);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, AW, AH, gl.RGBA, gl.FLOAT, data);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, trailFb[i]);
+      gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+    cur = 0; tcur = 0;
+  };
+  function bindTex(unit, t) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, t); }
+
+  r.step = (p, blobs) => {
+    // 1. Agents sense, turn and move.
+    gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, agentFb[1 - cur]);
+    gl.viewport(0, 0, AW, AH);
+    gl.useProgram(P.agent.p); gl.bindVertexArray(emptyVao);
+    bindTex(0, agents[cur]); bindTex(1, trail[tcur]);
+    const u = P.agent.u;
+    gl.uniform1i(u.uAgents, 0); gl.uniform1i(u.uTrail, 1);
+    gl.uniform2f(u.uGrid, GW, GH);
+    gl.uniform1f(u.uSA, p.sa); gl.uniform1f(u.uSD, p.sd / S); gl.uniform1f(u.uRA, p.ra);
+    gl.uniform1f(u.uSpeed, p.speed / S); gl.uniform1f(u.uSalt, p.saltWeight); gl.uniform1ui(u.uFrame, p.frame >>> 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    cur = 1 - cur;
+    // 2. Each agent deposits trail.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, trailFb[tcur]);
+    gl.viewport(0, 0, GW, GH);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(P.deposit.p);
+    bindTex(0, agents[cur]);
+    gl.uniform1i(P.deposit.u.uAgents, 0); gl.uniform1i(P.deposit.u.uAW, AW);
+    gl.uniform2f(P.deposit.u.uGrid, GW, GH); gl.uniform1f(P.deposit.u.uDep, DEP);
+    gl.drawArrays(gl.POINTS, 0, N);
+    // 3. Diffuse and decay into the other trail texture.
+    gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, trailFb[1 - tcur]);
+    gl.useProgram(P.diffuse.p);
+    bindTex(0, trail[tcur]);
+    gl.uniform1i(P.diffuse.u.uTrail, 0); gl.uniform1f(P.diffuse.u.uDecay, DECAY); gl.uniform1f(P.diffuse.u.uSaltDecay, p.saltDecay); gl.uniform1f(P.diffuse.u.uMax, TRAIL_MAX);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    tcur = 1 - tcur;
+    // 4. Food, pointer scent and salt.
+    const n = Math.min(blobs.length, MAX_BLOBS);
+    if (n) {
+      for (let i = 0; i < n; i++) {
+        const b = blobs[i], j = i * 5;
+        blobData[j] = b.x / S; blobData[j + 1] = b.y / S; blobData[j + 2] = b.r / S; blobData[j + 3] = b.ar; blobData[j + 4] = b.ag;
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, trailFb[tcur]);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+      gl.useProgram(P.blob.p); gl.bindVertexArray(blobVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, inst); gl.bufferSubData(gl.ARRAY_BUFFER, 0, blobData, 0, n * 5);
+      gl.uniform2f(P.blob.u.uGrid, GW, GH);
+      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, n);
+      gl.disable(gl.BLEND);
+    }
+    gl.bindVertexArray(null);
+  };
+  r.setLut = () => { gl.bindTexture(gl.TEXTURE_2D, lutTex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, lut); };
+  r.draw = () => {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.useProgram(P.render.p); gl.bindVertexArray(emptyVao);
+    bindTex(0, trail[tcur]); bindTex(1, lutTex);
+    gl.uniform1i(P.render.u.uTrail, 0); gl.uniform1i(P.render.u.uLut, 1);
+    gl.uniform2f(P.render.u.uRes, canvas.width, canvas.height); gl.uniform1f(P.render.u.uGain, GAIN);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  };
+  // Mean trail and salt in a 5 x 5 cell patch around a screen point.
+  r.sample = (x, y) => {
+    const gx = clamp(Math.floor(x / S) - 2, 0, GW - 5), gy = clamp(Math.floor(y / S) - 2, 0, GH - 5);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, trailFb[tcur]);
+    gl.readPixels(gx, gy, 5, 5, gl.RGBA, gl.FLOAT, readBuf);
+    let t = 0, s = 0;
+    for (let i = 0; i < 25; i++) { t += readBuf[i * 4]; s += readBuf[i * 4 + 1]; }
+    return { trail: t / 25, salt: s / 25 };
+  };
+  return r;
+}
+
+// ===========================================================================
+// Canvas 2D fallback: the same model on the CPU, in typed arrays (HANDBOOK
+// §3.3, §6), on a coarser grid with fewer agents.
+// ===========================================================================
+function make2D(canvas) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const S = 4, DEP = 1.6, DECAY = 0.93;
+  // Trail value to palette index, so the draw loop needs no Math.exp.
+  const VT = new Uint8Array(1024);
+  for (let i = 0; i < 1024; i++) VT[i] = Math.min(255, Math.round((1 - Math.exp(-(i / 1023 * TRAIL_MAX) * GAIN)) * 255));
+  const VK = 1023 / TRAIL_MAX;
+  let GW = 0, GH = 0, N = 0, trail = null, tmp = null, salt = null, ax = null, ay = null, aa = null, img = null, px = null, grain = null;
+  let lut32 = new Uint32Array(256);
+  let rng = 0x9e3779b9;
+  const rand = () => { rng ^= rng << 13; rng ^= rng >>> 17; rng ^= rng << 5; return (rng >>> 0) / 4294967296; };
+  const r = { name: 'Canvas 2D', lost: false, scale: S, agents: 0, maxSteps: 2 };
+
+  r.setLut = () => {
+    for (let i = 0; i < 256; i++) lut32[i] = (255 << 24) | (lut[i * 4 + 2] << 16) | (lut[i * 4 + 1] << 8) | lut[i * 4];
+  };
+  r.setLut();
+  r.resize = () => {
+    GW = Math.ceil(W / S); GH = Math.ceil(H / S);
+    trail = new Float32Array(GW * GH); tmp = new Float32Array(GW * GH); salt = new Float32Array(GW * GH);
+    N = Math.min(20000, Math.round(GW * GH * 0.25)); r.agents = N;
+    ax = new Float32Array(N); ay = new Float32Array(N); aa = new Float32Array(N);
+    // The canvas holds one pixel per cell, and the browser scales it up
+    // smoothly (HANDBOOK §4.6). No full-screen copy each frame.
+    canvas.width = GW; canvas.height = GH;
+    canvas.style.width = GW * S + 'px'; canvas.style.height = GH * S + 'px';
+    img = ctx.createImageData(GW, GH); px = new Uint32Array(img.data.buffer);
+    grain = new Uint8Array(GW * GH);
+    for (let i = 0; i < grain.length; i++) grain[i] = Math.random() < 0.12 ? 1 : 0;
+    r.reseed();
+  };
+  const seedBuf = new Float32Array(3);
+  r.reseed = () => {
+    for (let i = 0; i < N; i++) { seedAgent(seedBuf, 0, 3, GW, GH); ax[i] = seedBuf[0]; ay[i] = seedBuf[1]; aa[i] = seedBuf[2]; }
+    trail.fill(0); salt.fill(0);
+  };
+  function at(arr, x, y) {
+    let ix = x | 0, iy = y | 0;
+    if (ix < 0) ix += GW; else if (ix >= GW) ix -= GW;
+    if (iy < 0) iy += GH; else if (iy >= GH) iy -= GH;
+    return ix + iy * GW;
+  }
+  r.step = (p, blobs) => {
+    const sa = p.sa, sd = p.sd / S, ra = p.ra, sp = p.speed / S, sw = p.saltWeight;
+    for (let i = 0; i < N; i++) {
+      const x = ax[i], y = ay[i];
+      let a = aa[i];
+      let k = at(trail, x + Math.cos(a) * sd, y + Math.sin(a) * sd);
+      const F = trail[k] - sw * salt[k];
+      k = at(trail, x + Math.cos(a + sa) * sd, y + Math.sin(a + sa) * sd);
+      const L = trail[k] - sw * salt[k];
+      k = at(trail, x + Math.cos(a - sa) * sd, y + Math.sin(a - sa) * sd);
+      const R = trail[k] - sw * salt[k];
+      const q = rand();
+      if (F > L && F > R) { /* keep going */ }
+      else if (F < L && F < R) a += q < 0.5 ? -ra : ra;
+      else if (L > R) a += ra * (0.6 + 0.4 * q);
+      else if (R > L) a -= ra * (0.6 + 0.4 * q);
+      if (salt[at(salt, x, y)] > 0.35) a += Math.PI * (0.5 + q);
+      let nx = x + Math.cos(a) * sp, ny = y + Math.sin(a) * sp;
+      if (nx < 0) nx += GW; else if (nx >= GW) nx -= GW;
+      if (ny < 0) ny += GH; else if (ny >= GH) ny -= GH;
+      ax[i] = nx; ay[i] = ny; aa[i] = a;
+      trail[(nx | 0) + (ny | 0) * GW] += DEP;
+    }
+    // Separable 3 x 3 box blur with wrap-around, then decay.
+    for (let y = 0; y < GH; y++) {
+      const row = y * GW;
+      for (let x = 0; x < GW; x++) {
+        const l = x === 0 ? GW - 1 : x - 1, rr = x === GW - 1 ? 0 : x + 1;
+        tmp[row + x] = trail[row + l] + trail[row + x] + trail[row + rr];
+      }
+    }
+    const f = DECAY / 9;
+    for (let y = 0; y < GH; y++) {
+      const up = (y === 0 ? GH - 1 : y - 1) * GW, row = y * GW, dn = (y === GH - 1 ? 0 : y + 1) * GW;
+      for (let x = 0; x < GW; x++) {
+        const s = salt[row + x] * p.saltDecay;
+        salt[row + x] = s;
+        const t = (tmp[up + x] + tmp[row + x] + tmp[dn + x]) * f * (1 - Math.min(s, 1) * 0.25);
+        trail[row + x] = t < TRAIL_MAX ? t : TRAIL_MAX;
+      }
+    }
+    for (const b of blobs) {
+      const cx = b.x / S, cy = b.y / S, rad = b.r / S, r2 = rad * rad;
+      const x0 = Math.max(0, Math.floor(cx - rad)), x1 = Math.min(GW - 1, Math.ceil(cx + rad));
+      const y0 = Math.max(0, Math.floor(cy - rad)), y1 = Math.min(GH - 1, Math.ceil(cy + rad));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+        const d = ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2) / r2;
+        if (d > 1) continue;
+        const e = Math.exp(-d * 3), k = x + y * GW;
+        trail[k] = Math.max(0, trail[k] + b.ar * e);
+        salt[k] += b.ag * e;
+      }
+    }
+  };
+  r.draw = () => {
+    for (let i = 0, n = GW * GH; i < n; i++) {
+      const ti = (trail[i] * VK) | 0;
+      let c = lut32[VT[ti < 1023 ? ti : 1023]];
+      const s = salt[i];
+      if (s > 0.02) {
+        const add = Math.min(1.5, s) * (grain[i] ? 0.6 : 0.14) * 255;
+        const rr = Math.min(255, (c & 255) + add * 0.7), gg = Math.min(255, ((c >> 8) & 255) + add * 0.82), bb = Math.min(255, ((c >> 16) & 255) + add);
+        c = (255 << 24) | (bb << 16) | (gg << 8) | rr;
+      }
+      px[i] = c;
+    }
+    ctx.putImageData(img, 0, 0);
+  };
+  r.sample = (x, y) => {
+    const gx = clamp(Math.floor(x / S) - 2, 0, GW - 5), gy = clamp(Math.floor(y / S) - 2, 0, GH - 5);
+    let t = 0, s = 0;
+    for (let j = 0; j < 5; j++) for (let i = 0; i < 5; i++) { const k = gx + i + (gy + j) * GW; t += trail[k]; s += salt[k]; }
+    return { trail: t / 25, salt: s / 25 };
+  };
+  return r;
+}
+
+let simCanvas = null, renderer = null;
+function newCanvas(id, z) {
+  const c = document.createElement('canvas');
+  c.id = id; c.style.zIndex = z;
+  document.body.insertBefore(c, document.body.firstChild);
+  return c;
+}
+function sizeCanvas(c) {
+  c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+  c.style.width = W + 'px'; c.style.height = H + 'px';
+}
+const WANT = (new URLSearchParams(location.search).get('renderer') || '').toLowerCase();
+function pickRenderer(only) {
+  const want = only || WANT;
+  const order = want === '2d' ? ['2d'] : ['webgl2', '2d'];
+  for (const kind of order) {
+    if (simCanvas) simCanvas.remove();
+    simCanvas = newCanvas('sim', 1);
+    sizeCanvas(simCanvas);
+    let r = null;
+    try { r = kind === 'webgl2' ? makeWebGL2(simCanvas) : make2D(simCanvas); if (r) r.resize(); }
+    catch (e) { console.warn(kind, 'failed:', e && e.message); r = null; }
+    if (r) { renderer = r; document.getElementById('vignette').style.display = r.name === 'Canvas 2D' ? 'block' : 'none'; return; }
+  }
+}
+
+// ===========================================================================
+// The overlay: food flakes, salt crystals, ripples, the pointer and effects.
+// ===========================================================================
+const fx = newCanvas('fx', 2);
+const fctx = fx.getContext('2d');
+
+function glowSprite(rgb, size) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const x = c.getContext('2d'), h = size / 2;
+  const g = x.createRadialGradient(h, h, 0, h, h, h);
+  g.addColorStop(0, `rgba(${rgb},0.9)`); g.addColorStop(0.35, `rgba(${rgb},0.3)`); g.addColorStop(1, `rgba(${rgb},0)`);
+  x.fillStyle = g; x.fillRect(0, 0, size, size);
+  return c;
+}
+const GLOW_FOOD = glowSprite('255,200,110', 128);
+const GLOW_POINTER = glowSprite('190,255,200', 64);
+const GLOW_MOTE = glowSprite('200,210,255', 32);
+
+function makeShape() {
+  const n = 8, pts = [];
+  for (let i = 0; i < n; i++) { const a = i / n * TAU + (Math.random() - 0.5) * 0.4; pts.push([Math.cos(a), Math.sin(a) * 0.78, 0.8 + Math.random() * 0.35]); }
+  return { pts, rot: Math.random() * TAU };
+}
+
+function liveFood() { return food.filter(f => !f.dying); }
+
+function dropFood(x, y) {
+  const live = liveFood();
+  if (live.length >= MAX_FOOD) { live[0].dying = true; }
+  food.push({ x, y, s: 0, v: 0, age: 0, dying: false, dieT: 0, phase: Math.random() * TAU, shape: makeShape() });
+  pending.push({ x, y, r: 22, ar: 12, ag: 0 });
+  rings.push({ x, y, r: 6, life: 0.6, max: 0.6, color: '255,205,120' });
+  const n = reduceMotion ? 5 : 12;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * TAU, sp = 40 + Math.random() * 120;
+    sparks.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 0.5 + Math.random() * 0.4, max: 0.9, kind: 0, rot: 0, vr: 0, size: 1.5 + Math.random() * 2 });
+  }
+  sfx.plop(liveFood().length);
+}
+
+function sprinkleSalt(x, y, big) {
+  pending.push({ x, y, r: big ? 24 : 14, ar: 0, ag: big ? 1.4 : 0.9 });
+  salts.push({ x, y, age: 0 });
+  rings.push({ x, y, r: 4, life: 0.45, max: 0.45, color: '200,225,255' });
+  const n = reduceMotion ? 3 : (big ? 14 : 6);
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * TAU, sp = 20 + Math.random() * (big ? 110 : 60);
+    sparks.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 30, life: 0.6 + Math.random() * 0.6, max: 1.2, kind: 1, rot: Math.random() * TAU, vr: (Math.random() - 0.5) * 12, size: 2 + Math.random() * 2.5 });
+  }
+  sfx.salt(big);
+}
+
+function resetDish() {
+  food = []; salts = []; pending = []; sparks = []; rings = []; forks = [];
+  saIndex = SA_DEFAULT; sdIndex = SD_DEFAULT; frozen = false; lastDrop = null;
+  if (renderer) renderer.reseed();
+  motes = [];
+  for (let i = 0; i < 22; i++) motes.push({ x: Math.random() * W, y: Math.random() * H, vx: (Math.random() - 0.5) * 8, vy: (Math.random() - 0.5) * 8, a: 0.15 + Math.random() * 0.25, s: 8 + Math.random() * 18, ph: Math.random() * TAU });
+  hint('A fresh dish. The slime is waking up.');
+}
+
+function drawOverlay() {
+  const c = fctx;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, W, H);
+  c.globalCompositeOperation = 'lighter';
+  for (const m of motes) {
+    const tw = 0.6 + 0.4 * Math.sin(simTime * 0.7 + m.ph);
+    c.globalAlpha = m.a * tw * 0.5;
+    c.drawImage(GLOW_MOTE, m.x - m.s, m.y - m.s, m.s * 2, m.s * 2);
+  }
+  for (const f of food) {
+    const k = Math.max(0, f.s);
+    c.globalAlpha = 0.55 * k * (0.85 + 0.15 * Math.sin(simTime * 2 + f.phase));
+    const gs = 58 * k;
+    c.drawImage(GLOW_FOOD, f.x - gs, f.y - gs, gs * 2, gs * 2);
+  }
+  c.globalAlpha = 1;
+  c.globalCompositeOperation = 'source-over';
+  for (const f of food) {
+    const k = Math.max(0, f.s);
+    if (k < 0.01) continue;
+    const breathe = 1 + 0.05 * Math.sin(simTime * 2.2 + f.phase);
+    const R = 8 * k * breathe;
+    c.save();
+    c.translate(f.x, f.y); c.rotate(f.shape.rot + Math.sin(simTime * 0.6 + f.phase) * 0.08);
+    c.beginPath();
+    const pts = f.shape.pts;
+    for (let i = 0; i <= pts.length; i++) {
+      const p = pts[i % pts.length], q = pts[(i + 1) % pts.length];
+      const x0 = p[0] * p[2] * R, y0 = p[1] * p[2] * R, x1 = q[0] * q[2] * R, y1 = q[1] * q[2] * R;
+      if (i === 0) c.moveTo((x0 + x1) / 2, (y0 + y1) / 2); else c.quadraticCurveTo(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2);
+    }
+    const g = c.createRadialGradient(-R * 0.3, -R * 0.35, R * 0.1, 0, 0, R * 1.2);
+    g.addColorStop(0, '#fff3cf'); g.addColorStop(0.5, '#f2c46d'); g.addColorStop(1, '#b9822f');
+    c.fillStyle = g; c.fill();
+    c.lineWidth = 1.2; c.strokeStyle = 'rgba(110,70,20,0.65)'; c.stroke();
+    c.fillStyle = 'rgba(255,255,255,0.55)';
+    c.beginPath(); c.ellipse(-R * 0.3, -R * 0.32, R * 0.28, R * 0.14, -0.5, 0, TAU); c.fill();
+    c.restore();
+  }
+  for (const r of rings) {
+    const t = 1 - r.life / r.max;
+    c.strokeStyle = `rgba(${r.color},${(1 - t) * 0.7})`;
+    c.lineWidth = 2.5 * (1 - t) + 0.5;
+    c.beginPath(); c.arc(r.x, r.y, r.r, 0, TAU); c.stroke();
+  }
+  for (const s of sparks) {
+    const a = clamp(s.life / s.max, 0, 1);
+    if (s.kind === 0) {
+      c.fillStyle = `rgba(255,214,140,${a})`;
+      c.beginPath(); c.arc(s.x, s.y, s.size * (0.5 + a * 0.5), 0, TAU); c.fill();
+    } else {
+      c.save(); c.translate(s.x, s.y); c.rotate(s.rot);
+      c.fillStyle = `rgba(235,245,255,${a * 0.9})`;
+      c.fillRect(-s.size / 2, -s.size / 2, s.size, s.size);
+      c.restore();
+    }
+  }
+  // The sensor fork shows the three sensors at the new angle and reach.
+  for (const f of forks) {
+    const a = clamp(f.life / f.max, 0, 1);
+    const sa = SA_LIST[saIndex] * Math.PI / 180, len = SD_LIST[sdIndex] * 2.2;
+    c.strokeStyle = `rgba(190,255,205,${a * 0.85})`; c.lineWidth = 2; c.lineCap = 'round';
+    c.fillStyle = `rgba(190,255,205,${a})`;
+    for (const d of [-sa, 0, sa]) {
+      const ex = f.x + Math.cos(-Math.PI / 2 + d) * len, ey = f.y + Math.sin(-Math.PI / 2 + d) * len;
+      c.beginPath(); c.moveTo(f.x, f.y); c.lineTo(ex, ey); c.stroke();
+      c.beginPath(); c.arc(ex, ey, 3.5, 0, TAU); c.fill();
+    }
+  }
+  if (pointer.inside) {
+    c.globalCompositeOperation = 'lighter';
+    c.globalAlpha = 0.25 + Math.min(0.5, pointer.speed / 600);
+    c.drawImage(GLOW_POINTER, pointer.x - 22, pointer.y - 22, 44, 44);
+    c.globalAlpha = 1; c.globalCompositeOperation = 'source-over';
+  }
+}
+
+// ===========================================================================
+// Sound, made with Web Audio (HANDBOOK §5). Off until the player turns it on.
+// ===========================================================================
+const PENTA = [0, 2, 4, 7, 9];
+function ensureAudio() {
+  if (!soundOn) return;
+  if (!audio) { try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; } }
+  if (audio && audio.state === 'suspended') audio.resume();
+}
+let noiseBuf = null;
+const sfx = {
+  plop(i) {
+    if (!soundOn || !audio) return;
+    const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+    const f = 262 * 2 ** ((PENTA[i % 5] + 12 * Math.floor(i / 5) % 24) / 12);
+    o.type = 'sine'; o.frequency.setValueAtTime(f * 1.6, t); o.frequency.exponentialRampToValueAtTime(f, t + 0.08);
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.22, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.32);
+  },
+  salt(big) {
+    if (!soundOn || !audio) return;
+    if (!noiseBuf) {
+      noiseBuf = audio.createBuffer(1, audio.sampleRate * 0.2, audio.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (Math.random() < 0.3 ? 1 : 0.2);
+    }
+    const t = audio.currentTime, s = audio.createBufferSource(), f = audio.createBiquadFilter(), g = audio.createGain();
+    s.buffer = noiseBuf; f.type = 'highpass'; f.frequency.value = 3000;
+    g.gain.setValueAtTime(big ? 0.16 : 0.08, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+    s.connect(f).connect(g).connect(audio.destination); s.start(t); s.stop(t + 0.2);
+  },
+  tick(up) {
+    if (!soundOn || !audio) return;
+    const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+    o.type = 'triangle'; o.frequency.value = up ? 880 : 660;
+    g.gain.setValueAtTime(0.06, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.07);
+  },
+};
+
+// ===========================================================================
+// Input (HANDBOOK §2.3). Buttons are tracked by the bits that changed, so a
+// second button pressed mid-drag still counts.
+// ===========================================================================
+function local(e) { const r = fx.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+fx.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('contextmenu', e => e.preventDefault());
+
+function onButtons(e) {
+  const p = local(e), nb = e.buttons, ob = prevButtons;
+  prevButtons = nb;
+  if ((nb & 1) && !(ob & 1)) {
+    dropFood(p.x, p.y); lastDrop = { x: p.x, y: p.y };
+    hint(liveFood().length < 2 ? 'Food! Drop another piece and watch a vein join them.' : 'The slime finds the shortest way between the food.');
+  }
+  if ((nb & 2) && !(ob & 2)) {
+    sprinkleSalt(p.x, p.y, true); lastDrop = { x: p.x, y: p.y };
+    hint('Salt! The slime hates it and flows around. It fades slowly.');
+  }
+  if (!nb) lastDrop = null;
+}
+
+fx.addEventListener('pointerdown', e => {
+  ensureAudio();
+  try { fx.setPointerCapture(e.pointerId); } catch (err) { /* synthetic events have no capture */ }
+  movePointer(e);
+  onButtons(e);
+});
+function movePointer(e) {
+  const p = local(e);
+  pointer.x = p.x; pointer.y = p.y; pointer.inside = true;
+}
+window.addEventListener('pointermove', e => {
+  movePointer(e);
+  if (e.buttons !== prevButtons) onButtons(e);
+  if (lastDrop && prevButtons) {
+    const d = Math.hypot(pointer.x - lastDrop.x, pointer.y - lastDrop.y);
+    if ((prevButtons & 1) && d >= 46) { dropFood(pointer.x, pointer.y); lastDrop = { x: pointer.x, y: pointer.y }; }
+    else if ((prevButtons & 2) && !(prevButtons & 1) && d >= 18) { sprinkleSalt(pointer.x, pointer.y, false); lastDrop = { x: pointer.x, y: pointer.y }; }
+  }
+});
+window.addEventListener('pointerup', e => onButtons(e));
+fx.addEventListener('pointerleave', () => { pointer.inside = false; });
+window.addEventListener('blur', () => { prevButtons = 0; lastDrop = null; });
+
+fx.addEventListener('wheel', e => {
+  e.preventDefault();
+  // Browsers turn Shift + wheel into a sideways scroll, so read deltaX when deltaY is zero.
+  const delta = e.deltaY || e.deltaX;
+  if (!delta) return;
+  const up = delta < 0;
+  ensureAudio();
+  const p = local(e);
+  if (e.shiftKey) {
+    const old = sdIndex;
+    sdIndex = clamp(sdIndex + (up ? 1 : -1), 0, SD_LIST.length - 1);
+    if (sdIndex !== old) sfx.tick(up);
+    hint(up ? 'Longer feelers: bigger, bolder veins.' : 'Shorter feelers: finer, busier veins.');
+  } else {
+    const old = saIndex;
+    saIndex = clamp(saIndex + (up ? 1 : -1), 0, SA_LIST.length - 1);
+    if (saIndex !== old) sfx.tick(up);
+    hint(SA_LIST[saIndex] * Math.PI / 180 > ROTATE ? 'Wide sensors: the veins wobble and break into blobs.' : 'Narrow sensors: long, steady veins.');
+  }
+  forks.length = 0;
+  forks.push({ x: p.x, y: p.y, life: 1.2, max: 1.2 });
+}, { passive: false });
+
+function nextPalette() {
+  palIndex = (palIndex + 1) % PALETTES.length;
+  lut = buildLut(PALETTES[palIndex]);
+  if (renderer) renderer.setLut();
+  hint('New colours: ' + PALETTES[palIndex].name + '.');
+}
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') resetDish();
+  else if (k === 'c') nextPalette();
+  else if (k === 'f') { for (const f of food) f.dying = true; hint('The food is gone. The slime spreads out to search.'); }
+  else if (k === ' ') { frozen = !frozen; e.preventDefault(); hint(frozen ? 'Frozen. Press Space again to let it grow.' : 'Growing again.'); }
+  else if (k === 'h') ui.panel.classList.toggle('hidden');
+  else if (k === 'm') toggleSound();
+});
+document.getElementById('resetBtn').addEventListener('click', () => { ensureAudio(); resetDish(); });
+function toggleSound() {
+  soundOn = !soundOn; ui.sound.textContent = soundOn ? 'Sound on' : 'Sound off';
+  if (soundOn) { ensureAudio(); sfx.tick(true); }
+}
+ui.sound.addEventListener('click', toggleSound);
+
+// ===========================================================================
+// Update and the main loop
+// ===========================================================================
+const blobs = [];
+function simStep() {
+  blobs.length = 0;
+  for (const f of food) {
+    const k = clamp(f.age / 0.5, 0, 1) * (f.dying ? Math.max(0, 1 - f.dieT / 0.4) : 1);
+    if (k > 0) blobs.push({ x: f.x, y: f.y, r: FOOD_R, ar: FOOD_AMT * k, ag: 0 });
+  }
+  if (pointer.inside && Math.hypot(pointer.x - pointer.lx, pointer.y - pointer.ly) > 0.5) {
+    // Scent along the path since the last step, so a fast flick still leaves a line.
+    const d = Math.hypot(pointer.x - pointer.lx, pointer.y - pointer.ly);
+    const n = pointer.lx < -1e3 ? 1 : clamp(Math.ceil(d / 8), 1, 12);
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      blobs.push({ x: lerp(pointer.lx < -1e3 ? pointer.x : pointer.lx, pointer.x, t), y: lerp(pointer.ly < -1e3 ? pointer.y : pointer.ly, pointer.y, t), r: TRAIL_R, ar: TRAIL_AMT, ag: 0 });
+    }
+  }
+  pointer.lx = pointer.x; pointer.ly = pointer.y;
+  for (const b of pending) blobs.push(b);
+  pending.length = 0;
+  renderer.step(params(), blobs);
+  stepCount++;
+}
+
+let lastPx = -1e4, lastPy = -1e4;
+function update(dt) {
+  simTime += dt;
+  const sp = Math.hypot(pointer.x - lastPx, pointer.y - lastPy) / dt;
+  pointer.speed = lerp(pointer.speed, Math.min(sp, 2000), 1 - Math.exp(-10 * dt));
+  lastPx = pointer.x; lastPy = pointer.y;
+  for (const f of food) {
+    // Pop in on a spring (HANDBOOK §3.2), with a little overshoot.
+    const target = f.dying ? 0 : 1, w = 16;
+    f.v += (target - f.s) * w * w * dt; f.v *= Math.exp(-2 * 0.45 * w * dt); f.s += f.v * dt;
+    f.age += dt;
+    if (f.dying) f.dieT += dt;
+  }
+  food = food.filter(f => !(f.dying && f.dieT > 0.5));
+  for (const s of salts) s.age += dt;
+  salts = salts.filter(s => s.age < SALT_LIFE);
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const s = sparks[i]; s.life -= dt;
+    if (s.life <= 0) { sparks.splice(i, 1); continue; }
+    s.x += s.vx * dt; s.y += s.vy * dt; s.vx *= Math.exp(-4 * dt); s.vy *= Math.exp(-4 * dt);
+    if (s.kind === 1) { s.vy += 160 * dt; s.rot += s.vr * dt; }
+  }
+  for (let i = rings.length - 1; i >= 0; i--) { const r = rings[i]; r.life -= dt; r.r += 110 * dt; if (r.life <= 0) rings.splice(i, 1); }
+  for (let i = forks.length - 1; i >= 0; i--) { forks[i].life -= dt; if (forks[i].life <= 0) forks.splice(i, 1); }
+  for (const m of motes) {
+    m.x += m.vx * dt; m.y += m.vy * dt;
+    if (m.x < -20) m.x = W + 20; else if (m.x > W + 20) m.x = -20;
+    if (m.y < -20) m.y = H + 20; else if (m.y > H + 20) m.y = -20;
+  }
+}
+
+// A machine with no real graphics card can run WebGL2 in software, far too
+// slowly for 100,000 agents. After two seconds, two seconds of slow frames
+// switch to the Canvas 2D version. The food stays; the slime starts again.
+let slowTime = 0, speedWatch = 0;
+function watchSpeed(gap) {
+  speedWatch += gap;
+  if (speedWatch < 2000) return;
+  slowTime = gap > 45 ? slowTime + gap : Math.max(0, slowTime - gap);
+  if (slowTime > 2000) {
+    renderer = null; slowTime = 0; speedWatch = 0;
+    pickRenderer('2d');
+    hint('Switched to simpler drawing so the slime runs smoothly.');
+  }
+}
+
+let acc = 0, last = performance.now();
+function frame(t) {
+  const t0 = performance.now();
+  const gap = t - last;
+  rafAvg = rafAvg ? lerp(rafAvg, gap, 0.05) : gap;
+  acc += Math.min(gap / 1000, 0.1);
+  last = t;
+  let steps = 0;
+  while (acc >= STEP) {
+    update(STEP);
+    if (renderer && !frozen && steps < renderer.maxSteps) { simStep(); steps++; }
+    acc -= STEP;
+  }
+  if (renderer) {
+    renderer.draw();
+    if (renderer.lost) { renderer = null; pickRenderer(); }
+    else if (renderer.name === 'WebGL2' && WANT !== 'webgl2') watchSpeed(gap);
+  }
+  drawOverlay();
+  frameMs = performance.now() - t0;
+  msAvg = msAvg ? lerp(msAvg, frameMs, 0.05) : frameMs;
+  updatePanel();
+  publish();
+  requestAnimationFrame(frame);
+}
+
+function updatePanel() {
+  ui.agents.textContent = renderer ? renderer.agents.toLocaleString('en-GB') : '-';
+  ui.food.textContent = liveFood().length + ' / ' + MAX_FOOD;
+  ui.salt.textContent = String(salts.length);
+  ui.angle.textContent = SA_LIST[saIndex] + '°';
+  ui.reach.textContent = SD_LIST[sdIndex] + ' px';
+  ui.pal.textContent = PALETTES[palIndex].name;
+  ui.rend.textContent = renderer ? renderer.name : 'starting...';
+  ui.ms.textContent = msAvg.toFixed(1) + ' ms' + (frozen ? ' (frozen)' : '');
+}
+
+// ===========================================================================
+// Test hook, read-only.
+// ===========================================================================
+window.GAME = {};
+function publish() {
+  const G = window.GAME;
+  G.agents = renderer ? renderer.agents : 0;
+  G.food = liveFood().map(f => ({ x: f.x, y: f.y }));
+  G.saltPatches = salts.length;
+  G.sensorAngle = SA_LIST[saIndex]; G.sensorReach = SD_LIST[sdIndex];
+  G.palette = PALETTES[palIndex].name;
+  G.renderer = renderer ? renderer.name : null;
+  G.frameMs = msAvg; G.rafMs = rafAvg; G.steps = stepCount;
+  G.frozen = frozen; G.soundOn = soundOn;
+  G.panelHidden = ui.panel.classList.contains('hidden');
+}
+window.GAME.sample = (x, y) => (renderer ? renderer.sample(x, y) : null);
+
+function fit() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  sizeCanvas(fx);
+}
+
+// The app's iframe can report a 0x0 window when this script first runs, so wait for a real size.
+function boot() {
+  if (window.innerWidth < 200 || window.innerHeight < 200) { requestAnimationFrame(boot); return; }
+  fit();
+  pickRenderer();
+  resetDish();
+  hint('Wiggle the mouse. Then click to drop some food.');
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (window.innerWidth < 200 || window.innerHeight < 200) return;
+    fit();
+    if (renderer) { sizeCanvas(simCanvas); renderer.resize(); }
+    resetDish();
+  }, 150);
+});
+boot();
+})();
+</script>
+</body>
+</html>
